@@ -133,9 +133,21 @@ Mic choice is saved to `~/.config/soundboard/config.toml`.
 
 Removes scripts, systemd service, PipeWire modules, and runtime state. Tab audio folders are kept by default; custom folders registered in `config.toml` are never deleted automatically.
 
-## Future GUI
+## GUI application
 
-The full Rust/Qt/KDE application is specified in [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md). The bash layer uses the same config and state file paths so migration will be seamless.
+The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `state.json`).
+
+**Requirements:** Rust (rustup), Qt 6 (`qmake6`), PipeWire, `paplay`, and optionally `ffmpeg` for MP3.
+
+```bash
+source "$HOME/.cargo/env"
+QMAKE=/usr/bin/qmake6 cargo build --release
+RUST_LOG=sound_spring=info ./target/release/sound-spring
+```
+
+Global shortcuts use **xdg-desktop-portal** by default (`shortcuts.mode = "auto"` in config). On KDE Plasma this shows a permission dialog on first bind; `kglobalaccel` is used as fallback. Open **Settings** (⚙ in the header) to change mic source, paths, and custom tab folders.
+
+See [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) for the full roadmap.
 
 ## See also
 

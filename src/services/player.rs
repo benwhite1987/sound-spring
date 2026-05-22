@@ -10,7 +10,7 @@ use crate::config::SFX_SINK;
 
 #[derive(Debug)]
 pub enum PlayerCommand {
-    Play(PathBuf),
+    Play { path: PathBuf, slot: i32 },
     Stop(u64),
     StopAll,
 }
@@ -21,10 +21,15 @@ pub enum PlayerEvent {
     Ended { id: u64 },
 }
 
+struct PlaySession {
+    child: Child,
+    slot: i32,
+}
+
 pub struct Player {
     sink: String,
     next_id: u64,
-    children: Arc<Mutex<HashMap<u64, Child>>>,
+    children: Arc<Mutex<HashMap<u64, PlaySession>>>,
 }
 
 impl Player {
@@ -42,9 +47,9 @@ impl Player {
 
     pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<Option<PlayerEvent>> {
         match command {
-            PlayerCommand::Play(path) => {
-                let id = self.play(path).await?;
-                Ok(Some(PlayerEvent::Started { id, slot: None }))
+            PlayerCommand::Play { path, slot } => {
+                let id = self.play(path, slot).await?;
+                Ok(Some(PlayerEvent::Started { id, slot: Some(slot) }))
             }
             PlayerCommand::Stop(id) => {
                 self.stop(id).await;
@@ -57,46 +62,49 @@ impl Player {
         }
     }
 
-    pub async fn play(&mut self, file: PathBuf) -> Result<u64> {
+    pub async fn play(&mut self, file: PathBuf, slot: i32) -> Result<u64> {
         let id = self.next_id;
         self.next_id += 1;
 
         let child = Self::spawn_playback(&self.sink, &file).await?;
-        self.children.lock().await.insert(id, child);
+        self.children
+            .lock()
+            .await
+            .insert(id, PlaySession { child, slot });
         Ok(id)
     }
 
     pub async fn stop(&mut self, id: u64) {
-        if let Some(mut child) = self.children.lock().await.remove(&id) {
-            let _ = child.kill().await;
+        if let Some(mut session) = self.children.lock().await.remove(&id) {
+            let _ = session.child.kill().await;
         }
     }
 
     pub async fn stop_all(&mut self) {
         let mut children = self.children.lock().await;
-        for (_, mut child) in children.drain() {
-            let _ = child.kill().await;
+        for (_, mut session) in children.drain() {
+            let _ = session.child.kill().await;
         }
     }
 
-    pub async fn reap_finished(&mut self) -> Vec<u64> {
-        let mut finished = Vec::new();
+    pub async fn reap_finished(&mut self) -> Vec<i32> {
+        let mut finished_slots = Vec::new();
         let mut children = self.children.lock().await;
-        children.retain(|id, child| {
-            match child.try_wait() {
+        children.retain(|id, session| {
+            match session.child.try_wait() {
                 Ok(Some(_)) => {
-                    finished.push(*id);
+                    finished_slots.push(session.slot);
                     false
                 }
                 Ok(None) => true,
                 Err(err) => {
                     warn!("try_wait failed for play id {id}: {err}");
-                    finished.push(*id);
+                    finished_slots.push(session.slot);
                     false
                 }
             }
         });
-        finished
+        finished_slots
     }
 
     async fn spawn_playback(sink: &str, file: &PathBuf) -> Result<Child> {

@@ -116,7 +116,7 @@ fn default_true() -> bool {
 }
 
 fn default_shortcut_mode() -> String {
-    "portal".into()
+    "auto".into()
 }
 
 pub fn project_dirs() -> Option<ProjectDirs> {
