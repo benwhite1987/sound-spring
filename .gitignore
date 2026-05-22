@@ -7,6 +7,10 @@ npm-debug.log*
 dist/
 build/
 out/
+target/
+
+# Rust
+Cargo.lock
 
 # Environment variables
 .env
