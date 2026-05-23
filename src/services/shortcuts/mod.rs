@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use std::sync::mpsc::Sender as StdSender;
 use tracing::{info, warn};
 
-pub use trigger::{portal_trigger, qt_key_sequence};
+pub use trigger::{portal_trigger, play_slot_from_qt_key, qt_key_sequence, qt_shortcut_sequence, trigger_display, trigger_from_qt};
 
 #[derive(Debug, Clone)]
 pub struct ShortcutDef {
@@ -29,28 +29,28 @@ impl ShortcutsManager {
             defs.push(ShortcutDef {
                 id: format!("play_{slot}"),
                 description: format!("Play slot {slot}"),
-                trigger: format!("Meta+{slot}"),
+                trigger: format!("KP_{slot}"),
             });
         }
         defs.push(ShortcutDef {
             id: "play_10".into(),
             description: "Play slot 10".into(),
-            trigger: "Meta+0".into(),
+            trigger: "KP_0".into(),
         });
         defs.push(ShortcutDef {
             id: "tab_next".into(),
             description: "Next tab".into(),
-            trigger: "Meta+Bracket Right".into(),
+            trigger: "Ctrl+KP_Add".into(),
         });
         defs.push(ShortcutDef {
             id: "tab_prev".into(),
             description: "Previous tab".into(),
-            trigger: "Meta+Bracket Left".into(),
+            trigger: "Ctrl+KP_Subtract".into(),
         });
         defs.push(ShortcutDef {
             id: "stop_all".into(),
             description: "Stop all".into(),
-            trigger: "Meta+Escape".into(),
+            trigger: "Ctrl+KP_Decimal".into(),
         });
         defs
     }
@@ -60,35 +60,31 @@ impl ShortcutsManager {
         mode: &str,
         event_tx: StdSender<ShortcutEvent>,
     ) -> Result<()> {
-        match mode {
+        match Self::effective_mode(mode) {
+            "local" => {
+                info!("using in-window keyboard shortcuts only");
+                Ok(())
+            }
             "portal" => Self::bind_portal(shortcuts, event_tx).await,
-            "kglobalaccel" => Self::bind_kglobalaccel(shortcuts, event_tx).await,
-            "auto" => Self::bind_auto(shortcuts, event_tx).await,
             other => {
-                warn!("unknown shortcut mode '{other}', using auto");
-                Self::bind_auto(shortcuts, event_tx).await
+                warn!("unknown shortcut mode '{other}', using portal");
+                Self::bind_portal(shortcuts, event_tx).await
             }
         }
     }
 
-    async fn bind_auto(
-        shortcuts: &[ShortcutDef],
-        event_tx: StdSender<ShortcutEvent>,
-    ) -> Result<()> {
-        match Self::bind_portal(shortcuts, event_tx.clone()).await {
-            Ok(()) => {
-                info!("using xdg-desktop-portal global shortcuts");
-                Ok(())
+    /// KGlobalAccel registration can destabilize Plasma 6; route legacy modes to portal.
+    fn effective_mode(mode: &str) -> &'static str {
+        match mode {
+            "local" => "local",
+            "portal" => "portal",
+            "auto" | "kglobalaccel" => {
+                warn!(
+                    "shortcut mode '{mode}' is routed to portal for desktop stability"
+                );
+                "portal"
             }
-            Err(portal_err) => {
-                warn!("portal shortcuts unavailable: {portal_err:#}");
-                if kglobalaccel::available().await {
-                    info!("falling back to KGlobalAccel");
-                    Self::bind_kglobalaccel(shortcuts, event_tx).await
-                } else {
-                    Err(portal_err).context("portal failed and KGlobalAccel unavailable")
-                }
-            }
+            _ => "portal",
         }
     }
 
@@ -101,12 +97,21 @@ impl ShortcutsManager {
             .context("bind portal shortcuts")
     }
 
-    async fn bind_kglobalaccel(
-        shortcuts: &[ShortcutDef],
-        event_tx: StdSender<ShortcutEvent>,
-    ) -> Result<()> {
-        kglobalaccel::bind(shortcuts, event_tx)
-            .await
-            .context("bind KGlobalAccel shortcuts")
+    pub fn resolve_bindings(config: &crate::config::ShortcutsConfig) -> Vec<ShortcutDef> {
+        Self::default_bindings()
+            .into_iter()
+            .map(|mut def| {
+                if let Some(trigger) = config.bindings.get(&def.id) {
+                    if !trigger.trim().is_empty() {
+                        def.trigger = trigger.trim().to_string();
+                    }
+                }
+                def
+            })
+            .collect()
+    }
+
+    pub async fn cleanup_kglobalaccel_component() {
+        kglobalaccel::unregister_component().await;
     }
 }

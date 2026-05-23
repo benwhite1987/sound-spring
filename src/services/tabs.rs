@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::services::audio_meta;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,8 @@ pub fn normalize_slot(slot: i32) -> Option<usize> {
 pub struct SoundFile {
     pub path: PathBuf,
     pub name: String,
+    #[serde(default)]
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,6 +38,13 @@ impl Tab {
             return None;
         }
         self.sounds.get(slot - 1).map(|s| &s.path)
+    }
+
+    pub fn slot_duration_ms(&self, slot: usize) -> Option<u64> {
+        if slot == 0 || slot > MAX_SLOTS {
+            return None;
+        }
+        self.sounds.get(slot - 1).map(|s| s.duration_ms)
     }
 
     pub fn display_name(&self) -> &str {
@@ -99,7 +109,8 @@ impl TabsRepository {
             }
             sounds.push(SoundFile {
                 name: file_name(&file_path),
-                path: file_path,
+                path: file_path.clone(),
+                duration_ms: audio_meta::probe_duration_ms(&file_path).unwrap_or(0),
             });
         }
         sounds.sort_by(|a, b| a.path.cmp(&b.path));
@@ -175,6 +186,7 @@ mod tests {
                 .map(|i| SoundFile {
                     path: PathBuf::from(format!("/tmp/{i:02}.ogg")),
                     name: format!("{i:02}.ogg"),
+                    duration_ms: 0,
                 })
                 .collect(),
         };

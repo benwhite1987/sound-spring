@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc::Sender as TokioSender;
+use tokio::time::{sleep, sleep_until, Duration, Instant};
 use tracing::{info, warn};
 
 pub const VIRTMIC_SINK: &str = "soundboard_virtmic";
@@ -27,7 +30,7 @@ pub struct PipewireManager;
 impl PipewireManager {
     pub async fn available_sources() -> Result<Vec<MicSource>> {
         let output = Command::new("pactl")
-            .args(["list", "sources", "short"])
+            .args(["list", "sources"])
             .output()
             .await
             .context("pactl list sources")?;
@@ -37,28 +40,61 @@ impl PipewireManager {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-        let mut sources = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let mut parts = line.split_whitespace();
-            let _index = parts.next();
-            let name = parts.next().unwrap_or_default();
-            if name.is_empty()
-                || name.ends_with(".monitor")
-                || name.starts_with("soundboard_")
-                || name.starts_with("sound_spring_")
-            {
-                continue;
+        Ok(parse_source_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    pub fn spawn_source_watch(notify_tx: TokioSender<()>) {
+        tokio::spawn(async move {
+            loop {
+                if let Err(err) = Self::run_source_subscribe(&notify_tx).await {
+                    warn!("pactl source subscribe ended: {err:#}");
+                    sleep(Duration::from_secs(2)).await;
+                }
             }
-            sources.push(MicSource {
-                name: name.to_string(),
-                description: name.to_string(),
-            });
+        });
+    }
+
+    async fn run_source_subscribe(notify_tx: &TokioSender<()>) -> Result<()> {
+        let mut child = Command::new("pactl")
+            .args(["subscribe", "source"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("spawn pactl subscribe")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("pactl subscribe missing stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
+        let debounce = Duration::from_millis(500);
+        let mut deadline = Instant::now() + Duration::from_secs(3600);
+        loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    match line.context("read pactl subscribe")? {
+                        Some(_) => deadline = Instant::now() + debounce,
+                        None => return Ok(()),
+                    }
+                }
+                _ = sleep_until(deadline) => {
+                    let _ = notify_tx.send(()).await;
+                    deadline = Instant::now() + Duration::from_secs(3600);
+                }
+            }
         }
-        Ok(sources)
     }
 
     pub async fn setup(mic_source: &str, latency_ms: u32) -> Result<Modules> {
-        Self::teardown(&Modules::default()).await.ok();
+        if Self::sinks_ready().await {
+            let ids = Self::find_module_ids().await?;
+            if !ids.is_empty() {
+                info!("reusing {} existing soundboard PipeWire module(s)", ids.len());
+                return Ok(Modules { ids });
+            }
+        }
+
+        Self::unload_stale_modules().await?;
+        sleep(Duration::from_millis(100)).await;
         let mut ids = Vec::new();
 
         ids.push(
@@ -106,14 +142,81 @@ impl PipewireManager {
 
     pub async fn teardown(modules: &Modules) -> Result<()> {
         for id in modules.ids.iter().copied().rev() {
-            let _ = Command::new("pactl")
-                .args(["unload-module", &id.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await;
+            Self::unload_module(id).await;
+        }
+        Self::unload_stale_modules().await
+    }
+
+    pub async fn unload_stale_modules() -> Result<()> {
+        let mut ids = Self::find_module_ids().await?;
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        ids.dedup();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        info!("unloading {} stale soundboard PipeWire module(s)", ids.len());
+        for id in ids {
+            Self::unload_module(id).await;
         }
         Ok(())
+    }
+
+    pub async fn set_sink_volume(sink: &str, percent: u8, muted: bool) -> Result<()> {
+        let mute_arg = if muted { "1" } else { "0" };
+        let output = Command::new("pactl")
+            .args(["set-sink-mute", sink, mute_arg])
+            .output()
+            .await
+            .context("pactl set-sink-mute")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl set-sink-mute failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        if !muted {
+            let volume = (65535 * percent as u32 / 100).to_string();
+            let output = Command::new("pactl")
+                .args(["set-sink-volume", sink, &volume])
+                .output()
+                .await
+                .context("pactl set-sink-volume")?;
+            if !output.status.success() {
+                return Err(anyhow!(
+                    "pactl set-sink-volume failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn unload_module(id: u32) {
+        let _ = Command::new("pactl")
+            .args(["unload-module", &id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+
+    async fn find_module_ids() -> Result<Vec<u32>> {
+        let lines = Self::list_short("modules").await?;
+        let mut ids = Vec::new();
+        for line in lines {
+            let mut parts = line.split_whitespace();
+            let Some(id_str) = parts.next() else {
+                continue;
+            };
+            let Ok(id) = id_str.parse::<u32>() else {
+                continue;
+            };
+            let rest = parts.collect::<Vec<_>>().join(" ");
+            if module_matches_soundboard(&rest) {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
     }
 
     pub async fn sink_exists(name: &str) -> bool {
@@ -121,6 +224,12 @@ impl PipewireManager {
             .await
             .map(|lines| lines.iter().any(|line| line.contains(name)))
             .unwrap_or(false)
+    }
+
+    async fn sinks_ready() -> bool {
+        Self::sink_exists(SFX_SINK).await
+            && Self::sink_exists(VIRTMIC_SINK).await
+            && Self::ensure_source(VIRTUAL_MIC_SOURCE).await.is_ok()
     }
 
     async fn load_null_sink(name: &str, description: &str) -> Result<u32> {
@@ -207,9 +316,113 @@ impl PipewireManager {
     }
 }
 
+fn parse_source_list(text: &str) -> Vec<MicSource> {
+    let mut sources = Vec::new();
+    let mut name = String::new();
+    let mut description = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Source #") {
+            if !name.is_empty() && is_user_mic_source(&name) {
+                sources.push(MicSource {
+                    name: name.clone(),
+                    description: if description.is_empty() {
+                        name.clone()
+                    } else {
+                        description.clone()
+                    },
+                });
+            }
+            name.clear();
+            description.clear();
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("Name: ") {
+            name = value.to_string();
+        } else if let Some(value) = trimmed.strip_prefix("Description: ") {
+            description = value.to_string();
+        }
+    }
+    if !name.is_empty() && is_user_mic_source(&name) {
+        sources.push(MicSource {
+            name: name.clone(),
+            description: if description.is_empty() {
+                name
+            } else {
+                description
+            },
+        });
+    }
+    sources.sort_by(|a, b| a.description.cmp(&b.description));
+    sources
+}
+
+fn is_user_mic_source(name: &str) -> bool {
+    !name.is_empty()
+        && !name.ends_with(".monitor")
+        && !name.starts_with("soundboard_")
+        && !name.starts_with("sound_spring_")
+}
+
+fn module_matches_soundboard(rest: &str) -> bool {
+    if rest.contains(&format!("sink_name={VIRTMIC_SINK}"))
+        || rest.contains(&format!("sink_name={SFX_SINK}"))
+    {
+        return true;
+    }
+    if rest.contains(&format!("source_name={VIRTUAL_MIC_SOURCE}")) {
+        return true;
+    }
+    if rest.contains("module-loopback")
+        && (rest.contains(VIRTMIC_SINK) || rest.contains(SFX_SINK))
+    {
+        return true;
+    }
+    if rest.contains("module-remap-source")
+        && (rest.contains(VIRTMIC_SINK) || rest.contains(VIRTUAL_MIC_SOURCE))
+    {
+        return true;
+    }
+    (rest.contains("sink_name=virtmic") || rest.contains("sink_name=soundboard"))
+        && !rest.contains(SFX_SINK)
+        && !rest.contains(VIRTMIC_SINK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_sources_skips_monitors_and_virtual() {
+        let text = "\
+Source #0
+\tName: sound_spring_virtual_mic
+\tDescription: Sound-Spring-Virtual-Microphone
+Source #1
+\tName: alsa_input.usb_mic
+\tDescription: USB Microphone
+Source #2
+\tName: alsa_output.speakers.monitor
+\tDescription: Speakers Monitor
+";
+        let sources = parse_source_list(text);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, "alsa_input.usb_mic");
+        assert_eq!(sources[0].description, "USB Microphone");
+    }
+
+    #[test]
+    fn module_matcher_finds_soundboard_modules() {
+        assert!(module_matches_soundboard(
+            "module-null-sink sink_name=soundboard_virtmic sink_properties=device.description=Sound-Spring-Mix"
+        ));
+        assert!(module_matches_soundboard(
+            "module-loopback source=soundboard_sfx.monitor sink=soundboard_virtmic latency_msec=20"
+        ));
+        assert!(!module_matches_soundboard(
+            "module-null-sink sink_name=other_sink"
+        ));
+    }
 
     #[tokio::test]
     async fn list_sources_does_not_panic() {

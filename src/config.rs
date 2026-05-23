@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,12 +30,22 @@ pub struct AudioConfig {
     pub latency_ms: u32,
     #[serde(default = "default_true")]
     pub auto_teardown: bool,
+    #[serde(default = "default_volume")]
+    pub output_volume: u8,
+    #[serde(default = "default_volume")]
+    pub monitor_volume: u8,
+    #[serde(default)]
+    pub output_muted: bool,
+    #[serde(default)]
+    pub monitor_muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutsConfig {
     #[serde(default = "default_shortcut_mode")]
     pub mode: String,
+    #[serde(default)]
+    pub bindings: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,14 +75,23 @@ impl Default for AudioConfig {
             mic_source: String::new(),
             latency_ms: DEFAULT_LATENCY_MS,
             auto_teardown: true,
+            output_volume: default_volume(),
+            monitor_volume: default_volume(),
+            output_muted: false,
+            monitor_muted: false,
         }
     }
+}
+
+fn default_volume() -> u8 {
+    100
 }
 
 impl Default for ShortcutsConfig {
     fn default() -> Self {
         Self {
             mode: default_shortcut_mode(),
+            bindings: HashMap::new(),
         }
     }
 }
@@ -116,7 +136,7 @@ fn default_true() -> bool {
 }
 
 fn default_shortcut_mode() -> String {
-    "auto".into()
+    "portal".into()
 }
 
 pub fn project_dirs() -> Option<ProjectDirs> {

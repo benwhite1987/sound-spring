@@ -1,6 +1,5 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use std::collections::HashMap;
 use std::sync::mpsc::Sender as StdSender;
 use tracing::{info, warn};
 use zbus::zvariant::ObjectPath;
@@ -10,7 +9,6 @@ use super::trigger::qt_key_sequence;
 use super::{ShortcutDef, ShortcutEvent};
 
 const COMPONENT: &str = "sound_spring";
-const CONTEXT: u32 = 0;
 
 #[proxy(
     interface = "org.kde.KGlobalAccel",
@@ -18,17 +16,21 @@ const CONTEXT: u32 = 0;
     default_path = "/kglobalaccel"
 )]
 trait KGlobalAccel {
+    #[zbus(name = "doRegister")]
     fn do_register(&self, components: &[&str]) -> zbus::Result<()>;
 
+    #[zbus(name = "setForeignShortcutKeys")]
     fn set_foreign_shortcut_keys(
         &self,
-        component: &str,
-        action: &str,
-        shortcuts: &[Vec<i32>],
-        context: u32,
+        action_id: &[&str],
+        shortcuts: &[(Vec<i32>,)],
     ) -> zbus::Result<()>;
 
+    #[zbus(name = "unregister")]
     fn unregister(&self, component: &str, action: &str) -> zbus::Result<bool>;
+
+    #[zbus(name = "unRegister")]
+    fn un_register(&self, action_id: &[&str]) -> zbus::Result<()>;
 }
 
 #[proxy(
@@ -36,7 +38,7 @@ trait KGlobalAccel {
     default_service = "org.kde.kglobalaccel"
 )]
 trait KGlobalComponent {
-    #[zbus(signal)]
+    #[zbus(signal, name = "globalShortcutPressed")]
     fn global_shortcut_pressed(
         &self,
         action: &str,
@@ -56,6 +58,19 @@ pub async fn bind(
         .await
         .context("create KGlobalAccel proxy")?;
 
+    let result = bind_with_proxy(&connection, &proxy, shortcuts, event_tx).await;
+    if result.is_err() {
+        let _ = proxy.un_register(&[COMPONENT]).await;
+    }
+    result
+}
+
+async fn bind_with_proxy(
+    connection: &Connection,
+    proxy: &KGlobalAccelProxy<'_>,
+    shortcuts: &[ShortcutDef],
+    event_tx: StdSender<ShortcutEvent>,
+) -> Result<()> {
     proxy
         .do_register(&[COMPONENT])
         .await
@@ -65,13 +80,13 @@ pub async fn bind(
         let _ = proxy.unregister(COMPONENT, &def.id).await;
         let keys = qt_key_sequence(&def.trigger)?;
         proxy
-            .set_foreign_shortcut_keys(COMPONENT, &def.id, &[keys], CONTEXT)
+            .set_foreign_shortcut_keys(&[COMPONENT, &def.id], &[(keys,)])
             .await
             .with_context(|| format!("set shortcut for {}", def.id))?;
     }
 
     let component_path = format!("/component/{COMPONENT}");
-    let component = KGlobalComponentProxy::builder(&connection)
+    let component = KGlobalComponentProxy::builder(connection)
         .path(ObjectPath::try_from(component_path.as_str())?)?
         .build()
         .await
@@ -96,6 +111,17 @@ pub async fn bind(
     });
 
     Ok(())
+}
+
+/// Remove any partially registered component after a failed bind attempt.
+pub async fn unregister_component() {
+    let Ok(connection) = Connection::session().await else {
+        return;
+    };
+    let Ok(proxy) = KGlobalAccelProxy::new(&connection).await else {
+        return;
+    };
+    let _ = proxy.un_register(&[COMPONENT]).await;
 }
 
 pub async fn available() -> bool {

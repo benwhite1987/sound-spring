@@ -1,7 +1,14 @@
-use cxx_qt_build::{CxxQtBuilder, QmlModule};
+use cxx_qt_build::{CxxQtBuilder, QmlModule, QObjectHeaderOpts};
 
 fn main() {
     CxxQtBuilder::new()
+        .include_prefix("src/cpp")
+        .qobject_header(QObjectHeaderOpts::from("src/cpp/key_forwarder.h"))
+        .cc_builder(|builder| {
+            builder
+                .include("src/cpp")
+                .file("src/cpp/key_forwarder.cpp");
+        })
         .qt_module("Network")
         .qt_module("Quick")
         .qt_module("QuickControls2")
@@ -15,6 +22,7 @@ fn main() {
                 "qml/Main.qml",
                 "qml/TabPage.qml",
                 "qml/SoundButton.qml",
+                "qml/ShortcutCapture.qml",
                 "qml/SettingsDialog.qml",
             ],
             ..Default::default()

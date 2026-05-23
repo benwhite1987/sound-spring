@@ -14,6 +14,24 @@ Dialog {
     required property SoundboardController controller
     required property Settings settings
 
+    property int activeCaptureIndex: -1
+
+    function handleKey(key, modifiers, nativeScanCode) {
+        if (activeCaptureIndex < 0)
+            return
+        if (key === Qt.Key_Escape) {
+            activeCaptureIndex = -1
+            return
+        }
+        var trigger = settings.triggerFromKeyEvent(key, modifiers, nativeScanCode)
+        if (trigger.length === 0)
+            return
+        settings.setShortcutTriggerAt(activeCaptureIndex, trigger)
+        activeCaptureIndex = -1
+    }
+
+    onClosed: activeCaptureIndex = -1
+
     onApplied: if (settings) settings.apply()
 
     ColumnLayout {
@@ -37,40 +55,67 @@ Dialog {
             ColumnLayout {
                 spacing: 8
                 Label { text: "Microphone source (PipeWire)"; font.bold: true }
-                ComboBox {
-                    id: micCombo
+                RowLayout {
                     Layout.fillWidth: true
-                    model: controller.micSourceCount
-                    textRole: "text"
-                    delegate: ItemDelegate {
-                        required property int index
-                        text: controller.micSourceNameAt(index)
-                    }
-                    contentItem: Text {
-                        text: micCombo.displayText.length > 0
-                              ? micCombo.displayText
-                              : (settings ? settings.micSource : "")
-                        elide: Text.ElideRight
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 8
-                    }
-                    onActivated: if (settings) settings.micSource = controller.micSourceNameAt(index)
-                    Component.onCompleted: {
-                        if (!settings) return
-                        var current = settings.micSource
-                        for (var i = 0; i < controller.micSourceCount; ++i) {
-                            if (controller.micSourceNameAt(i) === current) {
-                                currentIndex = i
-                                return
+                    spacing: 8
+                    ComboBox {
+                        id: micCombo
+                        Layout.fillWidth: true
+                        model: controller.micSourceCount
+                        delegate: ItemDelegate {
+                            required property int index
+                            text: controller.micSourceDescriptionAt(index)
+                        }
+                        contentItem: Text {
+                            text: micCombo.displayText.length > 0
+                                  ? micCombo.displayText
+                                  : micCombo.selectedDescription()
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 8
+                        }
+                        onActivated: if (settings) {
+                            settings.micSource = controller.micSourceIdAt(currentIndex)
+                        }
+                        function selectedDescription() {
+                            if (!settings) return ""
+                            var currentId = settings.micSource
+                            for (var i = 0; i < controller.micSourceCount; ++i) {
+                                if (controller.micSourceIdAt(i) === currentId) {
+                                    return controller.micSourceDescriptionAt(i)
+                                }
+                            }
+                            return currentId
+                        }
+                        function syncSelection() {
+                            if (!settings) return
+                            var currentId = settings.micSource
+                            for (var i = 0; i < controller.micSourceCount; ++i) {
+                                if (controller.micSourceIdAt(i) === currentId) {
+                                    currentIndex = i
+                                    return
+                                }
+                            }
+                            currentIndex = -1
+                        }
+                        Component.onCompleted: syncSelection()
+                        Connections {
+                            target: controller
+                            function onPlayingStateChanged() {
+                                micCombo.syncSelection()
                             }
                         }
                     }
+                    Button {
+                        text: "Refresh"
+                        onClicked: controller.refreshMicSources()
+                    }
                 }
-                TextField {
+                Label {
+                    wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    placeholderText: "Or type a PipeWire source name"
-                    text: settings ? settings.micSource : ""
-                    onTextChanged: if (settings) settings.micSource = text
+                    color: "#aaa"
+                    text: "The list updates automatically when devices are plugged in or removed."
                 }
                 Label { text: "Latency (ms)" }
                 SpinBox {
@@ -92,7 +137,7 @@ Dialog {
                 Label { text: "Global shortcut backend"; font.bold: true }
                 ComboBox {
                     Layout.fillWidth: true
-                    model: ["auto", "portal", "kglobalaccel"]
+                    model: ["portal", "local"]
                     currentIndex: {
                         if (!settings) return 0
                         var idx = model.indexOf(settings.shortcutMode)
@@ -103,9 +148,9 @@ Dialog {
                 Label {
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    text: "auto tries xdg-desktop-portal first (cross-desktop), then falls back to KGlobalAccel on KDE. Portal may show a permission dialog on first bind."
+                    text: "portal registers global shortcuts; local uses in-window keys only while focused."
                 }
-                Label { text: "Default bindings"; font.bold: true }
+                Label { text: "Click a slot, then press the key to assign"; font.bold: true }
                 ListView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -113,14 +158,17 @@ Dialog {
                     model: settings ? settings.shortcutCount : 0
                     delegate: RowLayout {
                         width: ListView.view.width
+                        spacing: 8
                         Label {
-                            Layout.preferredWidth: 180
+                            Layout.preferredWidth: 160
                             text: settings.shortcutDescriptionAt(index)
                         }
-                        Label {
+                        ShortcutCapture {
                             Layout.fillWidth: true
-                            text: settings.shortcutTriggerAt(index)
-                            color: "#aaa"
+                            Layout.preferredHeight: 36
+                            shortcutIndex: index
+                            settings: root.settings
+                            captureHost: root
                         }
                     }
                 }

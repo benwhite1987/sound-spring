@@ -15,7 +15,7 @@ ext="${ext,,}"
 case "$ext" in
     mp3|m4a|aac)
         if command -v ffmpeg &>/dev/null; then
-            ffmpeg -nostdin -loglevel quiet -i "$FILE" -f wav - | paplay --device="$SINK" -
+            ffmpeg -nostdin -loglevel quiet -i "$FILE" -f wav - | paplay --device="$SINK"
             exit 0
         fi
         ;;
