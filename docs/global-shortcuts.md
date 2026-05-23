@@ -88,9 +88,11 @@ Terminal-spawned-from-an-IDE, etc.). Any of the following work:
 # A standalone terminal: Konsole, Alacritty, foot, a real TTY (Ctrl+Alt+F2)
 RUST_LOG=sound_spring=info ./target/release/sound-spring
 
-# Or force a fresh scope from anywhere, including an IDE terminal:
-systemd-run --user --scope --unit=sound-spring --collect \
-  ./target/release/sound-spring
+# Or force a fresh scope from anywhere, including an IDE terminal.
+# Omit --unit so each run gets a unique auto-generated scope name. With an
+# explicit --unit=NAME, the second invocation fails with "unit was already
+# loaded" because --collect registers it.
+systemd-run --user --scope --collect ./target/release/sound-spring
 
 # Or via the installed .desktop entry, which always runs in its own scope:
 kstart6 sound-spring

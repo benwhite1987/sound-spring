@@ -167,9 +167,11 @@ these work:
 # Preferred: from a standalone terminal (Konsole, Alacritty, a TTY, etc.)
 RUST_LOG=sound_spring=info ./target/release/sound-spring
 
-# Or force a fresh systemd scope from anywhere (including Cursor's terminal)
-systemd-run --user --scope --unit=sound-spring --collect \
-  ./target/release/sound-spring
+# Or force a fresh systemd scope from anywhere (including Cursor's terminal).
+# Omit --unit so systemd auto-generates a unique scope name each run; passing
+# an explicit name will fail on the second invocation with "unit was already
+# loaded" once --collect has registered it.
+systemd-run --user --scope --collect ./target/release/sound-spring
 
 # Or via the installed .desktop entry (KRunner / app menu)
 kstart6 sound-spring
