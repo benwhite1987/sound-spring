@@ -1,33 +1,50 @@
-# Node.js
-node_modules/
-npm-debug.log*
-.DS_Store
+# AI agent context — local only (see CODING_STANDARDS.md)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+.continue/
+.windsurf/
+*.agent.md
+*.session.md
 
-# Build files
+# Build artifacts
 dist/
 build/
 out/
 target/
 
-# Rust
-Cargo.lock
-
-# Environment variables
+# Environment and secrets
 .env
 .env.local
 .env.*.local
+secrets/
+*.key
+*.pem
 
 # Logs
-logs
+logs/
 *.log
 
-# IDE and editor files
+# IDE (personal configs stay local)
 .idea/
-.vscode/
+*.code-workspace
 *.swp
 *.swo
-*.swn
+*~
 
-# OS files
+# OS junk
+.DS_Store
 Thumbs.db
 desktop.ini
+
+# Node (legacy entry)
+node_modules/
+npm-debug.log*
+
+# Rust lockfile policy: committed in application repos when desired; keep untracked here per prior project choice
+Cargo.lock
