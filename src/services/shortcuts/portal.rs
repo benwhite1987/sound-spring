@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::sync::mpsc::Sender as StdSender;
 use tracing::{info, warn};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -10,6 +12,35 @@ use super::trigger::portal_trigger;
 use super::{ShortcutDef, ShortcutEvent};
 
 const PORTAL_SUCCESS: u32 = 0;
+const PARENT_WINDOW_MAX: usize = 256;
+
+extern "C" {
+    fn sound_spring_portal_parent_window(out: *mut std::ffi::c_char, out_len: usize);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundShortcut {
+    pub id: String,
+    pub description: String,
+    pub trigger_description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortalBindResult {
+    pub session_path: String,
+    pub bound_shortcuts: Vec<BoundShortcut>,
+    pub requested_count: usize,
+    pub assigned_count: usize,
+}
+
+fn portal_parent_window() -> String {
+    let mut buf = vec![0_u8; PARENT_WINDOW_MAX];
+    unsafe {
+        sound_spring_portal_parent_window(buf.as_mut_ptr().cast(), buf.len());
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
 
 #[proxy(
     interface = "org.freedesktop.portal.GlobalShortcuts",
@@ -29,6 +60,13 @@ trait GlobalShortcuts {
         parent_window: &str,
         options: HashMap<&str, Value<'_>>,
     ) -> zbus::Result<OwnedObjectPath>;
+
+    fn configure_shortcuts(
+        &self,
+        session_handle: &ObjectPath<'_>,
+        parent_window: &str,
+        options: HashMap<&str, Value<'_>>,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn activated(
@@ -67,6 +105,86 @@ fn owned_value_to_string(value: &OwnedValue) -> Option<String> {
     value.downcast_ref::<&str>().ok().map(|s| (*s).to_string())
 }
 
+fn parse_bound_shortcuts(results: &HashMap<String, OwnedValue>) -> Vec<BoundShortcut> {
+    let Some(raw) = results.get("shortcuts") else {
+        warn!(
+            "portal BindShortcuts response missing shortcuts key (keys: {:?})",
+            results.keys().collect::<Vec<_>>()
+        );
+        return Vec::new();
+    };
+
+    let entries: Vec<(String, HashMap<String, OwnedValue>)> = match raw.clone().try_into() {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!("failed to parse portal shortcuts array: {err}");
+            return Vec::new();
+        }
+    };
+
+    entries
+        .into_iter()
+        .map(|(id, attrs)| BoundShortcut {
+            description: attrs
+                .get("description")
+                .and_then(owned_value_to_string)
+                .unwrap_or_default(),
+            trigger_description: attrs
+                .get("trigger_description")
+                .and_then(owned_value_to_string)
+                .unwrap_or_default(),
+            id,
+        })
+        .collect()
+}
+
+fn log_bound_shortcuts(requested: &[ShortcutDef], bound: &[BoundShortcut]) {
+    for def in requested {
+        let preferred = portal_trigger(&def.trigger);
+        info!(
+            "portal bind request: id={} preferred_trigger={preferred}",
+            def.id
+        );
+    }
+
+    if bound.is_empty() {
+        warn!("portal BindShortcuts returned zero bound shortcuts");
+        return;
+    }
+
+    let assigned = bound
+        .iter()
+        .filter(|s| !s.trigger_description.is_empty())
+        .count();
+    if assigned == 0 {
+        warn!(
+            "portal bound {} shortcuts but none have key assignments; \
+             KDE likely reused empty KGlobalAccel entries (skipped config dialog). \
+             Clear shortcuts in System Settings → Shortcuts → Sound Spring, then restart.",
+            bound.len()
+        );
+    } else if assigned < bound.len() {
+        warn!(
+            "portal assigned keys for {assigned}/{} shortcuts",
+            bound.len()
+        );
+    }
+
+    for shortcut in bound {
+        if shortcut.trigger_description.is_empty() {
+            warn!(
+                "portal shortcut '{}' ({}) has empty trigger_description",
+                shortcut.id, shortcut.description
+            );
+        } else {
+            info!(
+                "portal shortcut bound: id={} trigger={}",
+                shortcut.id, shortcut.trigger_description
+            );
+        }
+    }
+}
+
 async fn wait_for_request(
     connection: &Connection,
     request_path: OwnedObjectPath,
@@ -101,7 +219,16 @@ async fn wait_for_request(
 pub async fn bind(
     shortcuts: &[ShortcutDef],
     event_tx: StdSender<ShortcutEvent>,
-) -> Result<()> {
+) -> Result<PortalBindResult> {
+    bind_with_options(shortcuts, event_tx, false).await
+}
+
+pub async fn bind_with_options(
+    shortcuts: &[ShortcutDef],
+    event_tx: StdSender<ShortcutEvent>,
+    use_parent_window: bool,
+) -> Result<PortalBindResult> {
+    let requested_count = shortcuts.len();
     let connection = Connection::session()
         .await
         .context("connect to session bus for portal shortcuts")?;
@@ -139,38 +266,172 @@ pub async fn bind(
     let mut bind_options = HashMap::new();
     bind_options.insert("handle_token", Value::from(token("bind")));
 
+    let parent_window = if use_parent_window {
+        portal_parent_window()
+    } else {
+        String::new()
+    };
+    info!(
+        "binding portal shortcuts (parent_window={})",
+        if parent_window.is_empty() {
+            "<none>"
+        } else {
+            parent_window.as_str()
+        }
+    );
+
+    let bind_started = std::time::Instant::now();
     let bind_request = proxy
         .bind_shortcuts(
             &ObjectPath::try_from(session_handle.as_str())?,
             &shortcut_defs,
-            "",
+            parent_window.as_str(),
             bind_options,
         )
         .await
         .context("GlobalShortcuts.BindShortcuts")?;
-    let _bound = wait_for_request(&connection, bind_request).await?;
+    let bind_results = wait_for_request(&connection, bind_request).await?;
+    let bind_elapsed = bind_started.elapsed();
+    if bind_elapsed.as_millis() < 100 {
+        warn!(
+            "portal BindShortcuts completed in {}ms — KDE likely skipped the config dialog; \
+             stale KGlobalAccel entries may remain",
+            bind_elapsed.as_millis()
+        );
+    }
+    let bound_shortcuts = parse_bound_shortcuts(&bind_results);
+    log_bound_shortcuts(shortcuts, &bound_shortcuts);
+    let assigned_count = bound_shortcuts
+        .iter()
+        .filter(|s| !s.trigger_description.is_empty())
+        .count();
 
-    let session_path = OwnedObjectPath::try_from(session_handle.as_str())?;
+    if bound_shortcuts.len() < requested_count {
+        warn!(
+            "portal bound {}/{} requested shortcuts",
+            bound_shortcuts.len(),
+            requested_count
+        );
+    }
+
+    let session_path = session_handle.clone();
+    let session_path_for_task = OwnedObjectPath::try_from(session_handle.as_str())?;
     let mut stream = proxy
         .receive_activated()
         .await
         .context("subscribe to GlobalShortcuts.Activated")?;
 
-    info!("portal global shortcuts bound for session {session_path}");
+    info!("portal listening for Activated on session {session_path_for_task}");
 
     tokio::spawn(async move {
         while let Some(signal) = stream.next().await {
             let Ok(args) = signal.args() else {
+                warn!("portal Activated signal had unparseable args");
                 continue;
             };
-            if args.session_handle().as_str() != session_path.as_str() {
+            if args.session_handle().as_str() != session_path_for_task.as_str() {
                 continue;
             }
             let id = args.shortcut_id().to_string();
-            let _ = event_tx.send(ShortcutEvent::Triggered(id));
+            info!(
+                "portal shortcut activated: id={id} session={} timestamp={}",
+                session_path_for_task.as_str(),
+                args.timestamp()
+            );
+            if event_tx.send(ShortcutEvent::Triggered(id)).is_err() {
+                warn!("portal shortcut event channel closed");
+                break;
+            }
         }
-        warn!("portal Activated stream ended");
+        warn!(
+            "portal Activated stream ended for session {}",
+            session_path_for_task.as_str()
+        );
     });
 
+    store_portal_session(session_path.clone());
+
+    Ok(PortalBindResult {
+        session_path,
+        bound_shortcuts,
+        requested_count,
+        assigned_count,
+    })
+}
+
+pub async fn available() -> bool {
+    match Connection::session().await {
+        Ok(connection) => connection
+            .call_method(
+                Some("org.freedesktop.portal.Desktop"),
+                "/org/freedesktop/portal/desktop",
+                Some("org.freedesktop.DBus.Peer"),
+                "Ping",
+                &(),
+            )
+            .await
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+static PORTAL_SESSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn portal_session_store() -> &'static Mutex<Option<String>> {
+    PORTAL_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+pub fn store_portal_session(path: String) {
+    if let Ok(mut guard) = portal_session_store().lock() {
+        *guard = Some(path);
+    }
+}
+
+pub fn portal_session_path() -> Option<String> {
+    portal_session_store()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+pub async fn configure_active_session() -> Result<()> {
+    if let Some(session_path) = portal_session_path() {
+        let connection = Connection::session()
+            .await
+            .context("connect to session bus for portal shortcuts")?;
+        let proxy = GlobalShortcutsProxy::new(&connection)
+            .await
+            .context("create GlobalShortcuts proxy")?;
+        let parent_window = portal_parent_window();
+        if proxy
+            .configure_shortcuts(
+                &ObjectPath::try_from(session_path.as_str())?,
+                parent_window.as_str(),
+                HashMap::new(),
+            )
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        warn!("portal ConfigureShortcuts failed; opening System Settings directly");
+    }
+    open_system_settings_shortcuts();
     Ok(())
+}
+
+/// Open KDE System Settings on the Sound Spring shortcut component.
+pub fn open_system_settings_shortcuts() {
+    use super::kglobalaccel::PORTAL_COMPONENT;
+    let url = format!("systemsettings://kcm_keys/{PORTAL_COMPONENT}");
+    for (bin, args) in [
+        ("kde-open", vec![url.as_str()]),
+        ("xdg-open", vec![url.as_str()]),
+    ] {
+        if Command::new(bin).args(args).spawn().is_ok() {
+            info!("opened KDE shortcut settings via {bin}");
+            return;
+        }
+    }
+    warn!("failed to open KDE shortcut settings for {PORTAL_COMPONENT}");
 }

@@ -109,6 +109,10 @@ if ! command -v ffmpeg &> /dev/null; then
     echo "   Install ffmpeg for reliable MP3 support (e.g. pacman -S ffmpeg)."
 fi
 
+mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+install -m 644 "$SCRIPT_DIR/resources/sound-spring.desktop" "${XDG_DATA_HOME:-$HOME/.local/share}/applications/sound-spring.desktop"
+echo "✓ Installed desktop entry for portal app identity (launch from app menu for global shortcuts)"
+
 mkdir -p "$SOUNDBOARD_CONFIG_DIR"
 mkdir -p "$DEFAULT_TABS_ROOT"
 mkdir -p "${HOME}/.local/bin"

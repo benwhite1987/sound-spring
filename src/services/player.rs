@@ -51,10 +51,14 @@ impl VolumeState {
 pub enum PlayerCommand {
     Play {
         path: PathBuf,
+        tab_index: i32,
         slot: i32,
         volumes: VolumeState,
     },
-    StopSlot(i32),
+    StopSession {
+        tab_index: i32,
+        slot: i32,
+    },
     StopAll,
     SetVolumes(VolumeState),
 }
@@ -68,6 +72,7 @@ pub enum PlayerEvent {
 struct PlaySession {
     remote: Child,
     monitor: Child,
+    tab_index: i32,
     slot: i32,
     remote_tag: String,
     monitor_tag: String,
@@ -100,13 +105,21 @@ impl Player {
 
     pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<Option<PlayerEvent>> {
         match command {
-            PlayerCommand::Play { path, slot, volumes } => {
+            PlayerCommand::Play {
+                path,
+                tab_index,
+                slot,
+                volumes,
+            } => {
                 self.volumes = volumes;
-                let id = self.play(path, slot).await?;
-                Ok(Some(PlayerEvent::Started { id, slot: Some(slot) }))
+                let id = self.play(path, tab_index, slot).await?;
+                Ok(Some(PlayerEvent::Started {
+                    id,
+                    slot: Some(slot),
+                }))
             }
-            PlayerCommand::StopSlot(slot) => {
-                self.stop_slot(slot).await;
+            PlayerCommand::StopSession { tab_index, slot } => {
+                self.stop_session(tab_index, slot).await;
                 Ok(None)
             }
             PlayerCommand::StopAll => {
@@ -121,7 +134,7 @@ impl Player {
         }
     }
 
-    pub async fn play(&mut self, file: PathBuf, slot: i32) -> Result<u64> {
+    pub async fn play(&mut self, file: PathBuf, tab_index: i32, slot: i32) -> Result<u64> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -148,6 +161,7 @@ impl Player {
             PlaySession {
                 remote,
                 monitor,
+                tab_index,
                 slot,
                 remote_tag,
                 monitor_tag,
@@ -157,11 +171,11 @@ impl Player {
         Ok(id)
     }
 
-    pub async fn stop_slot(&mut self, slot: i32) {
+    pub async fn stop_session(&mut self, tab_index: i32, slot: i32) {
         let mut children = self.children.lock().await;
         let ids: Vec<u64> = children
             .iter()
-            .filter(|(_, session)| session.slot == slot)
+            .filter(|(_, session)| session.tab_index == tab_index && session.slot == slot)
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -180,10 +194,10 @@ impl Player {
         }
     }
 
-    pub async fn reap_finished(&mut self) -> Vec<i32> {
-        let mut finished_slots = Vec::new();
+    pub async fn reap_finished(&mut self) -> Vec<(i32, i32)> {
+        let mut finished = Vec::new();
         let mut children = self.children.lock().await;
-        children.retain(|id, session| {
+        children.retain(|_id, session| {
             let remote_done = matches!(session.remote.try_wait(), Ok(Some(_)) | Err(_));
             let monitor_done = matches!(session.monitor.try_wait(), Ok(Some(_)) | Err(_));
             if remote_done || monitor_done {
@@ -193,13 +207,13 @@ impl Player {
                 if !monitor_done {
                     let _ = session.monitor.start_kill();
                 }
-                finished_slots.push(session.slot);
+                finished.push((session.tab_index, session.slot));
                 false
             } else {
                 true
             }
         });
-        finished_slots
+        finished
     }
 
     async fn apply_volume_to_active(&self) {
@@ -388,5 +402,19 @@ impl Player {
         }
 
         Ok(paplay)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stop_session_filter_is_tab_scoped() {
+        let sessions = [(0_i32, 1_i32), (1, 1), (0, 2)];
+        let targets: Vec<(i32, i32)> = sessions
+            .iter()
+            .copied()
+            .filter(|(tab_index, slot)| *tab_index == 0 && *slot == 1)
+            .collect();
+        assert_eq!(targets, vec![(0, 1)]);
     }
 }

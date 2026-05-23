@@ -3,18 +3,24 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import com.benkahn.soundboard
 
-Dialog {
+Window {
     id: root
-    title: "Settings"
-    modal: true
-    standardButtons: Dialog.Apply | Dialog.Close
-    width: 560
-    height: 480
+    title: "Sound Spring — Settings"
+    width: 640
+    height: 760
+    minimumWidth: 520
+    minimumHeight: 560
+    flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowMinMaxButtonsHint
+    modality: Qt.ApplicationModal
+    color: palette.window
 
     required property SoundboardController controller
-    required property Settings settings
-
+    required property var settings
+    property var ownerWindow: null
     property int activeCaptureIndex: -1
+
+    onOwnerWindowChanged: if (ownerWindow)
+        transientParent = ownerWindow
 
     function handleKey(key, modifiers, nativeScanCode) {
         if (activeCaptureIndex < 0)
@@ -28,15 +34,24 @@ Dialog {
             return
         settings.setShortcutTriggerAt(activeCaptureIndex, trigger)
         activeCaptureIndex = -1
+        controller.refreshShortcutBindings()
     }
 
-    onClosed: activeCaptureIndex = -1
+    function openSettings() {
+        if (settings)
+            settings.loadFromConfig()
+        controller.refreshMicSources()
+        show()
+        raise()
+        requestActivate()
+    }
 
-    onApplied: if (settings) settings.apply()
+    onClosing: activeCaptureIndex = -1
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 8
+        anchors.margins: 12
+        spacing: 10
 
         TabBar {
             id: tabBar
@@ -46,141 +61,171 @@ Dialog {
             TabButton { text: "General" }
         }
 
-        StackLayout {
+        ScrollView {
+            id: tabScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: tabBar.currentIndex
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-            // Audio
             ColumnLayout {
-                spacing: 8
-                Label { text: "Microphone source (PipeWire)"; font.bold: true }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    ComboBox {
-                        id: micCombo
+                width: tabScroll.availableWidth
+                spacing: 10
+
+                // Audio tab
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 10
+                    visible: tabBar.currentIndex === 0
+
+                    Label { text: "Microphone source (PipeWire)"; font.bold: true }
+                    RowLayout {
                         Layout.fillWidth: true
-                        model: controller.micSourceCount
-                        delegate: ItemDelegate {
-                            required property int index
-                            text: controller.micSourceDescriptionAt(index)
-                        }
-                        contentItem: Text {
-                            text: micCombo.displayText.length > 0
-                                  ? micCombo.displayText
-                                  : micCombo.selectedDescription()
-                            elide: Text.ElideRight
-                            verticalAlignment: Text.AlignVCenter
-                            leftPadding: 8
-                        }
-                        onActivated: if (settings) {
-                            settings.micSource = controller.micSourceIdAt(currentIndex)
-                        }
-                        function selectedDescription() {
-                            if (!settings) return ""
-                            var currentId = settings.micSource
-                            for (var i = 0; i < controller.micSourceCount; ++i) {
-                                if (controller.micSourceIdAt(i) === currentId) {
-                                    return controller.micSourceDescriptionAt(i)
+                        spacing: 8
+                        ComboBox {
+                            id: micCombo
+                            Layout.fillWidth: true
+                            model: controller.micSourceCount
+                            delegate: ItemDelegate {
+                                required property int index
+                                text: controller.micSourceDescriptionAt(index)
+                            }
+                            contentItem: Text {
+                                text: micCombo.displayText.length > 0
+                                      ? micCombo.displayText
+                                      : micCombo.selectedDescription()
+                                elide: Text.ElideRight
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 8
+                            }
+                            onActivated: if (settings) {
+                                settings.micSource = controller.micSourceIdAt(currentIndex)
+                            }
+                            function selectedDescription() {
+                                if (!settings) return ""
+                                var currentId = settings.micSource
+                                for (var i = 0; i < controller.micSourceCount; ++i) {
+                                    if (controller.micSourceIdAt(i) === currentId) {
+                                        return controller.micSourceDescriptionAt(i)
+                                    }
+                                }
+                                return currentId
+                            }
+                            function syncSelection() {
+                                if (!settings) return
+                                var currentId = settings.micSource
+                                for (var i = 0; i < controller.micSourceCount; ++i) {
+                                    if (controller.micSourceIdAt(i) === currentId) {
+                                        currentIndex = i
+                                        return
+                                    }
+                                }
+                                currentIndex = -1
+                            }
+                            Component.onCompleted: syncSelection()
+                            Connections {
+                                target: controller
+                                function onPlayingStateChanged() {
+                                    micCombo.syncSelection()
                                 }
                             }
-                            return currentId
                         }
-                        function syncSelection() {
-                            if (!settings) return
-                            var currentId = settings.micSource
-                            for (var i = 0; i < controller.micSourceCount; ++i) {
-                                if (controller.micSourceIdAt(i) === currentId) {
-                                    currentIndex = i
-                                    return
-                                }
-                            }
-                            currentIndex = -1
-                        }
-                        Component.onCompleted: syncSelection()
-                        Connections {
-                            target: controller
-                            function onPlayingStateChanged() {
-                                micCombo.syncSelection()
-                            }
+                        Button {
+                            text: "Refresh"
+                            onClicked: controller.refreshMicSources()
                         }
                     }
-                    Button {
-                        text: "Refresh"
-                        onClicked: controller.refreshMicSources()
+                    Label {
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        color: "#aaa"
+                        text: "The list updates automatically when devices are plugged in or removed."
                     }
+                    Label { text: "Latency (ms)" }
+                    SpinBox {
+                        from: 10
+                        to: 100
+                        value: settings ? settings.latencyMs : 20
+                        onValueChanged: if (settings) settings.latencyMs = value
+                    }
+                    CheckBox {
+                        text: "Unload PipeWire modules on quit"
+                        checked: settings ? settings.autoTeardown : true
+                        onCheckedChanged: if (settings) settings.autoTeardown = checked
+                    }
+                }
+
+                // Shortcuts tab
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 10
+                    visible: tabBar.currentIndex === 1
+
+                    Label { text: "Global shortcut backend"; font.bold: true }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["portal", "local"]
+                        currentIndex: {
+                            if (!settings) return 0
+                            var idx = model.indexOf(settings.shortcutMode)
+                            return idx >= 0 ? idx : 0
+                        }
+                        onActivated: if (settings) settings.shortcutMode = model[currentIndex]
+                    }
+                Label {
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    text: "Global shortcuts activate when you click Apply (not on launch). " +
+                          "In-window keys work immediately without Apply."
                 }
                 Label {
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                     color: "#aaa"
-                    text: "The list updates automatically when devices are plugged in or removed."
+                    text: "Edit bindings below, then Apply to sync with System Settings. " +
+                          "Use Open in System Settings for advanced changes in KDE."
                 }
-                Label { text: "Latency (ms)" }
-                SpinBox {
-                    from: 10
-                    to: 100
-                    value: settings ? settings.latencyMs : 20
-                    onValueChanged: if (settings) settings.latencyMs = value
-                }
-                CheckBox {
-                    text: "Unload PipeWire modules on quit"
-                    checked: settings ? settings.autoTeardown : true
-                    onCheckedChanged: if (settings) settings.autoTeardown = checked
-                }
-            }
-
-            // Shortcuts
-            ColumnLayout {
-                spacing: 8
-                Label { text: "Global shortcut backend"; font.bold: true }
-                ComboBox {
-                    Layout.fillWidth: true
-                    model: ["portal", "local"]
-                    currentIndex: {
-                        if (!settings) return 0
-                        var idx = model.indexOf(settings.shortcutMode)
-                        return idx >= 0 ? idx : 0
-                    }
-                    onActivated: if (settings) settings.shortcutMode = model[currentIndex]
-                }
-                Label {
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                    text: "portal registers global shortcuts; local uses in-window keys only while focused."
-                }
-                Label { text: "Click a slot, then press the key to assign"; font.bold: true }
-                ListView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    model: settings ? settings.shortcutCount : 0
-                    delegate: RowLayout {
-                        width: ListView.view.width
+                    RowLayout {
+                        Layout.fillWidth: true
                         spacing: 8
-                        Label {
-                            Layout.preferredWidth: 160
-                            text: settings.shortcutDescriptionAt(index)
+                        Button {
+                            text: "Open in System Settings"
+                            enabled: settings && settings.shortcutMode === "portal"
+                            onClicked: controller.configureGlobalShortcuts()
                         }
-                        ShortcutCapture {
+                        Button {
+                            text: "Reset global shortcuts"
+                            enabled: settings && settings.shortcutMode === "portal"
+                            onClicked: controller.resetGlobalShortcuts()
+                        }
+                    }
+                    Label { text: "In-window bindings (while focused)"; font.bold: true }
+                    Repeater {
+                        model: settings ? settings.shortcutCount : 0
+                        delegate: RowLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 36
-                            shortcutIndex: index
-                            settings: root.settings
-                            captureHost: root
+                            spacing: 8
+                            Label {
+                                Layout.preferredWidth: 168
+                                text: settings.shortcutDescriptionAt(index)
+                            }
+                            ShortcutCapture {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 36
+                                shortcutIndex: index
+                                settings: root.settings
+                                captureHost: root
+                            }
                         }
                     }
                 }
-            }
 
-            // General
-            ScrollView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
+                // General tab
                 ColumnLayout {
                     width: parent.width
-                    spacing: 8
+                    spacing: 10
+                    visible: tabBar.currentIndex === 2
+
                     Label { text: "Paths"; font.bold: true }
                     Label { text: "Tabs root" }
                     TextField {
@@ -195,14 +240,10 @@ Dialog {
                         onTextChanged: if (settings) settings.stateDir = text
                     }
                     Label { text: "Custom tab folders ([[tabs]] in config)"; font.bold: true }
-                    ListView {
-                        id: customTabs
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 120
-                        clip: true
+                    Repeater {
                         model: settings ? settings.customTabCount : 0
                         delegate: RowLayout {
-                            width: customTabs.width
+                            Layout.fillWidth: true
                             Label {
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
@@ -258,6 +299,21 @@ Dialog {
             wrapMode: Text.WordWrap
             color: settings && settings.statusMessage.length > 0 ? "#8bc34a" : "transparent"
             text: settings ? settings.statusMessage : ""
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Item { Layout.fillWidth: true }
+            Button {
+                text: "Close"
+                onClicked: root.close()
+            }
+            Button {
+                text: "Apply"
+                highlighted: true
+                onClicked: if (settings) settings.apply()
+            }
         }
     }
 }

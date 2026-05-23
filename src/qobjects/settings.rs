@@ -124,6 +124,7 @@ impl SettingsRust {
         config.paths.tabs_root = PathBuf::from(String::from(self.tabs_root.clone()));
         config.paths.state_dir = PathBuf::from(String::from(self.state_dir.clone()));
         config.tabs = self.custom_tabs.clone();
+        config::normalize_shortcuts_config(&mut config);
         config
     }
 

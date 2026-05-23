@@ -7,7 +7,8 @@ fn main() {
         .cc_builder(|builder| {
             builder
                 .include("src/cpp")
-                .file("src/cpp/key_forwarder.cpp");
+                .file("src/cpp/key_forwarder.cpp")
+                .file("src/cpp/app_identity.cpp");
         })
         .qt_module("Network")
         .qt_module("Quick")

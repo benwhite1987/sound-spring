@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Sound Spring
+GenericName=Soundboard
+Comment=PipeWire soundboard
+Exec=sound-spring
+Icon=audio-volume-high
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=sound-spring
+DesktopNames=sound-spring

@@ -6,12 +6,6 @@
 #include <QKeyEvent>
 #include <QtQml/qqml.h>
 
-extern "C" void sound_spring_enqueue_key(
-    int key,
-    unsigned int modifiers,
-    unsigned int nativeScanCode,
-    bool isAutoRepeat);
-
 KeyForwarder* KeyForwarder::instance()
 {
     static KeyForwarder* s_instance = nullptr;
@@ -42,7 +36,6 @@ bool KeyForwarder::eventFilter(QObject* watched, QEvent* event)
     const unsigned int nativeScanCode = static_cast<unsigned int>(keyEvent->nativeScanCode());
     const bool isAutoRepeat = keyEvent->isAutoRepeat();
 
-    sound_spring_enqueue_key(key, modifiers, nativeScanCode, isAutoRepeat);
     emit keyPressed(key, modifiers, nativeScanCode, isAutoRepeat);
     return false;
 }

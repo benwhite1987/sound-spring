@@ -156,7 +156,18 @@ pub fn load_config() -> Result<Config> {
     }
     let text = fs::read_to_string(&path)
         .with_context(|| format!("read config {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))
+    let mut config: Config =
+        toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
+    normalize_shortcuts_config(&mut config);
+    Ok(config)
+}
+
+/// Migrate legacy shortcut modes that destabilize Plasma or duplicate in-window keys.
+pub fn normalize_shortcuts_config(config: &mut Config) {
+    match config.shortcuts.mode.as_str() {
+        "kglobalaccel" | "auto" => config.shortcuts.mode = "portal".to_string(),
+        _ => {}
+    }
 }
 
 pub fn save_config(config: &Config) -> Result<()> {

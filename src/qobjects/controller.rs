@@ -66,6 +66,21 @@ pub mod qobject {
         fn set_playback_keys_enabled(self: Pin<&mut SoundboardController>, enabled: bool);
 
         #[qinvokable]
+        fn set_window_active(self: Pin<&mut SoundboardController>, active: bool);
+
+        #[qinvokable]
+        fn bind_global_shortcuts(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn configure_global_shortcuts(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn reset_global_shortcuts(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn refresh_shortcut_bindings(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
         fn process_events(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
@@ -133,9 +148,13 @@ use std::sync::{mpsc::Receiver as StdReceiver, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender as TokioSender;
 
+extern "C" {
+    fn sound_spring_refresh_portal_parent_window();
+}
+
 use crate::config::Config;
 use crate::services::pipewire::MicSource;
-use crate::services::shortcuts::{play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
+use crate::services::shortcuts::{accept_shortcut, play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
 use crate::services::tabs::{normalize_slot, Tab, TabsRepository};
 use crate::services::PlayerCommand;
 use crate::services::player::VolumeState;
@@ -144,6 +163,9 @@ use crate::state::State;
 #[derive(Debug)]
 pub enum BackendCommand {
     ApplyConfig(Config),
+    BindShortcuts,
+    ConfigurePortalShortcuts,
+    ResetPortalShortcuts,
     Player(PlayerCommand),
     RefreshMicSources,
     ApplyVolumes(VolumeState),
@@ -151,7 +173,10 @@ pub enum BackendCommand {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    PlaybackEnded { slot: i32 },
+    PlaybackEnded {
+        tab_index: i32,
+        slot: i32,
+    },
     ShortcutTriggered { id: String },
     ConfigApplied,
     MicSourcesUpdated,
@@ -162,55 +187,13 @@ pub static BACKEND_EVENT_RX: OnceLock<Mutex<StdReceiver<BackendEvent>>> = OnceLo
 
 pub static MIC_SOURCES: OnceLock<Mutex<Vec<MicSource>>> = OnceLock::new();
 pub static SHORTCUT_BINDINGS: OnceLock<Mutex<Vec<ShortcutDef>>> = OnceLock::new();
-pub static GLOBAL_SHORTCUTS_ACTIVE: AtomicBool = AtomicBool::new(false);
-pub static PLAYBACK_KEYS_ENABLED: AtomicBool = AtomicBool::new(true);
-
-static PENDING_KEYS: OnceLock<Mutex<Vec<(i32, i32, u32)>>> = OnceLock::new();
-static LAST_ENQUEUED_KEY: OnceLock<Mutex<Option<(i32, i32, u32, Instant)>>> = OnceLock::new();
+pub static WINDOW_ACTIVE: AtomicBool = AtomicBool::new(true);
 
 const KEY_DEDUPE_MS: u64 = 120;
 const MIN_PLAY_BEFORE_TOGGLE_MS: u64 = 300;
 
-#[no_mangle]
-pub extern "C" fn sound_spring_enqueue_key(
-    key: i32,
-    modifiers: u32,
-    native_scan_code: u32,
-    is_auto_repeat: bool,
-) {
-    if is_auto_repeat {
-        return;
-    }
-    if !PLAYBACK_KEYS_ENABLED.load(Ordering::Relaxed) {
-        return;
-    }
-    let now = Instant::now();
-    let last_store = LAST_ENQUEUED_KEY.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = last_store.lock() {
-        if let Some((last_key, last_mod, last_scan, last_at)) = *guard {
-            if last_key == key
-                && last_mod == modifiers as i32
-                && last_scan == native_scan_code
-                && now.duration_since(last_at) < Duration::from_millis(KEY_DEDUPE_MS)
-            {
-                return;
-            }
-        }
-        *guard = Some((key, modifiers as i32, native_scan_code, now));
-    }
-    let pending = PENDING_KEYS.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(mut guard) = pending.lock() {
-        guard.push((key, modifiers as i32, native_scan_code));
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn sound_spring_set_playback_keys_enabled(enabled: bool) {
-    PLAYBACK_KEYS_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-#[derive(Debug, Clone)]
 struct ActivePlayback {
+    path: PathBuf,
     started: Instant,
     duration_ms: u64,
 }
@@ -249,8 +232,7 @@ pub struct SoundboardControllerRust {
     output_muted: bool,
     monitor_muted: bool,
     tabs: Vec<Tab>,
-    active_playbacks: HashMap<PathBuf, ActivePlayback>,
-    active_sessions: HashMap<SessionKey, PathBuf>,
+    active_playbacks: HashMap<SessionKey, ActivePlayback>,
     play_coalesce: Option<PlayCoalesce>,
     duration_cache: HashMap<PathBuf, u64>,
     tabs_root: PathBuf,
@@ -262,24 +244,21 @@ struct KeyEventResult {
     handled: bool,
     tab_changed: bool,
     playback_changed: bool,
+    mute_changed: bool,
+}
+
+#[derive(Debug, Default)]
+struct ShortcutHandleResult {
+    tab_changed: bool,
+    mute_changed: bool,
 }
 
 impl SoundboardControllerRust {
     fn send_player_command(&self, command: PlayerCommand) {
         if let Some(tx) = BACKEND_TX.get() {
-            let backend = BackendCommand::Player(command);
-            let is_stop = matches!(
-                backend,
-                BackendCommand::Player(PlayerCommand::StopAll)
-                    | BackendCommand::Player(PlayerCommand::StopSlot(_))
-            );
-            if is_stop {
-                let _ = tx.blocking_send(backend);
-            } else if tx.try_send(backend).is_err() {
-                tracing::warn!("backend player queue full, dropping command");
-            }
+            let _ = tx.blocking_send(BackendCommand::Player(command));
         } else if let Some(tx) = PLAYER_TX.get() {
-            let _ = tx.try_send(command);
+            let _ = tx.blocking_send(command);
         }
     }
 
@@ -391,6 +370,18 @@ impl SoundboardControllerRust {
         });
     }
 
+    fn toggle_output_mute_internal(&mut self) {
+        self.output_muted = !self.output_muted;
+        self.persist_volumes();
+        self.push_volumes();
+    }
+
+    fn toggle_monitor_mute_internal(&mut self) {
+        self.monitor_muted = !self.monitor_muted;
+        self.persist_volumes();
+        self.push_volumes();
+    }
+
     fn handle_key_event_internal(
         &mut self,
         key: i32,
@@ -399,51 +390,31 @@ impl SoundboardControllerRust {
     ) -> KeyEventResult {
         if let Some(trigger) = trigger_from_qt(key, modifiers, native_scan_code) {
             if let Some(id) = self.shortcut_id_for_trigger(trigger.as_str()) {
-                let tab_changed = self.handle_shortcut_id(&id);
+                let result = self.handle_shortcut_id(&id);
                 return KeyEventResult {
                     handled: true,
-                    tab_changed,
-                    playback_changed: !tab_changed,
+                    tab_changed: result.tab_changed,
+                    playback_changed: !result.tab_changed && !result.mute_changed,
+                    mute_changed: result.mute_changed,
                 };
             }
         }
 
         if let Some(slot) = play_slot_from_qt_key(key, modifiers, native_scan_code) {
+            let id = format!("play_{slot}");
+            if !accept_shortcut(&id) {
+                return KeyEventResult::default();
+            }
             self.play_slot_internal(slot);
             return KeyEventResult {
                 handled: true,
                 tab_changed: false,
                 playback_changed: true,
+                mute_changed: false,
             };
         }
 
         KeyEventResult::default()
-    }
-
-    fn drain_pending_keys(&mut self) -> Vec<KeyEventResult> {
-        let keys = PENDING_KEYS
-            .get()
-            .or_else(|| {
-                PENDING_KEYS.set(Mutex::new(Vec::new())).ok();
-                PENDING_KEYS.get()
-            })
-            .and_then(|store| store.lock().ok())
-            .map(|mut guard| guard.drain(..).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        let mut results = Vec::new();
-        let mut last: Option<(i32, i32, u32)> = None;
-        for (key, modifiers, native_scan_code) in keys {
-            if last == Some((key, modifiers, native_scan_code)) {
-                continue;
-            }
-            last = Some((key, modifiers, native_scan_code));
-            let result = self.handle_key_event_internal(key, modifiers, native_scan_code);
-            if result.handled {
-                results.push(result);
-            }
-        }
-        results
     }
 
     fn path_for_slot(&self, slot: i32) -> Option<PathBuf> {
@@ -471,7 +442,7 @@ impl SoundboardControllerRust {
         })
     }
 
-    fn handle_trigger(&mut self, trigger: &str) -> Option<bool> {
+    fn handle_trigger(&mut self, trigger: &str) -> Option<ShortcutHandleResult> {
         let id = self.shortcut_id_for_trigger(trigger)?;
         Some(self.handle_shortcut_id(&id))
     }
@@ -501,38 +472,16 @@ impl SoundboardControllerRust {
         true
     }
 
-    pub fn mark_playback_ended(&mut self, slot: i32) {
-        let ended: Vec<(SessionKey, PathBuf)> = self
-            .active_sessions
-            .iter()
-            .filter(|(key, _)| key.slot == slot)
-            .map(|(key, path)| (*key, path.clone()))
-            .collect();
-        for (key, path) in ended {
-            self.active_sessions.remove(&key);
-            self.active_playbacks.remove(&path);
-        }
+    pub fn mark_playback_ended(&mut self, tab_index: i32, slot: i32) {
+        let key = SessionKey { tab_index, slot };
+        self.active_playbacks.remove(&key);
     }
 
     fn stop_session_internal(&mut self, tab_index: i32, slot: i32) {
         let key = SessionKey { tab_index, slot };
-        if let Some(path) = self.active_sessions.remove(&key) {
-            self.active_playbacks.remove(&path);
-        }
-        self.send_player_command(PlayerCommand::StopSlot(slot));
+        self.active_playbacks.remove(&key);
+        self.send_player_command(PlayerCommand::StopSession { tab_index, slot });
         self.bump_playing_version();
-    }
-
-    fn stop_other_tab_sessions_for_slot(&mut self, slot: i32, current_tab: i32) {
-        let others: Vec<i32> = self
-            .active_sessions
-            .keys()
-            .filter(|key| key.slot == slot && key.tab_index != current_tab)
-            .map(|key| key.tab_index)
-            .collect();
-        for tab_index in others {
-            self.stop_session_internal(tab_index, slot);
-        }
     }
 
     fn bump_playing_version(&mut self) {
@@ -547,13 +496,11 @@ impl SoundboardControllerRust {
         let tab_index = self.current_tab_index;
         let session_key = SessionKey { tab_index, slot };
 
-        if self.active_sessions.contains_key(&session_key) {
-            if let Some(path) = self.active_sessions.get(&session_key) {
-                if let Some(playback) = self.active_playbacks.get(path) {
-                    if playback.started.elapsed() < Duration::from_millis(MIN_PLAY_BEFORE_TOGGLE_MS)
-                    {
-                        return;
-                    }
+        if self.active_playbacks.contains_key(&session_key) {
+            if let Some(playback) = self.active_playbacks.get(&session_key) {
+                if playback.started.elapsed() < Duration::from_millis(MIN_PLAY_BEFORE_TOGGLE_MS)
+                {
+                    return;
                 }
             }
             self.stop_session_internal(tab_index, slot);
@@ -569,8 +516,6 @@ impl SoundboardControllerRust {
                 return;
             }
         }
-
-        self.stop_other_tab_sessions_for_slot(slot, tab_index);
 
         let Some(index) = normalize_slot(slot) else {
             return;
@@ -596,13 +541,14 @@ impl SoundboardControllerRust {
         };
         self.send_player_command(PlayerCommand::Play {
             path: path.clone(),
+            tab_index,
             slot,
             volumes: self.volume_state(),
         });
-        self.active_sessions.insert(session_key, path.clone());
         self.active_playbacks.insert(
-            path,
+            session_key,
             ActivePlayback {
+                path,
                 started: Instant::now(),
                 duration_ms,
             },
@@ -637,33 +583,55 @@ impl SoundboardControllerRust {
 
     fn stop_all_internal(&mut self) {
         self.send_player_command(PlayerCommand::StopAll);
-        self.active_sessions.clear();
         self.active_playbacks.clear();
         self.play_coalesce = None;
         self.bump_playing_version();
     }
 
-    fn handle_shortcut_id(&mut self, id: &str) -> bool {
+    fn handle_shortcut_id(&mut self, id: &str) -> ShortcutHandleResult {
+        if !accept_shortcut(id) {
+            return ShortcutHandleResult::default();
+        }
         match id {
             s if s.starts_with("play_") => {
                 if let Ok(slot) = s.trim_start_matches("play_").parse::<i32>() {
                     self.play_slot_internal(slot);
                 }
-                false
+                ShortcutHandleResult::default()
             }
             "tab_next" => {
                 self.next_tab_internal();
-                true
+                ShortcutHandleResult {
+                    tab_changed: true,
+                    ..Default::default()
+                }
             }
             "tab_prev" => {
                 self.prev_tab_internal();
-                true
+                ShortcutHandleResult {
+                    tab_changed: true,
+                    ..Default::default()
+                }
             }
             "stop_all" => {
                 self.stop_all_internal();
-                false
+                ShortcutHandleResult::default()
             }
-            _ => false,
+            "mute_output" => {
+                self.toggle_output_mute_internal();
+                ShortcutHandleResult {
+                    mute_changed: true,
+                    ..Default::default()
+                }
+            }
+            "mute_monitor" => {
+                self.toggle_monitor_mute_internal();
+                ShortcutHandleResult {
+                    mute_changed: true,
+                    ..Default::default()
+                }
+            }
+            _ => ShortcutHandleResult::default(),
         }
     }
 
@@ -686,6 +654,13 @@ impl SoundboardControllerRust {
 }
 
 impl qobject::SoundboardController {
+    fn sync_mute_properties(mut pin: Pin<&mut Self>) {
+        let output_muted = pin.as_ref().rust().output_muted;
+        let monitor_muted = pin.as_ref().rust().monitor_muted;
+        pin.as_mut().set_output_muted(output_muted);
+        pin.as_mut().set_monitor_muted(monitor_muted);
+    }
+
     fn sync_tab_properties(mut pin: Pin<&mut Self>) {
         let index = pin.as_ref().rust().current_tab_index;
         let version = pin.as_ref().rust().tab_version;
@@ -728,11 +703,14 @@ impl qobject::SoundboardController {
 
     pub fn invoke_shortcut(mut self: Pin<&mut Self>, id: QString) {
         let id = String::from(id);
-        let tab_changed = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
-        if tab_changed {
+        let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
+        if result.mute_changed {
+            Self::sync_mute_properties(self.as_mut());
+        }
+        if result.tab_changed {
             Self::sync_tab_properties(self.as_mut());
             self.as_mut().current_tab_changed();
-        } else {
+        } else if !result.mute_changed {
             self.as_mut().rust_mut().bump_playing_version();
         }
         self.as_mut().playing_state_changed();
@@ -751,6 +729,9 @@ impl qobject::SoundboardController {
         if !result.handled {
             return false;
         }
+        if result.mute_changed {
+            Self::sync_mute_properties(self.as_mut());
+        }
         if result.tab_changed {
             Self::sync_tab_properties(self.as_mut());
             self.as_mut().current_tab_changed();
@@ -761,8 +742,39 @@ impl qobject::SoundboardController {
         true
     }
 
-    pub fn set_playback_keys_enabled(_self: Pin<&mut Self>, enabled: bool) {
-        PLAYBACK_KEYS_ENABLED.store(enabled, Ordering::Relaxed);
+    pub fn set_playback_keys_enabled(_self: Pin<&mut Self>, _enabled: bool) {}
+
+    pub fn set_window_active(_self: Pin<&mut Self>, active: bool) {
+        WINDOW_ACTIVE.store(active, Ordering::Relaxed);
+    }
+
+    pub fn bind_global_shortcuts(_self: Pin<&mut Self>) {
+        unsafe {
+            sound_spring_refresh_portal_parent_window();
+        }
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::BindShortcuts);
+        }
+    }
+
+    pub fn configure_global_shortcuts(_self: Pin<&mut Self>) {
+        unsafe {
+            sound_spring_refresh_portal_parent_window();
+        }
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::ConfigurePortalShortcuts);
+        }
+    }
+
+    pub fn reset_global_shortcuts(_self: Pin<&mut Self>) {
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::ResetPortalShortcuts);
+        }
+    }
+
+    pub fn refresh_shortcut_bindings(mut self: Pin<&mut Self>) {
+        SoundboardControllerRust::reload_shortcut_bindings();
+        self.as_mut().rust_mut().bump_shortcut_version();
     }
 
     pub fn update_output_volume(mut self: Pin<&mut Self>, volume: i32) {
@@ -782,29 +794,16 @@ impl qobject::SoundboardController {
     }
 
     pub fn toggle_output_mute(mut self: Pin<&mut Self>) {
-        let muted = {
-            let mut rust = self.as_mut().rust_mut();
-            rust.output_muted = !rust.output_muted;
-            rust.output_muted
-        };
-        self.as_mut().set_output_muted(muted);
-        self.as_mut().rust_mut().persist_volumes();
-        self.as_mut().rust_mut().push_volumes();
+        self.as_mut().rust_mut().toggle_output_mute_internal();
+        Self::sync_mute_properties(self.as_mut());
     }
 
     pub fn toggle_monitor_mute(mut self: Pin<&mut Self>) {
-        let muted = {
-            let mut rust = self.as_mut().rust_mut();
-            rust.monitor_muted = !rust.monitor_muted;
-            rust.monitor_muted
-        };
-        self.as_mut().set_monitor_muted(muted);
-        self.as_mut().rust_mut().persist_volumes();
-        self.as_mut().rust_mut().push_volumes();
+        self.as_mut().rust_mut().toggle_monitor_mute_internal();
+        Self::sync_mute_properties(self.as_mut());
     }
 
     pub fn process_events(mut self: Pin<&mut Self>) {
-        let key_results = self.as_mut().rust_mut().drain_pending_keys();
         let mut progress_dirty = self.as_mut().rust_mut().tick_progress();
 
         let events: Vec<BackendEvent> = {
@@ -818,28 +817,12 @@ impl qobject::SoundboardController {
             rx.try_iter().collect()
         };
 
-        let had_keys = !key_results.is_empty();
-        let mut playback_changed = progress_dirty || had_keys;
-        let mut tab_changed = key_results.iter().any(|result| result.tab_changed);
-
-        for result in &key_results {
-            if result.playback_changed {
-                playback_changed = true;
-            }
-            if result.tab_changed {
-                tab_changed = true;
-            }
-        }
+        let mut playback_changed = progress_dirty;
+        let mut tab_changed = false;
 
         if events.is_empty() {
             if playback_changed {
-                if had_keys {
-                    self.as_mut().rust_mut().bump_playing_version();
-                }
-                if tab_changed {
-                    Self::sync_tab_properties(self.as_mut());
-                    self.as_mut().current_tab_changed();
-                }
+                self.as_mut().rust_mut().bump_playing_version();
                 self.as_mut().playing_state_changed();
             }
             return;
@@ -847,18 +830,21 @@ impl qobject::SoundboardController {
 
         for event in events {
             match event {
-                BackendEvent::PlaybackEnded { slot } => {
-                    self.as_mut().rust_mut().mark_playback_ended(slot);
+                BackendEvent::PlaybackEnded { tab_index, slot } => {
+                    self.as_mut().rust_mut().mark_playback_ended(tab_index, slot);
                     playback_changed = true;
                 }
                 BackendEvent::ShortcutTriggered { id } => {
-                    if self
-                        .as_mut()
-                        .rust_mut()
-                        .handle_shortcut_id(id.as_str())
-                    {
+                    if id.starts_with("play_") && WINDOW_ACTIVE.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
+                    if result.mute_changed {
+                        Self::sync_mute_properties(self.as_mut());
+                    }
+                    if result.tab_changed {
                         tab_changed = true;
-                    } else {
+                    } else if !result.mute_changed {
                         playback_changed = true;
                     }
                 }
@@ -948,11 +934,7 @@ impl qobject::SoundboardController {
             tab_index: self.rust().current_tab_index,
             slot,
         };
-        self.rust()
-            .active_sessions
-            .get(&key)
-            .map(|path| self.rust().active_playbacks.contains_key(path))
-            .unwrap_or(false)
+        self.rust().active_playbacks.contains_key(&key)
     }
 
     pub fn slot_shortcut_label(&self, slot: i32) -> QString {
@@ -966,10 +948,11 @@ impl qobject::SoundboardController {
     }
 
     pub fn slot_progress(&self, slot: i32) -> f64 {
-        let Some(path) = self.rust().path_for_slot(slot) else {
-            return 0.0;
+        let key = SessionKey {
+            tab_index: self.rust().current_tab_index,
+            slot,
         };
-        let Some(playback) = self.rust().active_playbacks.get(&path) else {
+        let Some(playback) = self.rust().active_playbacks.get(&key) else {
             return 0.0;
         };
         if playback.duration_ms == 0 {
@@ -1043,9 +1026,6 @@ impl Constructor<()> for qobject::SoundboardController {
     }
 
     fn initialize(mut self: Pin<&mut Self>, (): ()) {
-        PENDING_KEYS
-            .set(Mutex::new(Vec::new()))
-            .ok();
         SHORTCUT_BINDINGS
             .set(Mutex::new(Vec::new()))
             .ok();
@@ -1075,5 +1055,44 @@ impl Constructor<()> for qobject::SoundboardController {
         self.as_mut().set_monitor_volume(monitor_volume);
         self.as_mut().set_output_muted(output_muted);
         self.as_mut().set_monitor_muted(monitor_muted);
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn stop_session_only_clears_matching_tab_slot() {
+        let mut controller = SoundboardControllerRust::default();
+        let music = SessionKey {
+            tab_index: 0,
+            slot: 1,
+        };
+        let effects = SessionKey {
+            tab_index: 1,
+            slot: 1,
+        };
+        controller.active_playbacks.insert(
+            music,
+            ActivePlayback {
+                path: PathBuf::from("/music.ogg"),
+                started: Instant::now(),
+                duration_ms: 1000,
+            },
+        );
+        controller.active_playbacks.insert(
+            effects,
+            ActivePlayback {
+                path: PathBuf::from("/fx.ogg"),
+                started: Instant::now(),
+                duration_ms: 1000,
+            },
+        );
+
+        controller.stop_session_internal(1, 1);
+
+        assert!(controller.active_playbacks.contains_key(&music));
+        assert!(!controller.active_playbacks.contains_key(&effects));
     }
 }

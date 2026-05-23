@@ -1,14 +1,8 @@
-use anyhow::{Context, Result};
-use futures_util::StreamExt;
-use std::sync::mpsc::Sender as StdSender;
-use tracing::{info, warn};
-use zbus::zvariant::ObjectPath;
+use tracing::info;
 use zbus::{proxy, Connection};
 
-use super::trigger::qt_key_sequence;
-use super::{ShortcutDef, ShortcutEvent};
-
-const COMPONENT: &str = "sound_spring";
+/// Must match xdg-desktop-portal app id / KDE KGlobalAccel component name.
+pub const PORTAL_COMPONENT: &str = "sound-spring";
 
 #[proxy(
     interface = "org.kde.KGlobalAccel",
@@ -16,112 +10,94 @@ const COMPONENT: &str = "sound_spring";
     default_path = "/kglobalaccel"
 )]
 trait KGlobalAccel {
-    #[zbus(name = "doRegister")]
-    fn do_register(&self, components: &[&str]) -> zbus::Result<()>;
-
-    #[zbus(name = "setForeignShortcutKeys")]
-    fn set_foreign_shortcut_keys(
-        &self,
-        action_id: &[&str],
-        shortcuts: &[(Vec<i32>,)],
-    ) -> zbus::Result<()>;
-
     #[zbus(name = "unregister")]
     fn unregister(&self, component: &str, action: &str) -> zbus::Result<bool>;
 
-    #[zbus(name = "unRegister")]
-    fn un_register(&self, action_id: &[&str]) -> zbus::Result<()>;
+    fn get_component(&self, component: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
-#[proxy(
-    interface = "org.kde.kglobalaccel.Component",
-    default_service = "org.kde.kglobalaccel"
-)]
-trait KGlobalComponent {
-    #[zbus(signal, name = "globalShortcutPressed")]
-    fn global_shortcut_pressed(
-        &self,
-        action: &str,
-        shortcut: &str,
-        timestamp: i64,
-    ) -> zbus::Result<()>;
+async fn count_assigned_bindings(connection: &Connection) -> usize {
+    let component_path = format!("/component/{}", PORTAL_COMPONENT.replace('-', "_"));
+    let Ok(reply) = connection
+        .call_method(
+            Some("org.kde.kglobalaccel"),
+            component_path.as_str(),
+            Some("org.kde.kglobalaccel.Component"),
+            "allShortcutInfos",
+            &(),
+        )
+        .await
+    else {
+        return 0;
+    };
+    let body = reply.body();
+    let infos: Vec<(String, String, String, String, String, String, Vec<i32>, Vec<i32>)> =
+        match body.deserialize() {
+            Ok(infos) => infos,
+            Err(_) => return 0,
+        };
+    infos.iter().filter(|info| !info.7.is_empty()).count()
 }
 
-pub async fn bind(
-    shortcuts: &[ShortcutDef],
-    event_tx: StdSender<ShortcutEvent>,
-) -> Result<()> {
-    let connection = Connection::session()
-        .await
-        .context("connect to session bus for KGlobalAccel")?;
-    let proxy = KGlobalAccelProxy::new(&connection)
-        .await
-        .context("create KGlobalAccel proxy")?;
-
-    let result = bind_with_proxy(&connection, &proxy, shortcuts, event_tx).await;
-    if result.is_err() {
-        let _ = proxy.un_register(&[COMPONENT]).await;
-    }
-    result
+async fn component_exists(connection: &Connection) -> bool {
+    let kg = match KGlobalAccelProxy::new(connection).await {
+        Ok(proxy) => proxy,
+        Err(_) => return false,
+    };
+    kg.get_component(PORTAL_COMPONENT).await.is_ok()
 }
 
-async fn bind_with_proxy(
-    connection: &Connection,
-    proxy: &KGlobalAccelProxy<'_>,
-    shortcuts: &[ShortcutDef],
-    event_tx: StdSender<ShortcutEvent>,
-) -> Result<()> {
-    proxy
-        .do_register(&[COMPONENT])
-        .await
-        .context("KGlobalAccel.doRegister")?;
-
-    for def in shortcuts {
-        let _ = proxy.unregister(COMPONENT, &def.id).await;
-        let keys = qt_key_sequence(&def.trigger)?;
-        proxy
-            .set_foreign_shortcut_keys(&[COMPONENT, &def.id], &[(keys,)])
+/// True when KGlobalAccel still has our shortcuts registered with no keys assigned.
+pub async fn has_stale_empty_bindings() -> bool {
+    let Ok(connection) = Connection::session().await else {
+        return false;
+    };
+    if !component_exists(&connection).await {
+        return false;
+    };
+    let assigned = count_assigned_bindings(&connection).await;
+    if assigned == 0 {
+        let component_path = format!("/component/{}", PORTAL_COMPONENT.replace('-', "_"));
+        let Ok(reply) = connection
+            .call_method(
+                Some("org.kde.kglobalaccel"),
+                component_path.as_str(),
+                Some("org.kde.kglobalaccel.Component"),
+                "allShortcutInfos",
+                &(),
+            )
             .await
-            .with_context(|| format!("set shortcut for {}", def.id))?;
-    }
-
-    let component_path = format!("/component/{COMPONENT}");
-    let component = KGlobalComponentProxy::builder(connection)
-        .path(ObjectPath::try_from(component_path.as_str())?)?
-        .build()
-        .await
-        .context("create KGlobalAccel component proxy")?;
-
-    let mut stream = component
-        .receive_global_shortcut_pressed()
-        .await
-        .context("subscribe to globalShortcutPressed")?;
-
-    info!("KGlobalAccel shortcuts registered for component {COMPONENT}");
-
-    tokio::spawn(async move {
-        while let Some(signal) = stream.next().await {
-            let Ok(args) = signal.args() else {
-                continue;
+        else {
+            return false;
+        };
+        let body = reply.body();
+        let infos: Vec<(String, String, String, String, String, String, Vec<i32>, Vec<i32>)> =
+            match body.deserialize() {
+                Ok(infos) => infos,
+                Err(_) => return false,
             };
-            let id = args.action().to_string();
-            let _ = event_tx.send(ShortcutEvent::Triggered(id));
-        }
-        warn!("KGlobalAccel signal stream ended");
-    });
-
-    Ok(())
+        return !infos.is_empty();
+    }
+    false
 }
 
-/// Remove any partially registered component after a failed bind attempt.
-pub async fn unregister_component() {
+pub async fn unregister_component(shortcut_ids: &[&str]) {
     let Ok(connection) = Connection::session().await else {
         return;
     };
     let Ok(proxy) = KGlobalAccelProxy::new(&connection).await else {
         return;
     };
-    let _ = proxy.un_register(&[COMPONENT]).await;
+    let mut cleared = 0usize;
+    for id in shortcut_ids {
+        if proxy.unregister(PORTAL_COMPONENT, id).await.unwrap_or(false) {
+            cleared += 1;
+            info!("cleared KGlobalAccel shortcut {PORTAL_COMPONENT}/{id}");
+        }
+    }
+    if cleared > 0 {
+        info!("cleared {cleared} KGlobalAccel shortcut(s) for {PORTAL_COMPONENT}");
+    }
 }
 
 pub async fn available() -> bool {

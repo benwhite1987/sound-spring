@@ -26,6 +26,8 @@ pub fn trigger_display(trigger: &str) -> String {
             "KP_Subtract" => "Num -".to_string(),
             "KP_Decimal" => "Num .".to_string(),
             "Ctrl" | "Control" => "Ctrl".to_string(),
+            "Alt" => "Alt".to_string(),
+            "Shift" => "Shift".to_string(),
             other => other.to_string(),
         })
         .collect::<Vec<_>>()
@@ -176,59 +178,91 @@ fn map_evdev_scancode(code: u32) -> Option<String> {
     }
 }
 
-pub fn portal_trigger(trigger: &str) -> String {
-    let mut portal = String::new();
-    for part in trigger.split('+').map(str::trim).filter(|p| !p.is_empty()) {
-        match part {
-            "Ctrl" | "Control" => portal.push_str("<Control>"),
-            "Shift" => portal.push_str("<Shift>"),
-            "Alt" => portal.push_str("<Alt>"),
-            "Super" | "Meta" => portal.push_str("<Super>"),
-            key if key.starts_with("KP_") => {
-                portal.push('<');
-                portal.push_str(key);
-                portal.push('>');
-            }
-            other => {
-                portal.push('<');
-                portal.push_str(other);
-                portal.push('>');
-            }
-        }
+fn portal_key_token(part: &str) -> Option<String> {
+    match part {
+        "KP_0" => Some("NUM+0".into()),
+        "KP_1" => Some("NUM+1".into()),
+        "KP_2" => Some("NUM+2".into()),
+        "KP_3" => Some("NUM+3".into()),
+        "KP_4" => Some("NUM+4".into()),
+        "KP_5" => Some("NUM+5".into()),
+        "KP_6" => Some("NUM+6".into()),
+        "KP_7" => Some("NUM+7".into()),
+        "KP_8" => Some("NUM+8".into()),
+        "KP_9" => Some("NUM+9".into()),
+        // KDE KGlobalAccel stores numpad operators as NUM+plus/minus/period (shown as Num++ etc.)
+        "KP_Add" => Some("NUM+plus".into()),
+        "KP_Subtract" => Some("NUM+minus".into()),
+        "KP_Decimal" => Some("NUM+period".into()),
+        _ => None,
     }
-    portal
+}
+
+pub fn portal_trigger(trigger: &str) -> String {
+    trigger
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if let Some(portal) = portal_key_token(part) {
+                return portal;
+            }
+            match part {
+                "Ctrl" | "Control" => "CTRL".to_string(),
+                "Shift" => "SHIFT".to_string(),
+                "Alt" => "ALT".to_string(),
+                "Super" | "Meta" => "LOGO".to_string(),
+                other => other.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 pub fn qt_key_sequence(trigger: &str) -> Result<Vec<i32>> {
-    let mut keys = Vec::new();
-    for part in trigger.split('+').map(str::trim).filter(|p| !p.is_empty()) {
-        keys.push(map_qt_key(part)?);
-    }
-    if keys.is_empty() {
+    let parts: Vec<&str> = trigger
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
         return Err(anyhow!("empty shortcut trigger"));
     }
-    Ok(keys)
-}
 
-fn map_qt_key(part: &str) -> Result<i32> {
-    match part {
-        "Escape" => Ok(QT_KEY_ESCAPE),
-        "KP_Add" => Ok(QT_KEY_KP_ADD),
-        "KP_Subtract" => Ok(QT_KEY_KP_SUBTRACT),
-        "KP_Decimal" => Ok(QT_KEY_KP_DECIMAL),
-        "Ctrl" | "Control" => Ok(0x0100_0021), // Qt::Key_Control
-        key if key.starts_with("KP_") && key.len() == 4 => {
-            let digit = key
-                .chars()
-                .nth(3)
-                .ok_or_else(|| anyhow!("invalid keypad key: {key}"))?;
-            if !digit.is_ascii_digit() {
-                return Err(anyhow!("invalid keypad key: {key}"));
+    let mut modifiers = 0i32;
+    let mut key: Option<i32> = None;
+    for part in parts {
+        match part {
+            "Ctrl" | "Control" => modifiers |= QT_CONTROL_MODIFIER,
+            "Shift" => modifiers |= QT_SHIFT_MODIFIER,
+            "Alt" => modifiers |= QT_ALT_MODIFIER,
+            "KP_0" => {
+                modifiers |= QT_KEYPAD_MODIFIER;
+                key = Some(0x30);
             }
-            Ok(QT_KEY_KEYPAD0 + (digit as i32 - b'0' as i32))
+            "KP_1" | "KP_2" | "KP_3" | "KP_4" | "KP_5" | "KP_6" | "KP_7" | "KP_8" | "KP_9" => {
+                modifiers |= QT_KEYPAD_MODIFIER;
+                key = Some(part.as_bytes()[3] as i32);
+            }
+            "KP_Add" => {
+                modifiers |= QT_KEYPAD_MODIFIER;
+                key = Some(0x2b);
+            }
+            "KP_Subtract" => {
+                modifiers |= QT_KEYPAD_MODIFIER;
+                key = Some(0x2d);
+            }
+            "KP_Decimal" => {
+                modifiers |= QT_KEYPAD_MODIFIER;
+                key = Some(0x2e);
+            }
+            "Escape" => key = Some(QT_KEY_ESCAPE),
+            other => return Err(anyhow!("unsupported shortcut key: {other}")),
         }
-        other => Err(anyhow!("unsupported shortcut key: {other}")),
     }
+
+    let key = key.ok_or_else(|| anyhow!("shortcut trigger missing key: {trigger}"))?;
+    Ok(vec![modifiers | key])
 }
 
 #[cfg(test)]
@@ -268,7 +302,19 @@ mod tests {
     #[test]
     fn keypad_one_sequence() {
         let keys = qt_key_sequence("KP_1").unwrap();
-        assert_eq!(keys, vec![QT_KEY_KEYPAD0 + 1]);
+        assert_eq!(keys, vec![QT_KEYPAD_MODIFIER | 0x31]);
+    }
+
+    #[test]
+    fn qt_key_sequence_matches_kde_numpad_format() {
+        assert_eq!(
+            qt_key_sequence("Ctrl+KP_Add").unwrap(),
+            vec![QT_CONTROL_MODIFIER | QT_KEYPAD_MODIFIER | 0x2b]
+        );
+        assert_eq!(
+            qt_key_sequence("KP_Decimal").unwrap(),
+            vec![QT_KEYPAD_MODIFIER | 0x2e]
+        );
     }
 
     #[test]
@@ -292,8 +338,24 @@ mod tests {
     }
 
     #[test]
+    fn portal_alt_numpad_trigger() {
+        assert_eq!(portal_trigger("Alt+KP_Add"), "ALT+NUM+plus");
+        assert_eq!(portal_trigger("Alt+KP_Subtract"), "ALT+NUM+minus");
+        assert_eq!(qt_shortcut_sequence("Alt+KP_Add"), "Alt+Num++");
+        assert_eq!(trigger_display("Alt+KP_Subtract"), "Alt+Num -");
+    }
+
+    #[test]
     fn portal_keypad_trigger() {
-        assert_eq!(portal_trigger("KP_1"), "<KP_1>");
-        assert_eq!(portal_trigger("Ctrl+KP_Add"), "<Control><KP_Add>");
+        assert_eq!(portal_trigger("KP_1"), "NUM+1");
+        assert_eq!(portal_trigger("KP_0"), "NUM+0");
+        assert_eq!(portal_trigger("Ctrl+KP_Add"), "CTRL+NUM+plus");
+        assert_eq!(portal_trigger("Ctrl+KP_Subtract"), "CTRL+NUM+minus");
+        assert_eq!(portal_trigger("KP_Decimal"), "NUM+period");
+        assert_eq!(portal_trigger("Meta+1"), "LOGO+1");
+        assert!(
+            !portal_trigger("KP_1").contains("KP_"),
+            "numpad digits use NUM modifier for KDE KGlobalAccel"
+        );
     }
 }

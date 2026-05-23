@@ -6,15 +6,14 @@ mod state;
 use anyhow::{Context, Result};
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 use qobjects::controller::{
-    BackendCommand, BackendEvent, BACKEND_EVENT_RX, BACKEND_TX, GLOBAL_SHORTCUTS_ACTIVE,
-    MIC_SOURCES,
+    BackendCommand, BackendEvent, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
-use std::sync::atomic::Ordering;
 use config::Config;
 use config::SFX_SINK;
 use services::pipewire::{Modules, PipewireManager};
 use services::player::VolumeState;
-use services::{Player, ShortcutEvent, ShortcutsManager, TabsRepository};
+use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
+use services::{Player, TabsRepository};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -24,6 +23,8 @@ use tracing_subscriber::EnvFilter;
 
 extern "C" {
     fn sound_spring_register_key_forwarder();
+    fn sound_spring_init_app_identity();
+    fn sound_spring_refresh_portal_parent_window();
 }
 
 fn main() -> Result<()> {
@@ -57,6 +58,7 @@ fn main() -> Result<()> {
     let mut app = QGuiApplication::new();
 
     unsafe {
+        sound_spring_init_app_identity();
         sound_spring_register_key_forwarder();
     }
 
@@ -94,31 +96,44 @@ async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     }
 }
 
-async fn bind_shortcuts(config: &config::Config, event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
-    if config.shortcuts.mode == "local" {
-        GLOBAL_SHORTCUTS_ACTIVE.store(false, Ordering::Relaxed);
+async fn bind_shortcuts(config: &config::Config, force_cleanup: bool) {
+    if !ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
+        set_global_shortcut_status(GlobalShortcutStatus::Inactive);
         return;
     }
 
-    // Clear any leftover KGlobalAccel registration from older builds.
-    ShortcutsManager::cleanup_kglobalaccel_component().await;
+    if force_cleanup || ShortcutsManager::has_stale_empty_kglobalaccel_bindings().await {
+        ShortcutsManager::cleanup_kglobalaccel_component().await;
+    }
 
     let bindings = ShortcutsManager::resolve_bindings(&config.shortcuts);
-    let (shortcut_tx, shortcut_rx) = std::sync::mpsc::channel();
-    match ShortcutsManager::bind(&bindings, &config.shortcuts.mode, shortcut_tx).await {
-        Ok(()) => {
-            GLOBAL_SHORTCUTS_ACTIVE.store(true, Ordering::Relaxed);
-            let bridge_tx = event_tx.clone();
-            std::thread::spawn(move || {
-                for event in shortcut_rx {
-                    let ShortcutEvent::Triggered(id) = event;
-                    let _ = bridge_tx.send(BackendEvent::ShortcutTriggered { id });
-                }
-            });
+    match ShortcutsManager::bind_global(&bindings).await {
+        Ok(Some(result)) => {
+            let bound_count = result.bound_shortcuts.len();
+            if bound_count == 0 {
+                set_global_shortcut_status(GlobalShortcutStatus::Failed {
+                    reason: "no global shortcuts registered".into(),
+                });
+            } else if result.assigned_count == 0 {
+                set_global_shortcut_status(GlobalShortcutStatus::Failed {
+                    reason: "global shortcuts registered but no keys assigned — \
+                             open Settings and click Apply, or configure in System Settings"
+                        .into(),
+                });
+            } else {
+                set_global_shortcut_status(GlobalShortcutStatus::Bound {
+                    bound_count,
+                    assigned_count: result.assigned_count,
+                    requested_count: result.requested_count,
+                });
+            }
         }
+        Ok(None) => set_global_shortcut_status(GlobalShortcutStatus::Inactive),
         Err(err) => {
-            GLOBAL_SHORTCUTS_ACTIVE.store(false, Ordering::Relaxed);
-            warn!("shortcut bind failed: {err:#}; using in-window keys only");
+            set_global_shortcut_status(GlobalShortcutStatus::Failed {
+                reason: format!("{err:#}"),
+            });
+            warn!("global shortcut bind failed: {err:#}; using in-window keys only");
         }
     }
 }
@@ -146,11 +161,6 @@ async fn apply_runtime_config(
         || previous.is_some_and(|prev| {
             prev.audio.mic_source != config.audio.mic_source
                 || prev.audio.latency_ms != config.audio.latency_ms
-        });
-    let shortcuts_changed = initial
-        || previous.is_some_and(|prev| {
-            prev.shortcuts.mode != config.shortcuts.mode
-                || prev.shortcuts.bindings != config.shortcuts.bindings
         });
     let volume_changed = initial
         || previous.is_some_and(|prev| {
@@ -181,8 +191,17 @@ async fn apply_runtime_config(
         .await;
     }
 
-    if shortcuts_changed {
-        bind_shortcuts(config, event_tx).await;
+    if !initial {
+        if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
+            if let Some(prev) = previous {
+                ShortcutsManager::unregister_changed_bindings(prev, config).await;
+            }
+            bind_shortcuts(config, false).await;
+        } else if previous.is_some_and(|prev| {
+            ShortcutsManager::uses_global_binding(&prev.shortcuts.mode)
+        }) {
+            set_global_shortcut_status(GlobalShortcutStatus::Inactive);
+        }
     }
 
     let tabs = TabsRepository::scan(config).unwrap_or_default();
@@ -202,6 +221,16 @@ fn run_backend(
         .context("build tokio runtime")?;
 
     rt.block_on(async move {
+        let (shortcut_tx, shortcut_rx) = std::sync::mpsc::channel();
+        services::shortcuts::set_shortcut_event_tx(shortcut_tx);
+        let bridge_tx = backend_event_tx.clone();
+        std::thread::spawn(move || {
+            for event in shortcut_rx {
+                let services::shortcuts::ShortcutEvent::Triggered(id) = event;
+                let _ = bridge_tx.send(BackendEvent::ShortcutTriggered { id });
+            }
+        });
+
         let mut modules = Modules::default();
         let mut active_config = config.clone();
         apply_runtime_config(&active_config, &backend_event_tx, &mut modules, None).await;
@@ -237,6 +266,15 @@ fn run_backend(
                             });
                             active_config = new_config;
                         }
+                        Some(BackendCommand::BindShortcuts) => {
+                            bind_shortcuts(&active_config, false).await;
+                        }
+                        Some(BackendCommand::ConfigurePortalShortcuts) => {
+                            ShortcutsManager::open_system_shortcuts_settings();
+                        }
+                        Some(BackendCommand::ResetPortalShortcuts) => {
+                            bind_shortcuts(&active_config, true).await;
+                        }
                         Some(BackendCommand::RefreshMicSources) => {
                             publish_mic_sources(&backend_event_tx).await;
                         }
@@ -261,8 +299,11 @@ fn run_backend(
                     publish_mic_sources(&backend_event_tx).await;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    for slot in player.reap_finished().await {
-                        let _ = backend_event_tx.send(BackendEvent::PlaybackEnded { slot });
+                    for (tab_index, slot) in player.reap_finished().await {
+                        let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
+                            tab_index,
+                            slot,
+                        });
                     }
                 }
             }
