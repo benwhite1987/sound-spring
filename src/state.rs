@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct WindowGeometry {
@@ -26,7 +26,8 @@ impl State {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = fs::read_to_string(path).with_context(|| format!("read state {}", path.display()))?;
+        let text =
+            fs::read_to_string(path).with_context(|| format!("read state {}", path.display()))?;
         serde_json::from_str(&text).with_context(|| format!("parse state {}", path.display()))
     }
 

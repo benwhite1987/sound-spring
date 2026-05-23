@@ -88,7 +88,10 @@ impl PipewireManager {
         if Self::sinks_ready().await {
             let ids = Self::find_module_ids().await?;
             if !ids.is_empty() {
-                info!("reusing {} existing soundboard PipeWire module(s)", ids.len());
+                info!(
+                    "reusing {} existing soundboard PipeWire module(s)",
+                    ids.len()
+                );
                 return Ok(Modules { ids });
             }
         }
@@ -154,7 +157,10 @@ impl PipewireManager {
         if ids.is_empty() {
             return Ok(());
         }
-        info!("unloading {} stale soundboard PipeWire module(s)", ids.len());
+        info!(
+            "unloading {} stale soundboard PipeWire module(s)",
+            ids.len()
+        );
         for id in ids {
             Self::unload_module(id).await;
         }
@@ -259,7 +265,11 @@ impl PipewireManager {
         Self::parse_module_id(&output)
     }
 
-    async fn load_remap_source(virtmic_sink: &str, source_name: &str, description: &str) -> Result<u32> {
+    async fn load_remap_source(
+        virtmic_sink: &str,
+        source_name: &str,
+        description: &str,
+    ) -> Result<u32> {
         let output = Command::new("pactl")
             .args([
                 "load-module",
@@ -280,7 +290,9 @@ impl PipewireManager {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-        let id = String::from_utf8_lossy(&output.stdout).trim().parse::<u32>()?;
+        let id = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u32>()?;
         Ok(id)
     }
 
@@ -308,7 +320,10 @@ impl PipewireManager {
 
     async fn ensure_source(name: &str) -> Result<()> {
         let lines = Self::list_short("sources").await?;
-        if lines.iter().any(|line| line.split_whitespace().nth(1) == Some(name)) {
+        if lines
+            .iter()
+            .any(|line| line.split_whitespace().nth(1) == Some(name))
+        {
             Ok(())
         } else {
             Err(anyhow!("source not found: {name}"))
@@ -373,8 +388,7 @@ fn module_matches_soundboard(rest: &str) -> bool {
     if rest.contains(&format!("source_name={VIRTUAL_MIC_SOURCE}")) {
         return true;
     }
-    if rest.contains("module-loopback")
-        && (rest.contains(VIRTMIC_SINK) || rest.contains(SFX_SINK))
+    if rest.contains("module-loopback") && (rest.contains(VIRTMIC_SINK) || rest.contains(SFX_SINK))
     {
         return true;
     }

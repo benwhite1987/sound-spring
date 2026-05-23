@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -65,8 +65,7 @@ pub enum PlayerCommand {
 
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
-    Started { id: u64, slot: Option<i32> },
-    Ended { id: u64 },
+    Started,
 }
 
 struct PlaySession {
@@ -113,10 +112,8 @@ impl Player {
             } => {
                 self.volumes = volumes;
                 let id = self.play(path, tab_index, slot).await?;
-                Ok(Some(PlayerEvent::Started {
-                    id,
-                    slot: Some(slot),
-                }))
+                let _ = id;
+                Ok(Some(PlayerEvent::Started))
             }
             PlayerCommand::StopSession { tab_index, slot } => {
                 self.stop_session(tab_index, slot).await;
@@ -282,11 +279,7 @@ impl Player {
                 if let Some(index) = current_index {
                     let percent = ((volume as f64 / 65535.0) * 100.0).round() as u32;
                     let status = Command::new("pactl")
-                        .args([
-                            "set-sink-input-volume",
-                            &index,
-                            &format!("{percent}%"),
-                        ])
+                        .args(["set-sink-input-volume", &index, &format!("{percent}%")])
                         .status()
                         .await
                         .context("pactl set-sink-input-volume")?;
@@ -303,7 +296,7 @@ impl Player {
 
     async fn spawn_playback(
         sink: &str,
-        file: &PathBuf,
+        file: &Path,
         stream_name: &str,
         volume: u32,
     ) -> Result<Child> {
@@ -324,7 +317,7 @@ impl Player {
 
     async fn spawn_paplay(
         sink: &str,
-        file: &PathBuf,
+        file: &Path,
         stream_name: &str,
         volume: u32,
     ) -> Result<Child> {
@@ -346,7 +339,7 @@ impl Player {
 
     async fn spawn_ffmpeg_pipe(
         sink: &str,
-        file: &PathBuf,
+        file: &Path,
         stream_name: &str,
         volume: u32,
     ) -> Result<Child> {

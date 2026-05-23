@@ -40,13 +40,6 @@ impl Tab {
         self.sounds.get(slot - 1).map(|s| &s.path)
     }
 
-    pub fn slot_duration_ms(&self, slot: usize) -> Option<u64> {
-        if slot == 0 || slot > MAX_SLOTS {
-            return None;
-        }
-        self.sounds.get(slot - 1).map(|s| s.duration_ms)
-    }
-
     pub fn display_name(&self) -> &str {
         &self.name
     }
@@ -114,10 +107,18 @@ impl TabsRepository {
             });
         }
         sounds.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Tab { path: path.to_path_buf(), name, sounds })
+        Ok(Tab {
+            path: path.to_path_buf(),
+            name,
+            sounds,
+        })
     }
 
-    pub fn resolve_current_tab<'a>(tabs: &'a [Tab], current: &str, tabs_root: &Path) -> Option<&'a Tab> {
+    pub fn resolve_current_tab<'a>(
+        tabs: &'a [Tab],
+        current: &str,
+        tabs_root: &Path,
+    ) -> Option<&'a Tab> {
         if current.is_empty() {
             return tabs.first();
         }
@@ -125,7 +126,10 @@ impl TabsRepository {
             return tabs.iter().find(|tab| tab.path == Path::new(current));
         }
         tabs.iter()
-            .find(|tab| tab.name == current || tab.path.file_name().and_then(|s| s.to_str()) == Some(current))
+            .find(|tab| {
+                tab.name == current
+                    || tab.path.file_name().and_then(|s| s.to_str()) == Some(current)
+            })
             .or_else(|| {
                 let candidate = tabs_root.join(current);
                 tabs.iter().find(|tab| tab.path == candidate)
