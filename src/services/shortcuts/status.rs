@@ -42,15 +42,6 @@ pub fn global_shortcut_status() -> GlobalShortcutStatus {
         .unwrap_or(GlobalShortcutStatus::Inactive)
 }
 
-pub fn global_shortcuts_active() -> bool {
-    matches!(
-        global_shortcut_status(),
-        GlobalShortcutStatus::Bound {
-            assigned_count,
-            ..
-        } if assigned_count > 0
-    )
-}
 
 pub fn format_global_shortcut_status() -> String {
     match global_shortcut_status() {

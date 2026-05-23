@@ -15,6 +15,7 @@ pub mod qobject {
         #[qproperty(QString, tabs_root)]
         #[qproperty(QString, state_dir)]
         #[qproperty(QString, shortcut_mode)]
+        #[qproperty(bool, ignore_numlock)]
         #[qproperty(bool, minimize_to_tray)]
         #[qproperty(bool, launch_at_login)]
         #[qproperty(i32, custom_tab_count)]
@@ -85,6 +86,7 @@ pub struct SettingsRust {
     tabs_root: QString,
     state_dir: QString,
     shortcut_mode: QString,
+    ignore_numlock: bool,
     minimize_to_tray: bool,
     launch_at_login: bool,
     custom_tab_count: i32,
@@ -118,6 +120,7 @@ impl SettingsRust {
         config.audio.auto_teardown = self.auto_teardown;
         config.shortcuts.mode = String::from(self.shortcut_mode.clone());
         config.shortcuts.bindings = bindings;
+        config.shortcuts.ignore_numlock = self.ignore_numlock;
         config.ui.minimize_to_tray = self.minimize_to_tray;
         config.ui.launch_at_login = self.launch_at_login;
         config.paths.tabs_root = PathBuf::from(String::from(self.tabs_root.clone()));
@@ -134,6 +137,7 @@ impl SettingsRust {
         self.tabs_root = QString::from(config.paths.tabs_root.to_string_lossy().as_ref());
         self.state_dir = QString::from(config.paths.state_dir.to_string_lossy().as_ref());
         self.shortcut_mode = QString::from(config.shortcuts.mode.as_str());
+        self.ignore_numlock = config.shortcuts.ignore_numlock;
         self.minimize_to_tray = config.ui.minimize_to_tray;
         self.launch_at_login = config.ui.launch_at_login;
         self.custom_tabs = config.tabs.clone();

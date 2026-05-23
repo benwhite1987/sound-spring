@@ -252,32 +252,29 @@ ApplicationWindow {
         ownerWindow: root
     }
 
-    Timer {
-        id: shortcutPromptTimer
-        interval: 1500
-        running: true
-        repeat: false
-        onTriggered: {
-            controller.syncGlobalShortcutsStatus()
-            shortcutPromptRecheck.start()
-        }
+    QtObject {
+        id: shortcutPromptGuard
+        property bool shown: false
     }
 
-    Timer {
-        id: shortcutPromptRecheck
-        interval: 250
-        repeat: false
-        onTriggered: {
-            if (controller.needsGlobalShortcutApply())
+    Connections {
+        target: controller
+        function onGlobalShortcutsStatusChanged() {
+            if (shortcutPromptGuard.shown)
+                return
+            if (controller.needsGlobalShortcutApply()) {
+                shortcutPromptGuard.shown = true
                 globalShortcutPrompt.open()
+            }
         }
     }
 
     MessageDialog {
         id: globalShortcutPrompt
         title: "Register global shortcuts"
-        text: "Global hotkeys are not active yet. Open Settings → Shortcuts and click Apply " +
-              "to register them with KDE (you may see a permission dialog once)."
+        text: "KDE could not register global shortcuts for Sound Spring. " +
+              "Open Settings → Shortcuts and click Apply, or relaunch Sound Spring " +
+              "from the application launcher (not from inside an IDE terminal)."
         buttons: MessageDialog.Ok | MessageDialog.Cancel
         onAccepted: settingsDialog.openSettings()
         onRejected: controller.dismissGlobalShortcutsPrompt()

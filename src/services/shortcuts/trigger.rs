@@ -49,6 +49,17 @@ pub fn trigger_display(trigger: &str) -> String {
             "KP_Multiply" => "Num *".to_string(),
             "KP_Divide" => "Num /".to_string(),
             "KP_Enter" => "Num Enter".to_string(),
+            "KP_End" => "Num End".to_string(),
+            "KP_Down" => "Num ↓".to_string(),
+            "KP_PageDown" | "KP_Next" => "Num PgDown".to_string(),
+            "KP_Left" => "Num ←".to_string(),
+            "KP_Begin" | "KP_Clear" => "Num Clear".to_string(),
+            "KP_Right" => "Num →".to_string(),
+            "KP_Home" => "Num Home".to_string(),
+            "KP_Up" => "Num ↑".to_string(),
+            "KP_PageUp" | "KP_Prior" => "Num PgUp".to_string(),
+            "KP_Insert" => "Num Insert".to_string(),
+            "KP_Delete" => "Num Delete".to_string(),
             "Ctrl" | "Control" => "Ctrl".to_string(),
             "Alt" => "Alt".to_string(),
             "Shift" => "Shift".to_string(),
@@ -95,6 +106,17 @@ pub fn qt_shortcut_sequence(trigger: &str) -> String {
             "KP_Multiply" => "Num+*",
             "KP_Divide" => "Num+/",
             "KP_Enter" => "Num+Enter",
+            "KP_End" => "Num+End",
+            "KP_Down" => "Num+Down",
+            "KP_PageDown" | "KP_Next" => "Num+PgDown",
+            "KP_Left" => "Num+Left",
+            "KP_Begin" | "KP_Clear" => "Num+Clear",
+            "KP_Right" => "Num+Right",
+            "KP_Home" => "Num+Home",
+            "KP_Up" => "Num+Up",
+            "KP_PageUp" | "KP_Prior" => "Num+PgUp",
+            "KP_Insert" => "Num+Insert",
+            "KP_Delete" => "Num+Delete",
             "Ctrl" | "Control" => "Ctrl",
             "Meta" | "Super" => "Meta",
             other => other,
@@ -430,8 +452,66 @@ fn portal_key_token(part: &str) -> Option<String> {
         "KP_Multiply" => Some("NUM+asterisk".into()),
         "KP_Divide" => Some("NUM+slash".into()),
         "KP_Enter" => Some("NUM+Return".into()),
+        // NumLock-OFF equivalents: same physical keys, distinct X11 keysyms.
+        //
+        // portal-kde's XdgShortcut::parse (src/xdgshortcut.cpp upstream) calls
+        // libxkbcommon's `xkb_keysym_from_name()` to resolve the key portion
+        // of the trigger string. That means we must send **XKB keysym names
+        // from /usr/include/X11/keysymdef.h**, NOT Qt's QKeySequence names.
+        // The differences that bit us during testing:
+        //   - Qt::Key_Insert is "Ins" / Qt's longer form is "Insert" — XKB is
+        //     "Insert" (XK_Insert). Use "Insert".
+        //   - Qt::Key_Delete is "Del" / "Delete" — XKB is "Delete". Use "Delete".
+        //   - Qt::Key_PageUp is "PgUp" / "Page Up" — XKB names are "Prior"
+        //     (XK_Prior) and "Page_Up" with underscore. Use "Prior".
+        //   - Qt::Key_PageDown is "PgDown" / "Page Down" — XKB names are "Next"
+        //     (XK_Next) and "Page_Down". Use "Next".
+        //   - Qt::Key_Clear matches XK_Clear directly — "Clear" works.
+        // Any rejection logs `unknown key "<name>"` and drops the entire bind
+        // to 0/N assigned keys.
+        "KP_End" => Some("NUM+End".into()),
+        "KP_Down" => Some("NUM+Down".into()),
+        "KP_PageDown" | "KP_Next" => Some("NUM+Next".into()),
+        "KP_Left" => Some("NUM+Left".into()),
+        "KP_Begin" | "KP_Clear" => Some("NUM+Clear".into()),
+        "KP_Right" => Some("NUM+Right".into()),
+        "KP_Home" => Some("NUM+Home".into()),
+        "KP_Up" => Some("NUM+Up".into()),
+        "KP_PageUp" | "KP_Prior" => Some("NUM+Prior".into()),
+        "KP_Insert" => Some("NUM+Insert".into()),
+        "KP_Delete" => Some("NUM+Delete".into()),
         _ => None,
     }
+}
+
+/// Maps a numpad shortcut trigger to its NumLock-OFF X11 keysym equivalent.
+/// Modifier prefixes (Ctrl, Alt, Shift, Meta) are preserved verbatim.
+/// Returns `None` for triggers that don't depend on NumLock state
+/// (operators like KP_Add and non-numpad keys).
+pub fn numlock_off_alt(trigger: &str) -> Option<String> {
+    let parts: Vec<&str> = trigger
+        .split('+')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let (key, modifiers) = parts.split_last()?;
+    let alt = match *key {
+        "KP_1" => "KP_End",
+        "KP_2" => "KP_Down",
+        "KP_3" => "KP_PageDown",
+        "KP_4" => "KP_Left",
+        "KP_5" => "KP_Begin",
+        "KP_6" => "KP_Right",
+        "KP_7" => "KP_Home",
+        "KP_8" => "KP_Up",
+        "KP_9" => "KP_PageUp",
+        "KP_0" => "KP_Insert",
+        "KP_Decimal" => "KP_Delete",
+        _ => return None,
+    };
+    let mut out: Vec<&str> = modifiers.to_vec();
+    out.push(alt);
+    Some(out.join("+"))
 }
 
 pub fn portal_trigger(trigger: &str) -> String {
@@ -531,6 +611,43 @@ mod tests {
         assert_eq!(portal_trigger("Alt+KP_Subtract"), "ALT+NUM+minus");
         assert_eq!(qt_shortcut_sequence("Alt+KP_Add"), "Alt+Num++");
         assert_eq!(trigger_display("Alt+KP_Subtract"), "Alt+Num -");
+    }
+
+    #[test]
+    fn numlock_off_alt_maps_numpad_digits_and_preserves_modifiers() {
+        assert_eq!(numlock_off_alt("KP_1").as_deref(), Some("KP_End"));
+        assert_eq!(numlock_off_alt("KP_0").as_deref(), Some("KP_Insert"));
+        assert_eq!(numlock_off_alt("KP_5").as_deref(), Some("KP_Begin"));
+        assert_eq!(numlock_off_alt("KP_Decimal").as_deref(), Some("KP_Delete"));
+        assert_eq!(
+            numlock_off_alt("Ctrl+KP_3").as_deref(),
+            Some("Ctrl+KP_PageDown")
+        );
+        assert_eq!(
+            numlock_off_alt("Ctrl+Alt+KP_7").as_deref(),
+            Some("Ctrl+Alt+KP_Home")
+        );
+        // Operators and non-numpad keys: no NumLock-off variant.
+        assert_eq!(numlock_off_alt("KP_Add"), None);
+        assert_eq!(numlock_off_alt("Ctrl+KP_Subtract"), None);
+        assert_eq!(numlock_off_alt("KP_Divide"), None);
+        assert_eq!(numlock_off_alt("F1"), None);
+        assert_eq!(numlock_off_alt(""), None);
+    }
+
+    #[test]
+    fn portal_trigger_emits_xkb_keysym_names_for_numlock_off_alts() {
+        // portal-kde's XdgShortcut::parse() resolves the key portion via
+        // libxkbcommon's xkb_keysym_from_name(), so the strings must match
+        // X11/keysymdef.h XKB names — NOT Qt's QKeySequence names.
+        // PageUp/PageDown specifically must be "Prior"/"Next" (Qt's PgUp/PgDown
+        // and PageUp/PageDown are both rejected by xkb_keysym_from_name).
+        assert_eq!(portal_trigger("KP_End"), "NUM+End");
+        assert_eq!(portal_trigger("KP_Insert"), "NUM+Insert");
+        assert_eq!(portal_trigger("Ctrl+KP_Delete"), "CTRL+NUM+Delete");
+        assert_eq!(portal_trigger("KP_PageDown"), "NUM+Next");
+        assert_eq!(portal_trigger("KP_PageUp"), "NUM+Prior");
+        assert_eq!(portal_trigger("KP_Begin"), "NUM+Clear");
     }
 
 

@@ -211,6 +211,51 @@ Window {
                             onClicked: controller.configureGlobalShortcuts()
                         }
                     }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: numlockColumn.implicitHeight + 16
+                        color: "#3a2d12"
+                        border.color: "#8a6d2a"
+                        border.width: 1
+                        radius: 4
+                        ColumnLayout {
+                            id: numlockColumn
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 6
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                font.bold: true
+                                text: "Numpad + NumLock"
+                                color: "#ffd57a"
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                color: "#e6cf94"
+                                text: "Numpad number keys produce different X11 keysyms with " +
+                                      "NumLock off (KP_End instead of KP_1, etc.), so global " +
+                                      "shortcuts bound to KP_1–KP_0 only fire when NumLock is ON. " +
+                                      "Numpad operator keys (+, -, *, /, Enter) are not affected."
+                            }
+                            CheckBox {
+                                Layout.fillWidth: true
+                                text: "Ignore NumLock state (also register navigation-cluster keysyms)"
+                                checked: settings ? settings.ignoreNumlock : false
+                                onToggled: if (settings) settings.ignoreNumlock = checked
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                color: "#a89567"
+                                font.italic: true
+                                text: "When enabled, each numpad shortcut is bound twice " +
+                                      "(e.g. Num 1 AND Num End). Click Apply after changing."
+                            }
+                        }
+                    }
+
                     Label { text: "In-window bindings (while focused)"; font.bold: true }
                     Repeater {
                         model: settings ? settings.shortcutCount : 0

@@ -46,6 +46,13 @@ pub struct ShortcutsConfig {
     pub mode: String,
     #[serde(default)]
     pub bindings: HashMap<String, String>,
+    /// When true, every numpad-digit / numpad-decimal binding is registered
+    /// in two forms: the standard NumLock-ON keysym (e.g. KP_1) and its
+    /// NumLock-OFF equivalent (e.g. KP_End). Lets users trigger numpad
+    /// shortcuts regardless of NumLock state at the cost of also occupying
+    /// the navigation-cluster slot in KDE's shortcut table.
+    #[serde(default)]
+    pub ignore_numlock: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +101,7 @@ impl Default for ShortcutsConfig {
         Self {
             mode: default_shortcut_mode(),
             bindings: HashMap::new(),
+            ignore_numlock: false,
         }
     }
 }

@@ -170,8 +170,9 @@ use crate::config::Config;
 use crate::services::pipewire::MicSource;
 use crate::services::player::{PlayerCommand, VolumeState};
 use crate::services::shortcuts::{
-    accept_shortcut, format_global_shortcut_status, global_shortcuts_active, play_slot_from_qt_key,
-    qt_shortcut_sequence, trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager,
+    accept_shortcut, format_global_shortcut_status, global_shortcut_status, play_slot_from_qt_key,
+    qt_shortcut_sequence, trigger_display, trigger_from_qt, GlobalShortcutStatus, ShortcutDef,
+    ShortcutsManager,
 };
 use crate::services::tabs::{normalize_slot, Tab, TabsRepository};
 use crate::state::State;
@@ -588,6 +589,11 @@ impl SoundboardControllerRust {
     }
 
     fn handle_shortcut_id(&mut self, id: &str) -> ShortcutHandleResult {
+        // Collapse "<action>_nonum" companion ids (NumLock-OFF variants registered
+        // by ShortcutsManager::resolve_bindings_for_registration) back to the
+        // canonical action BEFORE dedup, so a single physical press is never
+        // counted twice across the two registered keysyms.
+        let id = id.strip_suffix("_nonum").unwrap_or(id);
         if !accept_shortcut(id) {
             return ShortcutHandleResult::default();
         }
@@ -636,9 +642,9 @@ impl SoundboardControllerRust {
 
     fn reload_shortcut_bindings() {
         let config = crate::config::load_config().unwrap_or_default();
-        SoundboardControllerRust::sync_shortcut_bindings(&ShortcutsManager::resolve_bindings(
-            &config.shortcuts,
-        ));
+        SoundboardControllerRust::sync_shortcut_bindings(
+            &ShortcutsManager::resolve_bindings_for_registration(&config.shortcuts),
+        );
     }
 
     pub fn sync_shortcut_bindings(bindings: &[ShortcutDef]) {
@@ -674,7 +680,10 @@ impl qobject::SoundboardController {
         if config.ui.global_shortcuts_prompt_dismissed {
             return false;
         }
-        !global_shortcuts_active()
+        // Only prompt when binding has actually FAILED. While status is Inactive
+        // (e.g. the in-flight bind during startup), say no — otherwise the QML
+        // dialog races the bind and pops every launch.
+        matches!(global_shortcut_status(), GlobalShortcutStatus::Failed { .. })
     }
 
     pub fn dismiss_global_shortcuts_prompt(self: Pin<&mut Self>) {

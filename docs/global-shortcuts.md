@@ -151,6 +151,64 @@ confusing. The current behavior is:
   points at the cgroup root cause. No KCM popup.
 - Bind failed entirely → state is `Failed` with the portal error.
 
+## Numpad + NumLock + portal key parsing
+
+When `shortcuts.ignore_numlock` is true,
+`ShortcutsManager::resolve_bindings_for_registration` emits a companion
+binding for every NumLock-dependent numpad slot (KP_1…KP_0, KP_Decimal). The
+companion uses an `_nonum` suffix on its action id; `handle_shortcut_id`
+strips the suffix before dedup so a single physical press dispatches the
+canonical action exactly once.
+
+The trigger strings for the companions go through `portal_key_token`.
+The key names must be **XKB keysym names** (the symbols in
+`/usr/include/X11/keysymdef.h`), because portal-kde's
+[`XdgShortcut::parse`][xdgshortcut] resolves them via
+[`xkb_keysym_from_name()`][xkbsym] — *not* Qt's `QKeySequence::fromString`.
+Sending Qt's `QKeySequence` names (`PgUp`, `PgDown`, `PageUp`, `Ins`,
+`Del`, `Page Up`, etc.) results in:
+
+```
+xdg-desktop-portal-kde[N]: unknown key "<name>"
+```
+
+and **drops the entire BindShortcuts call to 0/N assigned keys**.
+
+[xdgshortcut]: https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/blob/master/src/xdgshortcut.cpp
+[xkbsym]: https://xkbcommon.org/doc/current/group__keysyms.html
+
+Required XKB-keysym mappings, all verified empirically on Plasma 6:
+
+| Sound Spring trigger | portal_key_token output | XKB keysym  |
+|----------------------|-------------------------|-------------|
+| `KP_Insert`          | `NUM+Insert`            | `XK_Insert` |
+| `KP_Delete`          | `NUM+Delete`            | `XK_Delete` |
+| `KP_PageUp`          | `NUM+Prior`             | `XK_Prior`  |
+| `KP_PageDown`        | `NUM+Next`              | `XK_Next`   |
+| `KP_Home`            | `NUM+Home`              | `XK_Home`   |
+| `KP_End`             | `NUM+End`               | `XK_End`    |
+| `KP_Up`              | `NUM+Up`                | `XK_Up`     |
+| `KP_Down`            | `NUM+Down`              | `XK_Down`   |
+| `KP_Left`            | `NUM+Left`              | `XK_Left`   |
+| `KP_Right`           | `NUM+Right`             | `XK_Right`  |
+| `KP_Begin`           | `NUM+Clear`             | `XK_Clear`  |
+
+Do not "modernize" `Prior`/`Next` to `Page_Up`/`Page_Down` (the underscore
+aliases) without retesting the live journal: `Prior`/`Next` are the
+canonical X11 names and what the wider KDE/KGlobalAccel ecosystem expects
+to round-trip back into Qt key codes.
+
+If KDE corrupts its cached bind for `sound-spring` because of an earlier
+malformed request, the recovery is one of:
+
+```bash
+# Bounce the portal so it forgets the bad session cache:
+systemctl --user restart xdg-desktop-portal-kde
+
+# Or remove the stale section directly:
+kwriteconfig6 --file kglobalshortcutsrc --group sound-spring --delete-group
+```
+
 ## What the codebase intentionally does not do
 
 - No `kglobalaccel.rs` module. It was deleted after `setForeignShortcutKeys`

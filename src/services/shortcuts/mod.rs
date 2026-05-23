@@ -11,13 +11,13 @@ use tracing::warn;
 pub use dedupe::accept_shortcut;
 pub use portal::PortalBindResult;
 pub use status::{
-    format_global_shortcut_status, global_shortcuts_active, set_global_shortcut_status,
+    format_global_shortcut_status, global_shortcut_status, set_global_shortcut_status,
     GlobalShortcutStatus,
 };
 #[allow(unused_imports)]
 pub use trigger::{
-    play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_portal,
-    trigger_from_qt,
+    numlock_off_alt, play_slot_from_qt_key, qt_shortcut_sequence, trigger_display,
+    trigger_from_portal, trigger_from_qt,
 };
 
 #[derive(Debug, Clone)]
@@ -120,6 +120,9 @@ impl ShortcutsManager {
         Self::effective_mode(mode) == "global"
     }
 
+    /// The canonical, user-visible binding list (one row per action).
+    /// Used by Settings UI and any UI lookup. Always returns the primary
+    /// triggers regardless of `ignore_numlock`.
     pub fn resolve_bindings(config: &crate::config::ShortcutsConfig) -> Vec<ShortcutDef> {
         Self::default_bindings()
             .into_iter()
@@ -132,6 +135,33 @@ impl ShortcutsManager {
                 def
             })
             .collect()
+    }
+
+    /// The list actually sent to the portal / KGlobalAccel. When
+    /// `ignore_numlock` is on, every numpad-digit / numpad-decimal binding
+    /// also gets a companion entry with the NumLock-OFF X11 keysym (e.g.
+    /// KP_End for KP_1). Companions have an `_nonum` suffix on their id so
+    /// the activation dispatcher can collapse them back to the canonical
+    /// action.
+    pub fn resolve_bindings_for_registration(
+        config: &crate::config::ShortcutsConfig,
+    ) -> Vec<ShortcutDef> {
+        let primary = Self::resolve_bindings(config);
+        if !config.ignore_numlock {
+            return primary;
+        }
+        let mut expanded = Vec::with_capacity(primary.len() * 2);
+        for def in primary {
+            if let Some(alt_trigger) = trigger::numlock_off_alt(&def.trigger) {
+                expanded.push(ShortcutDef {
+                    id: format!("{}_nonum", def.id),
+                    description: format!("{} (NumLock off)", def.description),
+                    trigger: alt_trigger,
+                });
+            }
+            expanded.push(def);
+        }
+        expanded
     }
 
     pub async fn configure_global_shortcuts() {

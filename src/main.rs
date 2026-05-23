@@ -113,7 +113,7 @@ async fn bind_shortcuts(
         }
     }
 
-    let bindings = ShortcutsManager::resolve_bindings(&config.shortcuts);
+    let bindings = ShortcutsManager::resolve_bindings_for_registration(&config.shortcuts);
     match ShortcutsManager::bind_global(&bindings, use_parent_window).await {
         Ok(Some(result)) => {
             let bound_count = result.bound_shortcuts.len();
@@ -205,15 +205,17 @@ async fn apply_runtime_config(
         .await;
     }
 
-    if !initial {
-        if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
-            bind_shortcuts(config, true, event_tx).await;
-        } else if previous
+    if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
+        // On startup, the main window is not visible yet, so don't bother fetching
+        // a parent window handle. Subsequent re-binds (Apply, mode change) do use it
+        // so the portal can parent its assignment dialog if it has to show one.
+        bind_shortcuts(config, !initial, event_tx).await;
+    } else if !initial
+        && previous
             .is_some_and(|prev| ShortcutsManager::uses_global_binding(&prev.shortcuts.mode))
-        {
-            set_global_shortcut_status(GlobalShortcutStatus::Inactive);
-            let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
-        }
+    {
+        set_global_shortcut_status(GlobalShortcutStatus::Inactive);
+        let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
     }
 
     let tabs = TabsRepository::scan(config).unwrap_or_default();
