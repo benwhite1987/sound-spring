@@ -49,20 +49,32 @@ ApplicationWindow {
 
             ButtonGroup {
                 id: tabButtonGroup
+                exclusive: true
             }
 
             Repeater {
                 model: controller.tabCount
                 delegate: ToolButton {
+                    id: tabButton
                     focusPolicy: Qt.NoFocus
                     ButtonGroup.group: tabButtonGroup
+                    checkable: true
                     text: {
                         controller.tabVersion
                         return controller.tabNameAt(index)
                     }
-                    checkable: true
-                    checked: controller.currentTabIndex === index
+                    checked: {
+                        controller.uiVersion
+                        return controller.currentTabIndex === index
+                    }
                     onClicked: controller.selectTab(index)
+                    background: Rectangle {
+                        implicitWidth: tabButton.implicitWidth + 12
+                        implicitHeight: tabButton.implicitHeight + 6
+                        radius: 4
+                        color: tabButton.checked ? palette.highlight : "transparent"
+                        opacity: tabButton.checked ? 0.35 : 0
+                    }
                 }
             }
 
@@ -102,12 +114,28 @@ ApplicationWindow {
             ToolButton {
                 id: outMuteButton
                 focusPolicy: Qt.NoFocus
+                display: AbstractButton.TextBesideIcon
                 icon.width: 20
                 icon.height: 20
-                icon.name: controller.outputMuted ? "audio-volume-muted" : "audio-volume-high"
-                opacity: controller.outputMuted ? 0.45 : 1.0
+                icon.name: {
+                    controller.uiVersion
+                    return controller.outputMuted ? "audio-volume-muted" : "audio-volume-high"
+                }
+                text: {
+                    controller.uiVersion
+                    return controller.outputMuted ? "Muted" : ""
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.outputMuted ? 0.45 : 1.0
+                }
                 ToolTip.visible: hovered
-                ToolTip.text: controller.outputMuted ? "Output muted — click to unmute" : "Output unmuted — click to mute"
+                ToolTip.text: {
+                    controller.uiVersion
+                    return controller.outputMuted
+                           ? "Output muted — click to unmute"
+                           : "Output unmuted — click to mute"
+                }
                 onClicked: controller.toggleOutputMute()
             }
             Slider {
@@ -118,8 +146,14 @@ ApplicationWindow {
                 to: 100
                 value: controller.outputVolume
                 live: true
-                enabled: !controller.outputMuted
-                opacity: controller.outputMuted ? 0.4 : 1.0
+                enabled: {
+                    controller.uiVersion
+                    return !controller.outputMuted
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.outputMuted ? 0.4 : 1.0
+                }
                 onMoved: controller.updateOutputVolume(Math.round(value))
                 onPressedChanged: if (!pressed)
                     controller.updateOutputVolume(Math.round(value))
@@ -128,20 +162,42 @@ ApplicationWindow {
                 Layout.preferredWidth: 36
                 horizontalAlignment: Text.AlignRight
                 text: Math.round(outVolumeSlider.value) + "%"
-                color: controller.outputMuted ? "#666" : "#ccc"
-                opacity: controller.outputMuted ? 0.4 : 1.0
+                color: {
+                    controller.uiVersion
+                    return controller.outputMuted ? "#666" : "#ccc"
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.outputMuted ? 0.4 : 1.0
+                }
             }
 
             Label { text: "Mon"; color: "#aaa" }
             ToolButton {
                 id: monMuteButton
                 focusPolicy: Qt.NoFocus
+                display: AbstractButton.TextBesideIcon
                 icon.width: 20
                 icon.height: 20
-                icon.name: controller.monitorMuted ? "audio-volume-muted" : "audio-headphones"
-                opacity: controller.monitorMuted ? 0.45 : 1.0
+                icon.name: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? "audio-volume-muted" : "audio-headphones"
+                }
+                text: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? "Muted" : ""
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? 0.45 : 1.0
+                }
                 ToolTip.visible: hovered
-                ToolTip.text: controller.monitorMuted ? "Monitor muted — click to unmute" : "Monitor unmuted — click to mute"
+                ToolTip.text: {
+                    controller.uiVersion
+                    return controller.monitorMuted
+                           ? "Monitor muted — click to unmute"
+                           : "Monitor unmuted — click to mute"
+                }
                 onClicked: controller.toggleMonitorMute()
             }
             Slider {
@@ -152,8 +208,14 @@ ApplicationWindow {
                 to: 100
                 value: controller.monitorVolume
                 live: true
-                enabled: !controller.monitorMuted
-                opacity: controller.monitorMuted ? 0.4 : 1.0
+                enabled: {
+                    controller.uiVersion
+                    return !controller.monitorMuted
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? 0.4 : 1.0
+                }
                 onMoved: controller.updateMonitorVolume(Math.round(value))
                 onPressedChanged: if (!pressed)
                     controller.updateMonitorVolume(Math.round(value))
@@ -162,8 +224,14 @@ ApplicationWindow {
                 Layout.preferredWidth: 36
                 horizontalAlignment: Text.AlignRight
                 text: Math.round(monVolumeSlider.value) + "%"
-                color: controller.monitorMuted ? "#666" : "#ccc"
-                opacity: controller.monitorMuted ? 0.4 : 1.0
+                color: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? "#666" : "#ccc"
+                }
+                opacity: {
+                    controller.uiVersion
+                    return controller.monitorMuted ? 0.4 : 1.0
+                }
             }
 
             Item { Layout.fillWidth: true }

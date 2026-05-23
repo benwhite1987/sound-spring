@@ -18,6 +18,7 @@ pub mod qobject {
         #[qproperty(i32, tab_version)]
         #[qproperty(i32, progress_version)]
         #[qproperty(i32, shortcut_version)]
+        #[qproperty(i32, ui_version)]
         #[qproperty(i32, output_volume)]
         #[qproperty(i32, monitor_volume)]
         #[qproperty(bool, output_muted)]
@@ -227,6 +228,7 @@ pub struct SoundboardControllerRust {
     tab_version: i32,
     progress_version: i32,
     shortcut_version: i32,
+    ui_version: i32,
     output_volume: i32,
     monitor_volume: i32,
     output_muted: bool,
@@ -251,6 +253,10 @@ struct KeyEventResult {
 struct ShortcutHandleResult {
     tab_changed: bool,
     mute_changed: bool,
+}
+
+fn next_ui_version(current: i32) -> i32 {
+    current + 1
 }
 
 impl SoundboardControllerRust {
@@ -280,8 +286,8 @@ impl SoundboardControllerRust {
 
     fn push_volumes(&self) {
         if let Some(tx) = BACKEND_TX.get() {
-            if tx.try_send(BackendCommand::ApplyVolumes(self.volume_state())).is_err() {
-                tracing::warn!("backend volume queue full, dropping volume update");
+            if tx.blocking_send(BackendCommand::ApplyVolumes(self.volume_state())).is_err() {
+                tracing::warn!("backend volume channel closed, dropping volume update");
             }
         }
     }
@@ -654,6 +660,13 @@ impl SoundboardControllerRust {
 }
 
 impl qobject::SoundboardController {
+    /// cxx-qt properties share Rust field storage; mutating fields directly does not
+    /// emit NOTIFY. Bump ui_version through its setter so QML bindings re-evaluate.
+    fn bump_ui_version(mut pin: Pin<&mut Self>) {
+        let next = next_ui_version(pin.as_ref().rust().ui_version);
+        pin.as_mut().set_ui_version(next);
+    }
+
     fn sync_mute_properties(mut pin: Pin<&mut Self>) {
         let output_muted = pin.as_ref().rust().output_muted;
         let monitor_muted = pin.as_ref().rust().monitor_muted;
@@ -663,11 +676,33 @@ impl qobject::SoundboardController {
 
     fn sync_tab_properties(mut pin: Pin<&mut Self>) {
         let index = pin.as_ref().rust().current_tab_index;
-        let version = pin.as_ref().rust().tab_version;
+        let tab_count = pin.as_ref().rust().tab_count;
+        let tab_version = pin.as_ref().rust().tab_version;
         let name = pin.as_ref().rust().current_tab_name.clone();
         pin.as_mut().set_current_tab_index(index);
         pin.as_mut().set_current_tab_name(name);
-        pin.as_mut().set_tab_version(version);
+        pin.as_mut().set_tab_count(tab_count);
+        pin.as_mut().set_tab_version(tab_version);
+        Self::bump_ui_version(pin.as_mut());
+    }
+
+    fn sync_mic_properties(mut pin: Pin<&mut Self>) {
+        let count = pin.as_ref().rust().mic_source_count;
+        let version = pin.as_ref().rust().mic_sources_version;
+        pin.as_mut().set_mic_source_count(count);
+        pin.as_mut().set_mic_sources_version(version);
+    }
+
+    fn sync_volume_properties(mut pin: Pin<&mut Self>) {
+        let output_volume = pin.as_ref().rust().output_volume;
+        let monitor_volume = pin.as_ref().rust().monitor_volume;
+        let output_muted = pin.as_ref().rust().output_muted;
+        let monitor_muted = pin.as_ref().rust().monitor_muted;
+        pin.as_mut().set_output_volume(output_volume);
+        pin.as_mut().set_monitor_volume(monitor_volume);
+        pin.as_mut().set_output_muted(output_muted);
+        pin.as_mut().set_monitor_muted(monitor_muted);
+        Self::bump_ui_version(pin.as_mut());
     }
 
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
@@ -705,7 +740,7 @@ impl qobject::SoundboardController {
         let id = String::from(id);
         let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
         if result.mute_changed {
-            Self::sync_mute_properties(self.as_mut());
+            Self::sync_volume_properties(self.as_mut());
         }
         if result.tab_changed {
             Self::sync_tab_properties(self.as_mut());
@@ -730,7 +765,7 @@ impl qobject::SoundboardController {
             return false;
         }
         if result.mute_changed {
-            Self::sync_mute_properties(self.as_mut());
+            Self::sync_volume_properties(self.as_mut());
         }
         if result.tab_changed {
             Self::sync_tab_properties(self.as_mut());
@@ -779,28 +814,40 @@ impl qobject::SoundboardController {
 
     pub fn update_output_volume(mut self: Pin<&mut Self>, volume: i32) {
         let volume = volume.clamp(0, 100);
-        self.as_mut().rust_mut().output_volume = volume;
-        self.as_mut().set_output_volume(volume);
-        self.as_mut().rust_mut().persist_volumes();
-        self.as_mut().rust_mut().push_volumes();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.output_volume = volume;
+            if volume > 0 {
+                rust.output_muted = false;
+            }
+            rust.persist_volumes();
+            rust.push_volumes();
+        }
+        Self::sync_volume_properties(self.as_mut());
     }
 
     pub fn update_monitor_volume(mut self: Pin<&mut Self>, volume: i32) {
         let volume = volume.clamp(0, 100);
-        self.as_mut().rust_mut().monitor_volume = volume;
-        self.as_mut().set_monitor_volume(volume);
-        self.as_mut().rust_mut().persist_volumes();
-        self.as_mut().rust_mut().push_volumes();
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.monitor_volume = volume;
+            if volume > 0 {
+                rust.monitor_muted = false;
+            }
+            rust.persist_volumes();
+            rust.push_volumes();
+        }
+        Self::sync_volume_properties(self.as_mut());
     }
 
     pub fn toggle_output_mute(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().toggle_output_mute_internal();
-        Self::sync_mute_properties(self.as_mut());
+        Self::sync_volume_properties(self.as_mut());
     }
 
     pub fn toggle_monitor_mute(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().toggle_monitor_mute_internal();
-        Self::sync_mute_properties(self.as_mut());
+        Self::sync_volume_properties(self.as_mut());
     }
 
     pub fn process_events(mut self: Pin<&mut Self>) {
@@ -840,7 +887,7 @@ impl qobject::SoundboardController {
                     }
                     let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
                     if result.mute_changed {
-                        Self::sync_mute_properties(self.as_mut());
+                        Self::sync_volume_properties(self.as_mut());
                     }
                     if result.tab_changed {
                         tab_changed = true;
@@ -865,7 +912,7 @@ impl qobject::SoundboardController {
                 }
                 BackendEvent::MicSourcesUpdated => {
                     self.as_mut().rust_mut().refresh_mic_source_count();
-                    playback_changed = true;
+                    Self::sync_mic_properties(self.as_mut());
                 }
             }
         }
@@ -892,6 +939,9 @@ impl qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
+        Self::sync_tab_properties(self.as_mut());
+        Self::sync_mic_properties(self.as_mut());
+        self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
 
@@ -1043,18 +1093,13 @@ impl Constructor<()> for qobject::SoundboardController {
             output_muted: config.audio.output_muted,
             monitor_muted: config.audio.monitor_muted,
         });
-        let output_volume = rust.output_volume;
-        let monitor_volume = rust.monitor_volume;
-        let output_muted = rust.output_muted;
-        let monitor_muted = rust.monitor_muted;
         rust.push_volumes();
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
-        self.as_mut().set_output_volume(output_volume);
-        self.as_mut().set_monitor_volume(monitor_volume);
-        self.as_mut().set_output_muted(output_muted);
-        self.as_mut().set_monitor_muted(monitor_muted);
+        Self::sync_tab_properties(self.as_mut());
+        Self::sync_mic_properties(self.as_mut());
+        Self::sync_volume_properties(self.as_mut());
     }
 }
 
@@ -1094,5 +1139,11 @@ mod session_tests {
 
         assert!(controller.active_playbacks.contains_key(&music));
         assert!(!controller.active_playbacks.contains_key(&effects));
+    }
+
+    #[test]
+    fn ui_version_bump_advances_monotonically() {
+        assert_eq!(next_ui_version(0), 1);
+        assert_eq!(next_ui_version(3), 4);
     }
 }

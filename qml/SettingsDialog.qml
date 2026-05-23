@@ -91,9 +91,14 @@ Window {
                                 text: controller.micSourceDescriptionAt(index)
                             }
                             contentItem: Text {
-                                text: micCombo.displayText.length > 0
-                                      ? micCombo.displayText
-                                      : micCombo.selectedDescription()
+                                text: {
+                                    controller.micSourcesVersion
+                                    if (micCombo.currentIndex >= 0
+                                            && micCombo.currentIndex < controller.micSourceCount) {
+                                        return controller.micSourceDescriptionAt(micCombo.currentIndex)
+                                    }
+                                    return micCombo.selectedDescription()
+                                }
                                 elide: Text.ElideRight
                                 verticalAlignment: Text.AlignVCenter
                                 leftPadding: 8
@@ -125,7 +130,7 @@ Window {
                             Component.onCompleted: syncSelection()
                             Connections {
                                 target: controller
-                                function onPlayingStateChanged() {
+                                function onMicSourcesVersionChanged() {
                                     micCombo.syncSelection()
                                 }
                             }
