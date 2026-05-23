@@ -283,19 +283,27 @@ pub async fn bind_with_options(
         .context("GlobalShortcuts.BindShortcuts")?;
     let bind_results = wait_for_request(&connection, bind_request).await?;
     let bind_elapsed = bind_started.elapsed();
-    if bind_elapsed.as_millis() < 100 {
-        warn!(
-            "portal BindShortcuts completed in {}ms — KDE likely skipped the config dialog; \
-             stale KGlobalAccel entries may remain",
-            bind_elapsed.as_millis()
-        );
-    }
     let bound_shortcuts = parse_bound_shortcuts(&bind_results);
     log_bound_shortcuts(shortcuts, &bound_shortcuts);
     let assigned_count = bound_shortcuts
         .iter()
         .filter(|s| !s.trigger_description.is_empty())
         .count();
+    // A sub-100 ms bind with zero assigned keys is the classic
+    // "portal-kde silently dismissed the dialog" signature (typically caused
+    // by a stale parent-cgroup app_id — see docs/global-shortcuts.md). A fast
+    // bind that returns assigned keys is normal: it means the portal reused
+    // a previously-stored binding for this app_id, which is the desired
+    // behaviour on every launch after the first.
+    if bind_elapsed.as_millis() < 100 && assigned_count == 0 {
+        warn!(
+            "portal BindShortcuts completed in {}ms with zero assigned keys — \
+             KDE likely skipped the config dialog. Verify the journal shows \
+             app_id: \"sound-spring\"; if it shows another app_id, the binary \
+             is in the wrong cgroup scope (see docs/global-shortcuts.md).",
+            bind_elapsed.as_millis()
+        );
+    }
 
     if bound_shortcuts.len() < requested_count {
         warn!(

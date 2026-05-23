@@ -160,22 +160,36 @@ The portal then returns 15 shortcuts with empty `trigger_description` in
 ~10 ms, no assignment dialog appears, and no `[sound-spring]` section is
 ever written to `~/.config/kglobalshortcutsrc`.
 
-To test global shortcuts, launch the binary in its own cgroup scope. Any of
-these work:
+To test global shortcuts, launch the binary so it lands in a **top-level
+`app-sound-spring-*.scope`** under `app.slice`, not nested inside a parent
+terminal's scope. `systemd-run --user --scope` from inside another desktop
+app's terminal creates a *child* scope of that app — portal-kde then walks
+up and resolves the first `app-*.scope` it finds, which is still the
+parent.
+
+These launchers go through the session bus and create a proper top-level
+scope:
 
 ```bash
-# Preferred: from a standalone terminal (Konsole, Alacritty, a TTY, etc.)
-RUST_LOG=sound_spring=info ./target/release/sound-spring
+# Recommended — uses the installed .desktop file via GIO:
+gtk-launch sound-spring
 
-# Or force a fresh systemd scope from anywhere (including Cursor's terminal).
-# Omit --unit so systemd auto-generates a unique scope name each run; passing
-# an explicit name will fail on the second invocation with "unit was already
-# loaded" once --collect has registered it.
+# Or via gio launch:
+gio launch ~/.local/share/applications/sound-spring.desktop
+
+# Or from KRunner / the app menu (Alt+Space → "Sound Spring")
+```
+
+These do **not** escape the parent scope and will report the wrong
+`app_id` if launched from Konsole/Cursor/VS Code:
+
+```bash
+# Wrong — inherits parent app's cgroup, app_id resolves to parent
+./target/release/sound-spring
 systemd-run --user --scope --collect ./target/release/sound-spring
 
-# Or via the installed .desktop entry (KRunner / app menu)
-kstart6 sound-spring
-gtk-launch sound-spring
+# Only safe from a TTY (Ctrl+Alt+F2) or a terminal that itself runs in
+# its own top-level app.scope and has no app-*.scope ancestor.
 ```
 
 When launched correctly, the journal will show

@@ -80,24 +80,39 @@ symptom:
 
 ## The correct test protocol
 
-When verifying global shortcuts work, **launch the binary outside any
-embedded terminal** (Cursor, VS Code, Konsole-spawned-from-Cursor, GNOME
-Terminal-spawned-from-an-IDE, etc.). Any of the following work:
+When verifying global shortcuts work, the binary must end up in a
+**top-level `app-sound-spring-*.scope`** directly under `app.slice`. Any
+process launched from inside a terminal (Konsole, Cursor, VS Code, GNOME
+Terminal) lives in `app-<that-terminal>-*.scope`, and child processes
+inherit that scope by default. `systemd-run --user --scope` does **not**
+escape it — it creates `run-*.scope` *inside* the calling scope, and
+portal-kde resolves to the first `app-*.scope` ancestor, which is the
+terminal.
+
+The launchers that actually create a top-level scope go through the user
+session bus and call `org.freedesktop.systemd1.Manager.StartTransientUnit`,
+which places the new unit directly under `app.slice`:
 
 ```bash
-# A standalone terminal: Konsole, Alacritty, foot, a real TTY (Ctrl+Alt+F2)
-RUST_LOG=sound_spring=info ./target/release/sound-spring
-
-# Or force a fresh scope from anywhere, including an IDE terminal.
-# Omit --unit so each run gets a unique auto-generated scope name. With an
-# explicit --unit=NAME, the second invocation fails with "unit was already
-# loaded" because --collect registers it.
-systemd-run --user --scope --collect ./target/release/sound-spring
-
-# Or via the installed .desktop entry, which always runs in its own scope:
-kstart6 sound-spring
+# Recommended:
 gtk-launch sound-spring
+
+# Equivalent via GIO:
+gio launch ~/.local/share/applications/sound-spring.desktop
+
+# Or from KRunner (Alt+Space) — typing "Sound Spring" launches via KIO,
+# which uses the same StartTransientUnit path.
 ```
+
+Avoid these from inside an IDE/terminal — they keep the parent's scope:
+
+```bash
+./target/release/sound-spring                       # inherits parent scope
+systemd-run --user --scope ./target/release/...    # nests inside parent
+```
+
+A bare TTY (Ctrl+Alt+F2) is the only case where running the binary
+directly produces a clean scope, because there's no app-*.scope ancestor.
 
 Verification:
 
@@ -118,8 +133,10 @@ If any of those return empty after Apply, **check the cgroup first**:
 
 ```bash
 cat /proc/$(pgrep -n sound-spring)/cgroup
-# Look for app-sound-spring-…scope. If you see app-cursor- or app-chromium-,
-# the binary inherited the wrong scope — relaunch per the protocol above.
+# Look for app-sound-spring-…scope (correct).
+# If you see app-cursor-, app-chromium-, app-org.kde.konsole-, etc., or a
+# run-*.scope NESTED inside one, the binary inherited the wrong scope.
+# Kill it and relaunch with `gtk-launch sound-spring` per the protocol.
 ```
 
 ## Why the in-app fallback opens System Settings only when useful
