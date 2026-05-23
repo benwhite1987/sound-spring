@@ -23,6 +23,7 @@ pub mod qobject {
         #[qproperty(i32, monitor_volume)]
         #[qproperty(bool, output_muted)]
         #[qproperty(bool, monitor_muted)]
+        #[qproperty(QString, global_shortcuts_status)]
         type SoundboardController = super::SoundboardControllerRust;
 
         #[qinvokable]
@@ -70,13 +71,13 @@ pub mod qobject {
         fn set_window_active(self: Pin<&mut SoundboardController>, active: bool);
 
         #[qinvokable]
+        fn refresh_portal_parent_window(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
         fn bind_global_shortcuts(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
         fn configure_global_shortcuts(self: Pin<&mut SoundboardController>);
-
-        #[qinvokable]
-        fn reset_global_shortcuts(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
         fn refresh_shortcut_bindings(self: Pin<&mut SoundboardController>);
@@ -120,6 +121,18 @@ pub mod qobject {
         #[qinvokable]
         fn reload_from_config(self: Pin<&mut SoundboardController>);
 
+        #[qinvokable]
+        fn sync_global_shortcuts_status(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn refresh_global_shortcuts_status(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn needs_global_shortcut_apply(self: &SoundboardController) -> bool;
+
+        #[qinvokable]
+        fn dismiss_global_shortcuts_prompt(self: Pin<&mut SoundboardController>);
+
         #[qsignal]
         fn tabs_changed(self: Pin<&mut SoundboardController>);
 
@@ -140,7 +153,7 @@ pub mod qobject {
 }
 
 use core::pin::Pin;
-use cxx_qt::{CxxQtType, Constructor};
+use cxx_qt::{Constructor, CxxQtType};
 use cxx_qt_lib::QString;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -155,10 +168,12 @@ extern "C" {
 
 use crate::config::Config;
 use crate::services::pipewire::MicSource;
-use crate::services::shortcuts::{accept_shortcut, play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
+use crate::services::player::{PlayerCommand, VolumeState};
+use crate::services::shortcuts::{
+    accept_shortcut, format_global_shortcut_status, global_shortcuts_active, play_slot_from_qt_key,
+    qt_shortcut_sequence, trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager,
+};
 use crate::services::tabs::{normalize_slot, Tab, TabsRepository};
-use crate::services::PlayerCommand;
-use crate::services::player::VolumeState;
 use crate::state::State;
 
 #[derive(Debug)]
@@ -166,7 +181,6 @@ pub enum BackendCommand {
     ApplyConfig(Config),
     BindShortcuts,
     ConfigurePortalShortcuts,
-    ResetPortalShortcuts,
     Player(PlayerCommand),
     RefreshMicSources,
     ApplyVolumes(VolumeState),
@@ -174,11 +188,9 @@ pub enum BackendCommand {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    PlaybackEnded {
-        tab_index: i32,
-        slot: i32,
-    },
+    PlaybackEnded { tab_index: i32, slot: i32 },
     ShortcutTriggered { id: String },
+    GlobalShortcutStatusChanged,
     ConfigApplied,
     MicSourcesUpdated,
 }
@@ -194,7 +206,6 @@ const KEY_DEDUPE_MS: u64 = 120;
 const MIN_PLAY_BEFORE_TOGGLE_MS: u64 = 300;
 
 struct ActivePlayback {
-    path: PathBuf,
     started: Instant,
     duration_ms: u64,
 }
@@ -213,9 +224,7 @@ struct PlayCoalesce {
 }
 
 // Compatibility with existing playback wiring.
-pub type PlayerBackendEvent = BackendEvent;
 pub static PLAYER_TX: OnceLock<TokioSender<PlayerCommand>> = OnceLock::new();
-pub static PLAYER_EVENT_RX: OnceLock<Mutex<StdReceiver<BackendEvent>>> = OnceLock::new();
 
 #[derive(Default)]
 pub struct SoundboardControllerRust {
@@ -233,6 +242,7 @@ pub struct SoundboardControllerRust {
     monitor_volume: i32,
     output_muted: bool,
     monitor_muted: bool,
+    global_shortcuts_status: QString,
     tabs: Vec<Tab>,
     active_playbacks: HashMap<SessionKey, ActivePlayback>,
     play_coalesce: Option<PlayCoalesce>,
@@ -253,10 +263,6 @@ struct KeyEventResult {
 struct ShortcutHandleResult {
     tab_changed: bool,
     mute_changed: bool,
-}
-
-fn next_ui_version(current: i32) -> i32 {
-    current + 1
 }
 
 impl SoundboardControllerRust {
@@ -286,7 +292,10 @@ impl SoundboardControllerRust {
 
     fn push_volumes(&self) {
         if let Some(tx) = BACKEND_TX.get() {
-            if tx.blocking_send(BackendCommand::ApplyVolumes(self.volume_state())).is_err() {
+            if tx
+                .blocking_send(BackendCommand::ApplyVolumes(self.volume_state()))
+                .is_err()
+            {
                 tracing::warn!("backend volume channel closed, dropping volume update");
             }
         }
@@ -316,7 +325,8 @@ impl SoundboardControllerRust {
             return;
         }
         let current = current_path.unwrap_or_default();
-        if let Some(tab) = TabsRepository::resolve_current_tab(&self.tabs, current, &self.tabs_root) {
+        if let Some(tab) = TabsRepository::resolve_current_tab(&self.tabs, current, &self.tabs_root)
+        {
             if let Some(index) = self.tabs.iter().position(|t| t.path == tab.path) {
                 self.current_tab_index = index as i32;
             }
@@ -423,12 +433,6 @@ impl SoundboardControllerRust {
         KeyEventResult::default()
     }
 
-    fn path_for_slot(&self, slot: i32) -> Option<PathBuf> {
-        let tab = self.active_tab()?;
-        let index = normalize_slot(slot)?;
-        tab.slot(index).cloned()
-    }
-
     fn duration_for_path(&mut self, path: &Path) -> u64 {
         if let Some(duration_ms) = self.duration_cache.get(path).copied() {
             return duration_ms;
@@ -446,11 +450,6 @@ impl SoundboardControllerRust {
                     .map(|def| def.id.clone())
             })
         })
-    }
-
-    fn handle_trigger(&mut self, trigger: &str) -> Option<ShortcutHandleResult> {
-        let id = self.shortcut_id_for_trigger(trigger)?;
-        Some(self.handle_shortcut_id(&id))
     }
 
     fn shortcut_for_slot(&self, slot: i32) -> Option<String> {
@@ -494,18 +493,13 @@ impl SoundboardControllerRust {
         self.playing_version += 1;
     }
 
-    fn stop_slot_internal(&mut self, slot: i32) {
-        self.stop_session_internal(self.current_tab_index, slot);
-    }
-
     fn play_slot_internal(&mut self, slot: i32) {
         let tab_index = self.current_tab_index;
         let session_key = SessionKey { tab_index, slot };
 
         if self.active_playbacks.contains_key(&session_key) {
             if let Some(playback) = self.active_playbacks.get(&session_key) {
-                if playback.started.elapsed() < Duration::from_millis(MIN_PLAY_BEFORE_TOGGLE_MS)
-                {
+                if playback.started.elapsed() < Duration::from_millis(MIN_PLAY_BEFORE_TOGGLE_MS) {
                     return;
                 }
             }
@@ -554,7 +548,6 @@ impl SoundboardControllerRust {
         self.active_playbacks.insert(
             session_key,
             ActivePlayback {
-                path,
                 started: Instant::now(),
                 duration_ms,
             },
@@ -643,7 +636,9 @@ impl SoundboardControllerRust {
 
     fn reload_shortcut_bindings() {
         let config = crate::config::load_config().unwrap_or_default();
-        Self::sync_shortcut_bindings(&ShortcutsManager::resolve_bindings(&config.shortcuts));
+        SoundboardControllerRust::sync_shortcut_bindings(&ShortcutsManager::resolve_bindings(
+            &config.shortcuts,
+        ));
     }
 
     pub fn sync_shortcut_bindings(bindings: &[ShortcutDef]) {
@@ -660,49 +655,34 @@ impl SoundboardControllerRust {
 }
 
 impl qobject::SoundboardController {
-    /// cxx-qt properties share Rust field storage; mutating fields directly does not
-    /// emit NOTIFY. Bump ui_version through its setter so QML bindings re-evaluate.
-    fn bump_ui_version(mut pin: Pin<&mut Self>) {
-        let next = next_ui_version(pin.as_ref().rust().ui_version);
-        pin.as_mut().set_ui_version(next);
+    pub fn sync_global_shortcuts_status(self: Pin<&mut Self>) {
+        Self::refresh_global_shortcuts_status(self);
     }
 
-    fn sync_mute_properties(mut pin: Pin<&mut Self>) {
-        let output_muted = pin.as_ref().rust().output_muted;
-        let monitor_muted = pin.as_ref().rust().monitor_muted;
-        pin.as_mut().set_output_muted(output_muted);
-        pin.as_mut().set_monitor_muted(monitor_muted);
+    pub fn refresh_global_shortcuts_status(mut self: Pin<&mut Self>) {
+        let label = format_global_shortcut_status();
+        let status = QString::from(label.as_str());
+        self.as_mut().rust_mut().global_shortcuts_status = status.clone();
+        self.as_mut().set_global_shortcuts_status(status);
     }
 
-    fn sync_tab_properties(mut pin: Pin<&mut Self>) {
-        let index = pin.as_ref().rust().current_tab_index;
-        let tab_count = pin.as_ref().rust().tab_count;
-        let tab_version = pin.as_ref().rust().tab_version;
-        let name = pin.as_ref().rust().current_tab_name.clone();
-        pin.as_mut().set_current_tab_index(index);
-        pin.as_mut().set_current_tab_name(name);
-        pin.as_mut().set_tab_count(tab_count);
-        pin.as_mut().set_tab_version(tab_version);
-        Self::bump_ui_version(pin.as_mut());
+    pub fn needs_global_shortcut_apply(&self) -> bool {
+        let config = crate::config::load_config().unwrap_or_default();
+        if !ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
+            return false;
+        }
+        if config.ui.global_shortcuts_prompt_dismissed {
+            return false;
+        }
+        !global_shortcuts_active()
     }
 
-    fn sync_mic_properties(mut pin: Pin<&mut Self>) {
-        let count = pin.as_ref().rust().mic_source_count;
-        let version = pin.as_ref().rust().mic_sources_version;
-        pin.as_mut().set_mic_source_count(count);
-        pin.as_mut().set_mic_sources_version(version);
-    }
-
-    fn sync_volume_properties(mut pin: Pin<&mut Self>) {
-        let output_volume = pin.as_ref().rust().output_volume;
-        let monitor_volume = pin.as_ref().rust().monitor_volume;
-        let output_muted = pin.as_ref().rust().output_muted;
-        let monitor_muted = pin.as_ref().rust().monitor_muted;
-        pin.as_mut().set_output_volume(output_volume);
-        pin.as_mut().set_monitor_volume(monitor_volume);
-        pin.as_mut().set_output_muted(output_muted);
-        pin.as_mut().set_monitor_muted(monitor_muted);
-        Self::bump_ui_version(pin.as_mut());
+    pub fn dismiss_global_shortcuts_prompt(self: Pin<&mut Self>) {
+        std::thread::spawn(|| {
+            let mut config = crate::config::load_config().unwrap_or_default();
+            config.ui.global_shortcuts_prompt_dismissed = true;
+            let _ = crate::config::save_config(&config);
+        });
     }
 
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
@@ -712,21 +692,21 @@ impl qobject::SoundboardController {
 
     pub fn next_tab(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().next_tab_internal();
-        Self::sync_tab_properties(self.as_mut());
+        properties::sync_tab_properties(self.as_mut());
         self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
 
     pub fn prev_tab(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().prev_tab_internal();
-        Self::sync_tab_properties(self.as_mut());
+        properties::sync_tab_properties(self.as_mut());
         self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
 
     pub fn select_tab(mut self: Pin<&mut Self>, index: i32) {
         self.as_mut().rust_mut().select_tab_internal(index);
-        Self::sync_tab_properties(self.as_mut());
+        properties::sync_tab_properties(self.as_mut());
         self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
@@ -740,10 +720,10 @@ impl qobject::SoundboardController {
         let id = String::from(id);
         let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
         if result.mute_changed {
-            Self::sync_volume_properties(self.as_mut());
+            properties::sync_volume_properties(self.as_mut());
         }
         if result.tab_changed {
-            Self::sync_tab_properties(self.as_mut());
+            properties::sync_tab_properties(self.as_mut());
             self.as_mut().current_tab_changed();
         } else if !result.mute_changed {
             self.as_mut().rust_mut().bump_playing_version();
@@ -757,18 +737,18 @@ impl qobject::SoundboardController {
         modifiers: i32,
         native_scan_code: u32,
     ) -> bool {
-        let result = self
-            .as_mut()
-            .rust_mut()
-            .handle_key_event_internal(key, modifiers, native_scan_code);
+        let result =
+            self.as_mut()
+                .rust_mut()
+                .handle_key_event_internal(key, modifiers, native_scan_code);
         if !result.handled {
             return false;
         }
         if result.mute_changed {
-            Self::sync_volume_properties(self.as_mut());
+            properties::sync_volume_properties(self.as_mut());
         }
         if result.tab_changed {
-            Self::sync_tab_properties(self.as_mut());
+            properties::sync_tab_properties(self.as_mut());
             self.as_mut().current_tab_changed();
         } else if result.playback_changed {
             self.as_mut().rust_mut().bump_playing_version();
@@ -783,27 +763,23 @@ impl qobject::SoundboardController {
         WINDOW_ACTIVE.store(active, Ordering::Relaxed);
     }
 
-    pub fn bind_global_shortcuts(_self: Pin<&mut Self>) {
+    pub fn refresh_portal_parent_window(_self: Pin<&mut Self>) {
         unsafe {
             sound_spring_refresh_portal_parent_window();
         }
+    }
+
+    pub fn bind_global_shortcuts(_self: Pin<&mut Self>) {
+        Self::refresh_portal_parent_window(_self);
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::BindShortcuts);
         }
     }
 
     pub fn configure_global_shortcuts(_self: Pin<&mut Self>) {
-        unsafe {
-            sound_spring_refresh_portal_parent_window();
-        }
+        Self::refresh_portal_parent_window(_self);
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::ConfigurePortalShortcuts);
-        }
-    }
-
-    pub fn reset_global_shortcuts(_self: Pin<&mut Self>) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::ResetPortalShortcuts);
         }
     }
 
@@ -823,7 +799,7 @@ impl qobject::SoundboardController {
             rust.persist_volumes();
             rust.push_volumes();
         }
-        Self::sync_volume_properties(self.as_mut());
+        properties::sync_volume_properties(self.as_mut());
     }
 
     pub fn update_monitor_volume(mut self: Pin<&mut Self>, volume: i32) {
@@ -837,21 +813,21 @@ impl qobject::SoundboardController {
             rust.persist_volumes();
             rust.push_volumes();
         }
-        Self::sync_volume_properties(self.as_mut());
+        properties::sync_volume_properties(self.as_mut());
     }
 
     pub fn toggle_output_mute(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().toggle_output_mute_internal();
-        Self::sync_volume_properties(self.as_mut());
+        properties::sync_volume_properties(self.as_mut());
     }
 
     pub fn toggle_monitor_mute(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().toggle_monitor_mute_internal();
-        Self::sync_volume_properties(self.as_mut());
+        properties::sync_volume_properties(self.as_mut());
     }
 
     pub fn process_events(mut self: Pin<&mut Self>) {
-        let mut progress_dirty = self.as_mut().rust_mut().tick_progress();
+        let progress_dirty = self.as_mut().rust_mut().tick_progress();
 
         let events: Vec<BackendEvent> = {
             let Some(rx) = BACKEND_EVENT_RX.get() else {
@@ -878,16 +854,15 @@ impl qobject::SoundboardController {
         for event in events {
             match event {
                 BackendEvent::PlaybackEnded { tab_index, slot } => {
-                    self.as_mut().rust_mut().mark_playback_ended(tab_index, slot);
+                    self.as_mut()
+                        .rust_mut()
+                        .mark_playback_ended(tab_index, slot);
                     playback_changed = true;
                 }
                 BackendEvent::ShortcutTriggered { id } => {
-                    if id.starts_with("play_") && WINDOW_ACTIVE.load(Ordering::Relaxed) {
-                        continue;
-                    }
                     let result = self.as_mut().rust_mut().handle_shortcut_id(id.as_str());
                     if result.mute_changed {
-                        Self::sync_volume_properties(self.as_mut());
+                        properties::sync_volume_properties(self.as_mut());
                     }
                     if result.tab_changed {
                         tab_changed = true;
@@ -912,7 +887,10 @@ impl qobject::SoundboardController {
                 }
                 BackendEvent::MicSourcesUpdated => {
                     self.as_mut().rust_mut().refresh_mic_source_count();
-                    Self::sync_mic_properties(self.as_mut());
+                    properties::sync_mic_properties(self.as_mut());
+                }
+                BackendEvent::GlobalShortcutStatusChanged => {
+                    Self::refresh_global_shortcuts_status(self.as_mut());
                 }
             }
         }
@@ -922,7 +900,7 @@ impl qobject::SoundboardController {
                 self.as_mut().rust_mut().bump_playing_version();
             }
             if tab_changed {
-                Self::sync_tab_properties(self.as_mut());
+                properties::sync_tab_properties(self.as_mut());
                 self.as_mut().current_tab_changed();
             }
             self.as_mut().playing_state_changed();
@@ -939,8 +917,8 @@ impl qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
-        Self::sync_tab_properties(self.as_mut());
-        Self::sync_mic_properties(self.as_mut());
+        properties::sync_tab_properties(self.as_mut());
+        properties::sync_mic_properties(self.as_mut());
         self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
@@ -1076,9 +1054,7 @@ impl Constructor<()> for qobject::SoundboardController {
     }
 
     fn initialize(mut self: Pin<&mut Self>, (): ()) {
-        SHORTCUT_BINDINGS
-            .set(Mutex::new(Vec::new()))
-            .ok();
+        SHORTCUT_BINDINGS.set(Mutex::new(Vec::new())).ok();
         SoundboardControllerRust::reload_shortcut_bindings();
 
         let config = crate::config::load_config().unwrap_or_default();
@@ -1097,9 +1073,59 @@ impl Constructor<()> for qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
-        Self::sync_tab_properties(self.as_mut());
-        Self::sync_mic_properties(self.as_mut());
-        Self::sync_volume_properties(self.as_mut());
+        properties::sync_tab_properties(self.as_mut());
+        properties::sync_mic_properties(self.as_mut());
+        properties::sync_volume_properties(self.as_mut());
+        Self::refresh_global_shortcuts_status(self.as_mut());
+    }
+}
+
+/// Qt property sync helpers — see `docs/cxx-qt-qml.md`.
+pub(crate) mod properties {
+    use core::pin::Pin;
+
+    use cxx_qt::CxxQtType;
+
+    use super::qobject::SoundboardController;
+
+    pub fn next_ui_version(current: i32) -> i32 {
+        current + 1
+    }
+
+    pub fn bump_ui_version(mut controller: Pin<&mut SoundboardController>) {
+        let next = next_ui_version(controller.as_ref().rust().ui_version);
+        controller.as_mut().set_ui_version(next);
+    }
+
+    pub fn sync_tab_properties(mut controller: Pin<&mut SoundboardController>) {
+        let index = controller.as_ref().rust().current_tab_index;
+        let tab_count = controller.as_ref().rust().tab_count;
+        let tab_version = controller.as_ref().rust().tab_version;
+        let name = controller.as_ref().rust().current_tab_name.clone();
+        controller.as_mut().set_current_tab_index(index);
+        controller.as_mut().set_current_tab_name(name);
+        controller.as_mut().set_tab_count(tab_count);
+        controller.as_mut().set_tab_version(tab_version);
+        bump_ui_version(controller);
+    }
+
+    pub fn sync_mic_properties(mut controller: Pin<&mut SoundboardController>) {
+        let count = controller.as_ref().rust().mic_source_count;
+        let version = controller.as_ref().rust().mic_sources_version;
+        controller.as_mut().set_mic_source_count(count);
+        controller.as_mut().set_mic_sources_version(version);
+    }
+
+    pub fn sync_volume_properties(mut controller: Pin<&mut SoundboardController>) {
+        let output_volume = controller.as_ref().rust().output_volume;
+        let monitor_volume = controller.as_ref().rust().monitor_volume;
+        let output_muted = controller.as_ref().rust().output_muted;
+        let monitor_muted = controller.as_ref().rust().monitor_muted;
+        controller.as_mut().set_output_volume(output_volume);
+        controller.as_mut().set_monitor_volume(monitor_volume);
+        controller.as_mut().set_output_muted(output_muted);
+        controller.as_mut().set_monitor_muted(monitor_muted);
+        bump_ui_version(controller);
     }
 }
 
@@ -1121,7 +1147,6 @@ mod session_tests {
         controller.active_playbacks.insert(
             music,
             ActivePlayback {
-                path: PathBuf::from("/music.ogg"),
                 started: Instant::now(),
                 duration_ms: 1000,
             },
@@ -1129,7 +1154,6 @@ mod session_tests {
         controller.active_playbacks.insert(
             effects,
             ActivePlayback {
-                path: PathBuf::from("/fx.ogg"),
                 started: Instant::now(),
                 duration_ms: 1000,
             },
@@ -1143,6 +1167,7 @@ mod session_tests {
 
     #[test]
     fn ui_version_bump_advances_monotonically() {
+        use super::properties::next_ui_version;
         assert_eq!(next_ui_version(0), 1);
         assert_eq!(next_ui_version(3), 4);
     }

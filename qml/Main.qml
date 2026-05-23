@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import com.benkahn.soundboard
 
@@ -249,5 +250,36 @@ ApplicationWindow {
         controller: controller
         settings: settings
         ownerWindow: root
+    }
+
+    Timer {
+        id: shortcutPromptTimer
+        interval: 1500
+        running: true
+        repeat: false
+        onTriggered: {
+            controller.syncGlobalShortcutsStatus()
+            shortcutPromptRecheck.start()
+        }
+    }
+
+    Timer {
+        id: shortcutPromptRecheck
+        interval: 250
+        repeat: false
+        onTriggered: {
+            if (controller.needsGlobalShortcutApply())
+                globalShortcutPrompt.open()
+        }
+    }
+
+    MessageDialog {
+        id: globalShortcutPrompt
+        title: "Register global shortcuts"
+        text: "Global hotkeys are not active yet. Open Settings → Shortcuts and click Apply " +
+              "to register them with KDE (you may see a permission dialog once)."
+        buttons: MessageDialog.Ok | MessageDialog.Cancel
+        onAccepted: settingsDialog.openSettings()
+        onRejected: controller.dismissGlobalShortcutsPrompt()
     }
 }

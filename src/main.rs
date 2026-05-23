@@ -4,16 +4,16 @@ mod services;
 mod state;
 
 use anyhow::{Context, Result};
+use config::Config;
+use config::SFX_SINK;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 use qobjects::controller::{
     BackendCommand, BackendEvent, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
-use config::Config;
-use config::SFX_SINK;
 use services::pipewire::{Modules, PipewireManager};
-use services::player::VolumeState;
+use services::player::{Player, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
-use services::{Player, TabsRepository};
+use services::tabs::TabsRepository;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -96,34 +96,50 @@ async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     }
 }
 
-async fn bind_shortcuts(config: &config::Config, force_cleanup: bool) {
+async fn bind_shortcuts(
+    config: &config::Config,
+    use_parent_window: bool,
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+) {
     if !ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
         set_global_shortcut_status(GlobalShortcutStatus::Inactive);
+        let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
         return;
     }
 
-    if force_cleanup || ShortcutsManager::has_stale_empty_kglobalaccel_bindings().await {
-        ShortcutsManager::cleanup_kglobalaccel_component().await;
+    if use_parent_window {
+        unsafe {
+            sound_spring_refresh_portal_parent_window();
+        }
     }
 
     let bindings = ShortcutsManager::resolve_bindings(&config.shortcuts);
-    match ShortcutsManager::bind_global(&bindings).await {
+    match ShortcutsManager::bind_global(&bindings, use_parent_window).await {
         Ok(Some(result)) => {
             let bound_count = result.bound_shortcuts.len();
+            let assigned_count = result.assigned_count;
+
             if bound_count == 0 {
                 set_global_shortcut_status(GlobalShortcutStatus::Failed {
                     reason: "no global shortcuts registered".into(),
                 });
-            } else if result.assigned_count == 0 {
+            } else if assigned_count == 0 {
+                // The portal bind round-tripped in ~10 ms with 15 empty entries.
+                // This means xdg-desktop-portal resolved app_id from the parent
+                // cgroup scope (Cursor / VS Code / Chromium / Electron) and reused
+                // that app's portal session. See README → "Testing global shortcuts".
                 set_global_shortcut_status(GlobalShortcutStatus::Failed {
-                    reason: "global shortcuts registered but no keys assigned — \
-                             open Settings and click Apply, or configure in System Settings"
+                    reason: "no keys assigned — portal-kde resolved app_id from the \
+                             parent cgroup (likely Cursor / VS Code / Chromium / \
+                             Electron). Relaunch outside that terminal, via the \
+                             .desktop entry, or with `systemd-run --user --scope \
+                             sound-spring`. In-window keys still work while focused."
                         .into(),
                 });
             } else {
                 set_global_shortcut_status(GlobalShortcutStatus::Bound {
                     bound_count,
-                    assigned_count: result.assigned_count,
+                    assigned_count,
                     requested_count: result.requested_count,
                 });
             }
@@ -136,15 +152,13 @@ async fn bind_shortcuts(config: &config::Config, force_cleanup: bool) {
             warn!("global shortcut bind failed: {err:#}; using in-window keys only");
         }
     }
+    let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
 }
 
 async fn apply_volumes(volumes: VolumeState) {
-    if let Err(err) = PipewireManager::set_sink_volume(
-        SFX_SINK,
-        volumes.output_percent,
-        volumes.output_muted,
-    )
-    .await
+    if let Err(err) =
+        PipewireManager::set_sink_volume(SFX_SINK, volumes.output_percent, volumes.output_muted)
+            .await
     {
         warn!("failed to set output sink volume: {err:#}");
     }
@@ -193,14 +207,12 @@ async fn apply_runtime_config(
 
     if !initial {
         if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
-            if let Some(prev) = previous {
-                ShortcutsManager::unregister_changed_bindings(prev, config).await;
-            }
-            bind_shortcuts(config, false).await;
-        } else if previous.is_some_and(|prev| {
-            ShortcutsManager::uses_global_binding(&prev.shortcuts.mode)
-        }) {
+            bind_shortcuts(config, true, event_tx).await;
+        } else if previous
+            .is_some_and(|prev| ShortcutsManager::uses_global_binding(&prev.shortcuts.mode))
+        {
             set_global_shortcut_status(GlobalShortcutStatus::Inactive);
+            let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
         }
     }
 
@@ -267,20 +279,20 @@ fn run_backend(
                             active_config = new_config;
                         }
                         Some(BackendCommand::BindShortcuts) => {
-                            bind_shortcuts(&active_config, false).await;
+                            bind_shortcuts(&active_config, true, &backend_event_tx).await;
                         }
                         Some(BackendCommand::ConfigurePortalShortcuts) => {
-                            ShortcutsManager::open_system_shortcuts_settings();
-                        }
-                        Some(BackendCommand::ResetPortalShortcuts) => {
-                            bind_shortcuts(&active_config, true).await;
+                            unsafe {
+                                sound_spring_refresh_portal_parent_window();
+                            }
+                            ShortcutsManager::configure_global_shortcuts().await;
                         }
                         Some(BackendCommand::RefreshMicSources) => {
                             publish_mic_sources(&backend_event_tx).await;
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player
-                                .handle_command(services::PlayerCommand::SetVolumes(volumes))
+                                .handle_command(services::player::PlayerCommand::SetVolumes(volumes))
                                 .await
                             {
                                 warn!("failed to apply live stream volumes: {err:#}");

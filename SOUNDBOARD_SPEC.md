@@ -147,13 +147,15 @@ and `paplay` process management. Communicates with the Qt thread via
 
 | Action       | Key                          | Shortcut ID         |
 |--------------|------------------------------|---------------------|
-| Play slot 1  | Meta+1                       | `play_1`            |
+| Play slot 1  | Num 1 (`KP_1`)               | `play_1`            |
 | ...          | ...                          | ...                 |
-| Play slot 9  | Meta+9                       | `play_9`            |
-| Play slot 10 | Meta+0                       | `play_10`           |
-| Next tab     | Meta+Bracket Right           | `tab_next`          |
-| Prev tab     | Meta+Bracket Left            | `tab_prev`          |
-| Stop all     | Meta+Escape                  | `stop_all`          |
+| Play slot 9  | Num 9 (`KP_9`)               | `play_9`            |
+| Play slot 10 | Num 0 (`KP_0`)               | `play_10`           |
+| Next tab     | Ctrl+Num + (`Ctrl+KP_Add`)   | `tab_next`          |
+| Prev tab     | Ctrl+Num − (`Ctrl+KP_Subtract`) | `tab_prev`       |
+| Stop all     | Ctrl+Num . (`Ctrl+KP_Decimal`) | `stop_all`         |
+| Mute output  | Alt+Num + (`Alt+KP_Add`)       | `mute_output`       |
+| Mute monitor | Alt+Num − (`Alt+KP_Subtract`) | `mute_monitor`     |
 
 ### Registration via xdg-desktop-portal GlobalShortcuts (preferred)
 
@@ -546,9 +548,9 @@ The implementation is done when all of these hold:
 3. Audio played through any sound button is audible on
    **Sound-Spring-Virtual-Microphone** in Discord/OBS.
 4. Real mic audio also routes to the virtual microphone input.
-5. Pressing Meta+1 from any focused window plays the slot 1 sound of the
+5. Pressing Num 1 from any focused window plays the slot 1 sound of the
    currently active tab.
-6. Pressing Meta+] cycles to the next tab; Meta+1 now plays the slot 1 sound
+6. Pressing Ctrl+Num + cycles to the next tab; Num 1 now plays the slot 1 sound
    of the new tab.
 7. The first run triggers a KDE portal dialog confirming the shortcut
    bindings; subsequent runs do not.

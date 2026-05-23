@@ -51,3 +51,28 @@ pub fn global_shortcuts_active() -> bool {
         } if assigned_count > 0
     )
 }
+
+pub fn format_global_shortcut_status() -> String {
+    match global_shortcut_status() {
+        GlobalShortcutStatus::Inactive => {
+            "Global shortcuts inactive — open Settings, Shortcuts tab, and click Apply.".into()
+        }
+        GlobalShortcutStatus::Bound {
+            assigned_count,
+            requested_count,
+            ..
+        } if assigned_count >= requested_count => {
+            format!("Global shortcuts active: {assigned_count}/{requested_count} keys assigned")
+        }
+        GlobalShortcutStatus::Bound {
+            assigned_count,
+            requested_count,
+            ..
+        } => format!(
+            "Global shortcuts partially active: {assigned_count}/{requested_count} keys assigned"
+        ),
+        GlobalShortcutStatus::Failed { reason } => {
+            format!("Global shortcuts failed: {reason}")
+        }
+    }
+}

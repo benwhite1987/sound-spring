@@ -2,17 +2,21 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
 use std::sync::mpsc::Sender as StdSender;
+use std::sync::{Mutex, OnceLock};
 use tracing::{info, warn};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zbus::{proxy, Connection};
 
-use super::trigger::portal_trigger;
+use super::trigger::{portal_trigger, trigger_from_portal};
 use super::{ShortcutDef, ShortcutEvent};
 
 const PORTAL_SUCCESS: u32 = 0;
 const PARENT_WINDOW_MAX: usize = 256;
+
+/// xdg-desktop-portal app id; used in the System Settings KCM URL.
+const PORTAL_COMPONENT: &str = "sound-spring";
+const LEGACY_PORTAL_COMPONENT: &str = "sound_spring";
 
 extern "C" {
     fn sound_spring_portal_parent_window(out: *mut std::ffi::c_char, out_len: usize);
@@ -48,10 +52,7 @@ fn portal_parent_window() -> String {
     default_path = "/org/freedesktop/portal/desktop"
 )]
 trait GlobalShortcuts {
-    fn create_session(
-        &self,
-        options: HashMap<&str, Value<'_>>,
-    ) -> zbus::Result<OwnedObjectPath>;
+    fn create_session(&self, options: HashMap<&str, Value<'_>>) -> zbus::Result<OwnedObjectPath>;
 
     fn bind_shortcuts(
         &self,
@@ -84,11 +85,7 @@ trait GlobalShortcuts {
 )]
 trait PortalRequest {
     #[zbus(signal)]
-    fn response(
-        &self,
-        response: u32,
-        results: HashMap<String, OwnedValue>,
-    ) -> zbus::Result<()>;
+    fn response(&self, response: u32, results: HashMap<String, OwnedValue>) -> zbus::Result<()>;
 }
 
 fn token(label: &str) -> String {
@@ -159,8 +156,7 @@ fn log_bound_shortcuts(requested: &[ShortcutDef], bound: &[BoundShortcut]) {
     if assigned == 0 {
         warn!(
             "portal bound {} shortcuts but none have key assignments; \
-             KDE likely reused empty KGlobalAccel entries (skipped config dialog). \
-             Clear shortcuts in System Settings → Shortcuts → Sound Spring, then restart.",
+             open KDE System Settings → Shortcuts → Sound Spring to assign keys",
             bound.len()
         );
     } else if assigned < bound.len() {
@@ -177,8 +173,10 @@ fn log_bound_shortcuts(requested: &[ShortcutDef], bound: &[BoundShortcut]) {
                 shortcut.id, shortcut.description
             );
         } else {
+            let internal = trigger_from_portal(&shortcut.trigger_description)
+                .unwrap_or_else(|| shortcut.trigger_description.clone());
             info!(
-                "portal shortcut bound: id={} trigger={}",
+                "portal shortcut bound: id={} trigger={} internal={internal}",
                 shortcut.id, shortcut.trigger_description
             );
         }
@@ -214,13 +212,6 @@ async fn wait_for_request(
     }
 
     Err(anyhow!("portal request closed without response"))
-}
-
-pub async fn bind(
-    shortcuts: &[ShortcutDef],
-    event_tx: StdSender<ShortcutEvent>,
-) -> Result<PortalBindResult> {
-    bind_with_options(shortcuts, event_tx, false).await
 }
 
 pub async fn bind_with_options(
@@ -323,7 +314,8 @@ pub async fn bind_with_options(
 
     info!("portal listening for Activated on session {session_path_for_task}");
 
-    tokio::spawn(async move {
+    cancel_activated_listener();
+    let listener = tokio::spawn(async move {
         while let Some(signal) = stream.next().await {
             let Ok(args) = signal.args() else {
                 warn!("portal Activated signal had unparseable args");
@@ -348,6 +340,9 @@ pub async fn bind_with_options(
             session_path_for_task.as_str()
         );
     });
+    if let Ok(mut guard) = ACTIVATED_LISTENER.get_or_init(|| Mutex::new(None)).lock() {
+        *guard = Some(listener);
+    }
 
     store_portal_session(session_path.clone());
 
@@ -376,6 +371,16 @@ pub async fn available() -> bool {
 }
 
 static PORTAL_SESSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static ACTIVATED_LISTENER: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+
+fn cancel_activated_listener() {
+    let store = ACTIVATED_LISTENER.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = store.lock() {
+        if let Some(handle) = guard.take() {
+            handle.abort();
+        }
+    }
+}
 
 fn portal_session_store() -> &'static Mutex<Option<String>> {
     PORTAL_SESSION.get_or_init(|| Mutex::new(None))
@@ -396,6 +401,12 @@ pub fn portal_session_path() -> Option<String> {
 
 pub async fn configure_active_session() -> Result<()> {
     if let Some(session_path) = portal_session_path() {
+        unsafe {
+            extern "C" {
+                fn sound_spring_refresh_portal_parent_window();
+            }
+            sound_spring_refresh_portal_parent_window();
+        }
         let connection = Connection::session()
             .await
             .context("connect to session bus for portal shortcuts")?;
@@ -422,16 +433,21 @@ pub async fn configure_active_session() -> Result<()> {
 
 /// Open KDE System Settings on the Sound Spring shortcut component.
 pub fn open_system_settings_shortcuts() {
-    use super::kglobalaccel::PORTAL_COMPONENT;
-    let url = format!("systemsettings://kcm_keys/{PORTAL_COMPONENT}");
-    for (bin, args) in [
-        ("kde-open", vec![url.as_str()]),
-        ("xdg-open", vec![url.as_str()]),
-    ] {
-        if Command::new(bin).args(args).spawn().is_ok() {
-            info!("opened KDE shortcut settings via {bin}");
-            return;
+    let urls = [
+        format!("systemsettings://kcm_keys/{PORTAL_COMPONENT}"),
+        format!("systemsettings://kcm_keys/{LEGACY_PORTAL_COMPONENT}"),
+        "systemsettings://kcm_keys".to_string(),
+    ];
+    for url in urls {
+        for (bin, args) in [
+            ("kde-open", vec![url.as_str()]),
+            ("xdg-open", vec![url.as_str()]),
+        ] {
+            if Command::new(bin).args(args).spawn().is_ok() {
+                info!("opened KDE shortcut settings via {bin} ({url})");
+                return;
+            }
         }
     }
-    warn!("failed to open KDE shortcut settings for {PORTAL_COMPONENT}");
+    warn!("failed to open KDE shortcut settings");
 }

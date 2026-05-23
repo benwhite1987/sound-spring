@@ -41,6 +41,7 @@ Window {
         if (settings)
             settings.loadFromConfig()
         controller.refreshMicSources()
+        controller.syncGlobalShortcutsStatus()
         show()
         raise()
         requestActivate()
@@ -180,8 +181,8 @@ Window {
                 Label {
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    text: "Global shortcuts activate when you click Apply (not on launch). " +
-                          "In-window keys work immediately without Apply."
+                    text: "Click Apply to register global shortcuts with KDE. " +
+                          "Accept the permission dialog when it appears."
                 }
                 Label {
                     wrapMode: Text.WordWrap
@@ -190,6 +191,17 @@ Window {
                     text: "Edit bindings below, then Apply to sync with System Settings. " +
                           "Use Open in System Settings for advanced changes in KDE."
                 }
+                Label {
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    text: controller.globalShortcutsStatus
+                    color: {
+                        var status = controller.globalShortcutsStatus
+                        if (status.indexOf("Global shortcuts active:") === 0)
+                            return "#8bc34a"
+                        return "#ffb74d"
+                    }
+                }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -197,11 +209,6 @@ Window {
                             text: "Open in System Settings"
                             enabled: settings && settings.shortcutMode === "portal"
                             onClicked: controller.configureGlobalShortcuts()
-                        }
-                        Button {
-                            text: "Reset global shortcuts"
-                            enabled: settings && settings.shortcutMode === "portal"
-                            onClicked: controller.resetGlobalShortcuts()
                         }
                     }
                     Label { text: "In-window bindings (while focused)"; font.bold: true }
@@ -317,7 +324,12 @@ Window {
             Button {
                 text: "Apply"
                 highlighted: true
-                onClicked: if (settings) settings.apply()
+                onClicked: {
+                    if (settings) {
+                        controller.refreshPortalParentWindow()
+                        settings.apply()
+                    }
+                }
             }
         }
     }

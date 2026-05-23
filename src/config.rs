@@ -3,12 +3,12 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const DEFAULT_LATENCY_MS: u32 = 20;
 pub const SFX_SINK: &str = "soundboard_sfx";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub audio: AudioConfig,
@@ -54,6 +54,8 @@ pub struct UiConfig {
     pub minimize_to_tray: bool,
     #[serde(default)]
     pub launch_at_login: bool,
+    #[serde(default)]
+    pub global_shortcuts_prompt_dismissed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +103,7 @@ impl Default for UiConfig {
         Self {
             minimize_to_tray: true,
             launch_at_login: false,
+            global_shortcuts_prompt_dismissed: false,
         }
     }
 }
@@ -111,18 +114,6 @@ impl Default for PathsConfig {
         Self {
             tabs_root: dirs.config_dir().join("tabs"),
             state_dir: dirs.cache_dir().to_path_buf(),
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            audio: AudioConfig::default(),
-            shortcuts: ShortcutsConfig::default(),
-            ui: UiConfig::default(),
-            paths: PathsConfig::default(),
-            tabs: Vec::new(),
         }
     }
 }
@@ -154,8 +145,8 @@ pub fn load_config() -> Result<Config> {
     if !path.exists() {
         return Ok(Config::default());
     }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("read config {}", path.display()))?;
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("read config {}", path.display()))?;
     let mut config: Config =
         toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
     normalize_shortcuts_config(&mut config);
@@ -206,6 +197,8 @@ mod tests {
 
     #[test]
     fn parse_tabs_block() {
+        use std::path::Path;
+
         let text = r#"
 [audio]
 mic_source = ""

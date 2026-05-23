@@ -1,4 +1,4 @@
-use cxx_qt_build::{CxxQtBuilder, QmlModule, QObjectHeaderOpts};
+use cxx_qt_build::{CxxQtBuilder, QObjectHeaderOpts, QmlModule};
 
 fn main() {
     CxxQtBuilder::new()
@@ -13,12 +13,10 @@ fn main() {
         .qt_module("Network")
         .qt_module("Quick")
         .qt_module("QuickControls2")
+        .qt_module("QuickDialogs2")
         .qml_module(QmlModule {
             uri: "com.benkahn.soundboard",
-            rust_files: &[
-                "src/qobjects/controller.rs",
-                "src/qobjects/settings.rs",
-            ],
+            rust_files: &["src/qobjects/controller.rs", "src/qobjects/settings.rs"],
             qml_files: &[
                 "qml/Main.qml",
                 "qml/TabPage.qml",

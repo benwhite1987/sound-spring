@@ -1,16 +1,37 @@
-use anyhow::{anyhow, Result};
-
 const QT_KEY_KEYPAD0: i32 = 0x0100_0030;
 const QT_KEY_KEYPAD9: i32 = 0x0100_0039;
 const QT_KEY_ESCAPE: i32 = 0x0100_0000;
 const QT_KEY_KP_ADD: i32 = 0x0100_002b;
 const QT_KEY_KP_SUBTRACT: i32 = 0x0100_002d;
 const QT_KEY_KP_DECIMAL: i32 = 0x0100_003e;
+const QT_KEY_KP_ENTER: i32 = 0x0100_0005;
 
 const QT_SHIFT_MODIFIER: i32 = 0x0200_0000;
 const QT_CONTROL_MODIFIER: i32 = 0x0400_0000;
 const QT_ALT_MODIFIER: i32 = 0x0800_0000;
+const QT_META_MODIFIER: i32 = 0x1000_0000;
 const QT_KEYPAD_MODIFIER: i32 = 0x4000_0000;
+
+const QT_KEY_TAB: i32 = 0x0100_0001;
+const QT_KEY_BACKSPACE: i32 = 0x0100_0003;
+const QT_KEY_RETURN: i32 = 0x0100_0004;
+const QT_KEY_INSERT: i32 = 0x0100_0006;
+const QT_KEY_DELETE: i32 = 0x0100_0007;
+const QT_KEY_PAUSE: i32 = 0x0100_0008;
+const QT_KEY_PRINT: i32 = 0x0100_0009;
+const QT_KEY_HOME: i32 = 0x0100_0010;
+const QT_KEY_END: i32 = 0x0100_0011;
+const QT_KEY_LEFT: i32 = 0x0100_0012;
+const QT_KEY_UP: i32 = 0x0100_0013;
+const QT_KEY_RIGHT: i32 = 0x0100_0014;
+const QT_KEY_DOWN: i32 = 0x0100_0015;
+const QT_KEY_PAGE_UP: i32 = 0x0100_0016;
+const QT_KEY_PAGE_DOWN: i32 = 0x0100_0017;
+const QT_KEY_CAPS_LOCK: i32 = 0x0100_0024;
+const QT_KEY_SHIFT: i32 = 0x0100_0020;
+const QT_KEY_CONTROL: i32 = 0x0100_0021;
+const QT_KEY_META: i32 = 0x0100_0022;
+const QT_KEY_ALT: i32 = 0x0100_0023;
 
 pub fn trigger_display(trigger: &str) -> String {
     trigger
@@ -25,9 +46,27 @@ pub fn trigger_display(trigger: &str) -> String {
             "KP_Add" => "Num +".to_string(),
             "KP_Subtract" => "Num -".to_string(),
             "KP_Decimal" => "Num .".to_string(),
+            "KP_Multiply" => "Num *".to_string(),
+            "KP_Divide" => "Num /".to_string(),
+            "KP_Enter" => "Num Enter".to_string(),
             "Ctrl" | "Control" => "Ctrl".to_string(),
             "Alt" => "Alt".to_string(),
             "Shift" => "Shift".to_string(),
+            "Meta" | "Super" => "Meta".to_string(),
+            "Return" | "Enter" => "Return".to_string(),
+            "BackSpace" | "Backspace" => "Backspace".to_string(),
+            "bracketleft" => "[".to_string(),
+            "bracketright" => "]".to_string(),
+            "semicolon" => ";".to_string(),
+            "apostrophe" => "'".to_string(),
+            "comma" => ",".to_string(),
+            "period" => ".".to_string(),
+            "slash" => "/".to_string(),
+            "backslash" => "\\".to_string(),
+            "minus" => "-".to_string(),
+            "equal" => "=".to_string(),
+            "grave" => "`".to_string(),
+            "space" => "Space".to_string(),
             other => other.to_string(),
         })
         .collect::<Vec<_>>()
@@ -53,7 +92,11 @@ pub fn qt_shortcut_sequence(trigger: &str) -> String {
             "KP_Add" => "Num++",
             "KP_Subtract" => "Num+-",
             "KP_Decimal" => "Num+.",
+            "KP_Multiply" => "Num+*",
+            "KP_Divide" => "Num+/",
+            "KP_Enter" => "Num+Enter",
             "Ctrl" | "Control" => "Ctrl",
+            "Meta" | "Super" => "Meta",
             other => other,
         })
         .collect::<Vec<_>>()
@@ -76,6 +119,9 @@ pub fn trigger_from_qt(key: i32, modifiers: i32, native_scan_code: u32) -> Optio
     if modifiers & QT_ALT_MODIFIER != 0 {
         parts.push("Alt".to_string());
     }
+    if modifiers & QT_META_MODIFIER != 0 {
+        parts.push("Meta".to_string());
+    }
 
     let key_part = map_event_key(key, modifiers, native_scan_code)?;
     parts.push(key_part);
@@ -84,7 +130,9 @@ pub fn trigger_from_qt(key: i32, modifiers: i32, native_scan_code: u32) -> Optio
 
 /// Map a numpad key press to a play slot (1-10) when no chord modifiers are held.
 pub fn play_slot_from_qt_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<i32> {
-    if modifiers & (QT_CONTROL_MODIFIER | QT_SHIFT_MODIFIER | QT_ALT_MODIFIER) != 0 {
+    if modifiers & (QT_CONTROL_MODIFIER | QT_SHIFT_MODIFIER | QT_ALT_MODIFIER | QT_META_MODIFIER)
+        != 0
+    {
         return None;
     }
     let trigger = map_event_key(key, modifiers, native_scan_code)?;
@@ -96,14 +144,20 @@ pub fn play_slot_from_qt_key(key: i32, modifiers: i32, native_scan_code: u32) ->
 }
 
 fn map_event_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<String> {
-    if key >= QT_KEY_KEYPAD0 && key <= QT_KEY_KEYPAD9 {
-        let digit = key - QT_KEY_KEYPAD0;
-        return Some(format!("KP_{digit}"));
+    let keypad = modifiers & QT_KEYPAD_MODIFIER != 0;
+
+    if (QT_KEY_KEYPAD0..=QT_KEY_KEYPAD9).contains(&key) {
+        let offset = key - QT_KEY_KEYPAD0;
+        if keypad {
+            return Some(format!("KP_{offset}"));
+        }
+        return Some(format!("F{}", offset + 1));
     }
 
     match key {
         QT_KEY_KP_ADD => return Some("KP_Add".into()),
         QT_KEY_KP_SUBTRACT => return Some("KP_Subtract".into()),
+        QT_KEY_KP_ENTER => return Some("KP_Enter".into()),
         _ => {}
     }
 
@@ -120,27 +174,203 @@ fn map_event_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<Stri
         return Some("KP_Decimal".into());
     }
 
-    let keypad = modifiers & QT_KEYPAD_MODIFIER != 0;
     if keypad {
         if (0x30..=0x39).contains(&key) {
             let digit = key as u8 - b'0';
             return Some(format!("KP_{digit}"));
         }
         match key {
+            0x2a => return Some("KP_Multiply".into()),
             0x2b => return Some("KP_Add".into()),
             0x2d => return Some("KP_Subtract".into()),
             0x2e | 0x2c => return Some("KP_Decimal".into()),
+            0x2f => return Some("KP_Divide".into()),
             _ => {}
         }
     }
 
-    map_native_scan_code(native_scan_code)
+    if is_modifier_key(key) {
+        return None;
+    }
+
+    qt_key_to_internal(key).or_else(|| map_native_scan_code(native_scan_code))
+}
+
+fn is_modifier_key(key: i32) -> bool {
+    matches!(
+        key,
+        QT_KEY_SHIFT
+            | QT_KEY_CONTROL
+            | QT_KEY_ALT
+            | QT_KEY_META
+            | QT_KEY_CAPS_LOCK
+            | 0x0100_0025 // NumLock
+            | 0x0100_0026 // ScrollLock
+    )
+}
+
+fn qt_key_to_internal(key: i32) -> Option<String> {
+    if (0x30..=0x39).contains(&key) {
+        return Some(((key as u8) as char).to_string());
+    }
+    if (0x41..=0x5a).contains(&key) || (0x61..=0x7a).contains(&key) {
+        return Some(((key as u8) as char).to_ascii_uppercase().to_string());
+    }
+
+    match key {
+        QT_KEY_TAB => Some("Tab".into()),
+        QT_KEY_BACKSPACE => Some("Backspace".into()),
+        QT_KEY_RETURN => Some("Return".into()),
+        QT_KEY_INSERT => Some("Insert".into()),
+        QT_KEY_DELETE => Some("Delete".into()),
+        QT_KEY_PAUSE => Some("Pause".into()),
+        QT_KEY_PRINT => Some("Print".into()),
+        QT_KEY_HOME => Some("Home".into()),
+        QT_KEY_END => Some("End".into()),
+        QT_KEY_LEFT => Some("Left".into()),
+        QT_KEY_UP => Some("Up".into()),
+        QT_KEY_RIGHT => Some("Right".into()),
+        QT_KEY_DOWN => Some("Down".into()),
+        QT_KEY_PAGE_UP => Some("Page_Up".into()),
+        QT_KEY_PAGE_DOWN => Some("Page_Down".into()),
+        0x20 => Some("space".into()),
+        0x21 => Some("exclam".into()),
+        0x22 => Some("quotedbl".into()),
+        0x23 => Some("numbersign".into()),
+        0x24 => Some("dollar".into()),
+        0x25 => Some("percent".into()),
+        0x26 => Some("ampersand".into()),
+        0x27 => Some("apostrophe".into()),
+        0x28 => Some("parenleft".into()),
+        0x29 => Some("parenright".into()),
+        0x2a => Some("asterisk".into()),
+        0x2b => Some("plus".into()),
+        0x2c => Some("comma".into()),
+        0x2d => Some("minus".into()),
+        0x2e => Some("period".into()),
+        0x2f => Some("slash".into()),
+        0x3a => Some("colon".into()),
+        0x3b => Some("semicolon".into()),
+        0x3c => Some("less".into()),
+        0x3d => Some("equal".into()),
+        0x3e => Some("greater".into()),
+        0x3f => Some("question".into()),
+        0x40 => Some("at".into()),
+        0x5b => Some("bracketleft".into()),
+        0x5c => Some("backslash".into()),
+        0x5d => Some("bracketright".into()),
+        0x5e => Some("asciicircum".into()),
+        0x5f => Some("underscore".into()),
+        0x60 => Some("grave".into()),
+        0x7b => Some("braceleft".into()),
+        0x7c => Some("bar".into()),
+        0x7d => Some("braceright".into()),
+        0x7e => Some("asciitilde".into()),
+        _ => None,
+    }
+}
+
+fn internal_to_portal_key(part: &str) -> String {
+    if part.len() == 1 {
+        let ch = part.chars().next().unwrap();
+        if ch.is_ascii_alphabetic() {
+            return ch.to_ascii_lowercase().to_string();
+        }
+        if ch.is_ascii_digit() {
+            return part.to_string();
+        }
+    }
+    part.to_string()
+}
+
+fn portal_numpad_keysym_to_internal(keysym: &str) -> Option<String> {
+    match keysym {
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
+            Some(format!("KP_{keysym}"))
+        }
+        "plus" => Some("KP_Add".into()),
+        "minus" => Some("KP_Subtract".into()),
+        "period" => Some("KP_Decimal".into()),
+        "asterisk" => Some("KP_Multiply".into()),
+        "slash" => Some("KP_Divide".into()),
+        "Return" => Some("KP_Enter".into()),
+        _ => None,
+    }
+}
+
+fn portal_keysym_to_internal(keysym: &str) -> String {
+    if keysym.len() == 1 {
+        let ch = keysym.chars().next().unwrap();
+        if ch.is_ascii_alphabetic() {
+            return ch.to_ascii_uppercase().to_string();
+        }
+    }
+    match keysym {
+        "Return" | "Enter" => "Return".into(),
+        "BackSpace" | "Backspace" => "Backspace".into(),
+        "PageUp" | "Prior" => "Page_Up".into(),
+        "PageDown" | "Next" => "Page_Down".into(),
+        other => {
+            if other.starts_with('F')
+                && other[1..].chars().all(|c| c.is_ascii_digit())
+                && other.len() > 1
+            {
+                other.to_string()
+            } else {
+                other.to_string()
+            }
+        }
+    }
+}
+
+/// Parse an XDG / KDE shortcut string into the internal trigger format.
+pub fn trigger_from_portal(portal: &str) -> Option<String> {
+    let parts: Vec<&str> = portal
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut modifiers = Vec::new();
+    let mut num_modifier = false;
+    let mut key: Option<String> = None;
+
+    for part in parts {
+        match part {
+            "CTRL" | "Control" => modifiers.push("Ctrl".to_string()),
+            "ALT" => modifiers.push("Alt".to_string()),
+            "SHIFT" => modifiers.push("Shift".to_string()),
+            "LOGO" | "Super" | "Meta" => modifiers.push("Meta".to_string()),
+            "CAPS" => {}
+            "NUM" => num_modifier = true,
+            keysym => {
+                if key.is_some() {
+                    return None;
+                }
+                key = Some(if num_modifier {
+                    portal_numpad_keysym_to_internal(keysym)?
+                } else {
+                    portal_keysym_to_internal(keysym)
+                });
+            }
+        }
+    }
+
+    let key = key?;
+    modifiers.push(key);
+    Some(modifiers.join("+"))
 }
 
 fn is_keypad_digit(trigger: &str) -> bool {
     trigger.len() == 4
         && trigger.starts_with("KP_")
-        && trigger.as_bytes().get(3).is_some_and(|b| b.is_ascii_digit())
+        && trigger
+            .as_bytes()
+            .get(3)
+            .is_some_and(|b| b.is_ascii_digit())
 }
 
 /// Qt on Linux reports X11 keycodes; convert to evdev before lookup.
@@ -174,6 +404,9 @@ fn map_evdev_scancode(code: u32) -> Option<String> {
         78 => Some("KP_Add".into()),
         74 => Some("KP_Subtract".into()),
         83 | 91 => Some("KP_Decimal".into()),
+        55 => Some("KP_Multiply".into()),
+        98 => Some("KP_Divide".into()),
+        96 => Some("KP_Enter".into()),
         _ => None,
     }
 }
@@ -194,6 +427,9 @@ fn portal_key_token(part: &str) -> Option<String> {
         "KP_Add" => Some("NUM+plus".into()),
         "KP_Subtract" => Some("NUM+minus".into()),
         "KP_Decimal" => Some("NUM+period".into()),
+        "KP_Multiply" => Some("NUM+asterisk".into()),
+        "KP_Divide" => Some("NUM+slash".into()),
+        "KP_Enter" => Some("NUM+Return".into()),
         _ => None,
     }
 }
@@ -212,57 +448,11 @@ pub fn portal_trigger(trigger: &str) -> String {
                 "Shift" => "SHIFT".to_string(),
                 "Alt" => "ALT".to_string(),
                 "Super" | "Meta" => "LOGO".to_string(),
-                other => other.to_string(),
+                other => internal_to_portal_key(other),
             }
         })
         .collect::<Vec<_>>()
         .join("+")
-}
-
-pub fn qt_key_sequence(trigger: &str) -> Result<Vec<i32>> {
-    let parts: Vec<&str> = trigger
-        .split('+')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return Err(anyhow!("empty shortcut trigger"));
-    }
-
-    let mut modifiers = 0i32;
-    let mut key: Option<i32> = None;
-    for part in parts {
-        match part {
-            "Ctrl" | "Control" => modifiers |= QT_CONTROL_MODIFIER,
-            "Shift" => modifiers |= QT_SHIFT_MODIFIER,
-            "Alt" => modifiers |= QT_ALT_MODIFIER,
-            "KP_0" => {
-                modifiers |= QT_KEYPAD_MODIFIER;
-                key = Some(0x30);
-            }
-            "KP_1" | "KP_2" | "KP_3" | "KP_4" | "KP_5" | "KP_6" | "KP_7" | "KP_8" | "KP_9" => {
-                modifiers |= QT_KEYPAD_MODIFIER;
-                key = Some(part.as_bytes()[3] as i32);
-            }
-            "KP_Add" => {
-                modifiers |= QT_KEYPAD_MODIFIER;
-                key = Some(0x2b);
-            }
-            "KP_Subtract" => {
-                modifiers |= QT_KEYPAD_MODIFIER;
-                key = Some(0x2d);
-            }
-            "KP_Decimal" => {
-                modifiers |= QT_KEYPAD_MODIFIER;
-                key = Some(0x2e);
-            }
-            "Escape" => key = Some(QT_KEY_ESCAPE),
-            other => return Err(anyhow!("unsupported shortcut key: {other}")),
-        }
-    }
-
-    let key = key.ok_or_else(|| anyhow!("shortcut trigger missing key: {trigger}"))?;
-    Ok(vec![modifiers | key])
 }
 
 #[cfg(test)]
@@ -281,16 +471,25 @@ mod tests {
     #[test]
     fn qt_keysym_overrides_misleading_scancode() {
         assert_eq!(
-            trigger_from_qt(QT_KEY_KEYPAD0 + 4, 0, 83),
+            trigger_from_qt(QT_KEY_KEYPAD0 + 4, QT_KEYPAD_MODIFIER, 83),
             Some("KP_4".into())
         );
-        assert_eq!(trigger_from_qt(QT_KEY_KP_DECIMAL, 0, 91), Some("KP_Decimal".into()));
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KP_DECIMAL, 0, 91),
+            Some("KP_Decimal".into())
+        );
     }
 
     #[test]
     fn play_slot_from_qt_keypad() {
-        assert_eq!(play_slot_from_qt_key(QT_KEY_KEYPAD0 + 1, 0, 0), Some(1));
-        assert_eq!(play_slot_from_qt_key(QT_KEY_KEYPAD0, 0, 0), Some(10));
+        assert_eq!(
+            play_slot_from_qt_key(QT_KEY_KEYPAD0 + 1, QT_KEYPAD_MODIFIER, 0),
+            Some(1)
+        );
+        assert_eq!(
+            play_slot_from_qt_key(QT_KEY_KEYPAD0, QT_KEYPAD_MODIFIER, 0),
+            Some(10)
+        );
         assert_eq!(play_slot_from_qt_key(0, 0, 87), Some(1));
         assert_eq!(play_slot_from_qt_key(0, 0, 79), Some(7));
         assert_eq!(
@@ -300,29 +499,18 @@ mod tests {
     }
 
     #[test]
-    fn keypad_one_sequence() {
-        let keys = qt_key_sequence("KP_1").unwrap();
-        assert_eq!(keys, vec![QT_KEYPAD_MODIFIER | 0x31]);
-    }
-
-    #[test]
-    fn qt_key_sequence_matches_kde_numpad_format() {
-        assert_eq!(
-            qt_key_sequence("Ctrl+KP_Add").unwrap(),
-            vec![QT_CONTROL_MODIFIER | QT_KEYPAD_MODIFIER | 0x2b]
-        );
-        assert_eq!(
-            qt_key_sequence("KP_Decimal").unwrap(),
-            vec![QT_KEYPAD_MODIFIER | 0x2e]
-        );
-    }
-
-    #[test]
     fn trigger_from_qt_keypad_digit() {
-        assert_eq!(trigger_from_qt(QT_KEY_KEYPAD0 + 1, 0, 0), Some("KP_1".into()));
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KEYPAD0 + 1, QT_KEYPAD_MODIFIER, 0),
+            Some("KP_1".into())
+        );
         assert_eq!(
             trigger_from_qt(0x31, QT_KEYPAD_MODIFIER, 0),
             Some("KP_1".into())
+        );
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KEYPAD0 + 1, 0, 0),
+            Some("F2".into())
         );
         assert_eq!(
             trigger_from_qt(QT_KEY_KP_ADD, QT_CONTROL_MODIFIER, 0),
@@ -345,6 +533,8 @@ mod tests {
         assert_eq!(trigger_display("Alt+KP_Subtract"), "Alt+Num -");
     }
 
+
+
     #[test]
     fn portal_keypad_trigger() {
         assert_eq!(portal_trigger("KP_1"), "NUM+1");
@@ -352,10 +542,50 @@ mod tests {
         assert_eq!(portal_trigger("Ctrl+KP_Add"), "CTRL+NUM+plus");
         assert_eq!(portal_trigger("Ctrl+KP_Subtract"), "CTRL+NUM+minus");
         assert_eq!(portal_trigger("KP_Decimal"), "NUM+period");
+        assert_eq!(portal_trigger("KP_Multiply"), "NUM+asterisk");
+        assert_eq!(portal_trigger("KP_Divide"), "NUM+slash");
+        assert_eq!(portal_trigger("KP_Enter"), "NUM+Return");
         assert_eq!(portal_trigger("Meta+1"), "LOGO+1");
+        assert_eq!(portal_trigger("Meta+A"), "LOGO+a");
         assert!(
             !portal_trigger("KP_1").contains("KP_"),
             "numpad digits use NUM modifier for KDE KGlobalAccel"
         );
+    }
+
+    #[test]
+    fn trigger_from_qt_letters_and_meta() {
+        assert_eq!(
+            trigger_from_qt(0x31, QT_META_MODIFIER, 0),
+            Some("Meta+1".into())
+        );
+        assert_eq!(trigger_from_qt(0x41, 0, 0), Some("A".into()));
+        assert_eq!(
+            trigger_from_qt(0x5d, QT_CONTROL_MODIFIER, 0),
+            Some("Ctrl+bracketright".into())
+        );
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KEYPAD0, QT_SHIFT_MODIFIER, 0),
+            Some("Shift+F1".into())
+        );
+    }
+
+    #[test]
+    fn portal_round_trip() {
+        let samples = [
+            "KP_1",
+            "Ctrl+KP_Add",
+            "Meta+1",
+            "Ctrl+Shift+F1",
+            "Alt+bracketleft",
+        ];
+        for trigger in samples {
+            let portal = portal_trigger(trigger);
+            assert_eq!(
+                trigger_from_portal(&portal).as_deref(),
+                Some(trigger),
+                "round-trip failed for {trigger} -> {portal}"
+            );
+        }
     }
 }

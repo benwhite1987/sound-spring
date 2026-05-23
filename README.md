@@ -145,7 +145,49 @@ QMAKE=/usr/bin/qmake6 cargo build --release
 RUST_LOG=sound_spring=info ./target/release/sound-spring
 ```
 
-Global shortcuts use **xdg-desktop-portal** by default (`shortcuts.mode = "auto"` in config). On KDE Plasma this shows a permission dialog on first bind; `kglobalaccel` is used as fallback. Open **Settings** (⚙ in the header) to change mic source, paths, and custom tab folders.
+Global shortcuts use **xdg-desktop-portal** (`shortcuts.mode = "portal"` or `"auto"` in config). They are **not** registered at launch — open **Settings → Shortcuts** and click **Apply** to bind globals with KDE. You may see a permission dialog the first time. In-window numpad keys work immediately without Apply.
+
+Direct KGlobalAccel D-Bus calls are intentionally avoided. On Plasma 6 / Wayland the `org.kde.kglobalaccel` service is hosted inside `kwin_wayland` itself, so a malformed call can crash the entire desktop session.
+
+### Testing global shortcuts — must run outside Cursor / Electron / Chromium
+
+`xdg-desktop-portal` identifies the calling application by walking the
+caller's systemd cgroup scope. If Sound Spring is launched from a terminal
+embedded inside another desktop app (Cursor IDE, VS Code, Chromium-based
+browsers, any Electron shell), portal-kde sees the **parent app's** `app_id`
+(e.g. `org.chromium.Chromium`) and shares its already-bound portal session.
+The portal then returns 15 shortcuts with empty `trigger_description` in
+~10 ms, no assignment dialog appears, and no `[sound-spring]` section is
+ever written to `~/.config/kglobalshortcutsrc`.
+
+To test global shortcuts, launch the binary in its own cgroup scope. Any of
+these work:
+
+```bash
+# Preferred: from a standalone terminal (Konsole, Alacritty, a TTY, etc.)
+RUST_LOG=sound_spring=info ./target/release/sound-spring
+
+# Or force a fresh systemd scope from anywhere (including Cursor's terminal)
+systemd-run --user --scope --unit=sound-spring --collect \
+  ./target/release/sound-spring
+
+# Or via the installed .desktop entry (KRunner / app menu)
+kstart6 sound-spring
+gtk-launch sound-spring
+```
+
+When launched correctly, the journal will show
+`xdg-desktop-portal-kde[...]: CreateSession ... app_id: "sound-spring"`, the
+BindShortcuts dialog will take seconds to complete (not 10 ms), and a
+`[sound-spring]` section will land in `~/.config/kglobalshortcutsrc`. The
+app will then appear in **System Settings → Shortcuts** for further editing.
+
+See [docs/global-shortcuts.md](docs/global-shortcuts.md) for the full
+diagnostic protocol, things that look like fixes but make it worse, and the
+list of architectural constraints any change to the shortcut path must
+respect.
+
+Open **Settings** (⚙ in the header) to change mic source, paths, custom tab folders, and shortcut bindings.
 
 See [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) for the full roadmap.
 

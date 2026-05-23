@@ -74,9 +74,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{self, Config, TabEntry};
-use crate::qobjects::controller::{BackendCommand, BACKEND_TX, SoundboardControllerRust};
-use crate::services::{ShortcutDef, ShortcutsManager};
-use crate::services::shortcuts::{trigger_display, trigger_from_qt};
+use crate::qobjects::controller::{BackendCommand, SoundboardControllerRust, BACKEND_TX};
+use crate::services::shortcuts::{trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
 
 #[derive(Default)]
 pub struct SettingsRust {
@@ -149,16 +148,15 @@ impl qobject::Settings {
         let config = config::load_config().unwrap_or_default();
         self.as_mut().rust_mut().apply_config_to_fields(&config);
         SoundboardControllerRust::sync_shortcut_bindings(&self.rust().shortcuts);
-        self.as_mut()
-            .rust_mut()
-            .set_status("Settings loaded.");
+        self.as_mut().rust_mut().set_status("Settings loaded.");
     }
 
     pub fn apply(mut self: Pin<&mut Self>) {
         let shortcuts = self.rust().shortcuts.clone();
         SoundboardControllerRust::sync_shortcut_bindings(&shortcuts);
         let mut config = self.rust().build_config();
-        match config::ensure_default_layout(&mut config).and_then(|_| config::save_config(&config)) {
+        match config::ensure_default_layout(&mut config).and_then(|_| config::save_config(&config))
+        {
             Ok(()) => {
                 if let Some(tx) = BACKEND_TX.get() {
                     let _ = tx.blocking_send(BackendCommand::ApplyConfig(config));
@@ -206,16 +204,14 @@ impl qobject::Settings {
             name: if name.is_empty() { None } else { Some(name) },
         };
         self.as_mut().rust_mut().custom_tabs.push(entry);
-        self.as_mut().rust_mut().custom_tab_count =
-            self.rust().custom_tabs.len() as i32;
+        self.as_mut().rust_mut().custom_tab_count = self.rust().custom_tabs.len() as i32;
     }
 
     pub fn remove_custom_tab(mut self: Pin<&mut Self>, index: i32) {
         let idx = index as usize;
         if idx < self.rust().custom_tabs.len() {
             self.as_mut().rust_mut().custom_tabs.remove(idx);
-            self.as_mut().rust_mut().custom_tab_count =
-                self.rust().custom_tabs.len() as i32;
+            self.as_mut().rust_mut().custom_tab_count = self.rust().custom_tabs.len() as i32;
         }
     }
 
@@ -257,7 +253,12 @@ impl qobject::Settings {
         }
     }
 
-    pub fn trigger_from_key_event(&self, key: i32, modifiers: i32, native_scan_code: u32) -> QString {
+    pub fn trigger_from_key_event(
+        &self,
+        key: i32,
+        modifiers: i32,
+        native_scan_code: u32,
+    ) -> QString {
         QString::from(
             trigger_from_qt(key, modifiers, native_scan_code)
                 .unwrap_or_default()

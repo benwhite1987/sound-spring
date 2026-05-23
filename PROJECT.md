@@ -77,3 +77,12 @@ super + Escape                 → sb-stop
 Reload with `pkill -USR1 sxhkd` (or start it: `sxhkd &`).
 
 **Wayland caveat:** sxhkd is X11-only. On KDE Plasma Wayland (CachyOS default), bind the same commands in System Settings → Shortcuts → Custom Shortcuts. On Hyprland or Sway, use the compositor's native bind config.
+
+**5. GUI global shortcuts (Rust/Qt)**
+
+The Rust/Qt GUI binds shortcuts via `xdg-desktop-portal`'s `GlobalShortcuts`
+interface, not via direct KGlobalAccel D-Bus calls. The full architecture,
+testing protocol, cgroup `app_id` gotcha, and list of regressions to never
+re-introduce live in [docs/global-shortcuts.md](docs/global-shortcuts.md).
+Read that file before touching `src/services/shortcuts/`,
+`src/cpp/app_identity.cpp`, or the `bind_shortcuts` flow in `src/main.rs`.
