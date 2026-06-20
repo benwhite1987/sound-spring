@@ -8,7 +8,7 @@ use config::Config;
 use config::SFX_SINK;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 use qobjects::controller::{
-    BackendCommand, BackendEvent, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
+    BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
 use services::pipewire::{Modules, PipewireManager};
 use services::player::{Player, VolumeState};
@@ -38,6 +38,9 @@ fn main() -> Result<()> {
     MIC_SOURCES
         .set(Mutex::new(Vec::new()))
         .map_err(|_| anyhow::anyhow!("MIC_SOURCES already set"))?;
+    AUDIO_SINKS
+        .set(Mutex::new(Vec::new()))
+        .map_err(|_| anyhow::anyhow!("AUDIO_SINKS already set"))?;
 
     let (backend_cmd_tx, backend_cmd_rx) = mpsc::channel(256);
     let (backend_event_tx, backend_event_rx) = std::sync::mpsc::channel();
@@ -85,6 +88,7 @@ fn main() -> Result<()> {
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
+            info!("detected {} microphone source(s)", sources.len());
             if let Some(store) = MIC_SOURCES.get() {
                 if let Ok(mut guard) = store.lock() {
                     *guard = sources;
@@ -93,6 +97,21 @@ async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
             let _ = event_tx.send(BackendEvent::MicSourcesUpdated);
         }
         Err(err) => warn!("failed to list mic sources: {err:#}"),
+    }
+}
+
+async fn publish_audio_sinks(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
+    match PipewireManager::available_sinks().await {
+        Ok(sinks) => {
+            info!("detected {} output device(s)", sinks.len());
+            if let Some(store) = AUDIO_SINKS.get() {
+                if let Ok(mut guard) = store.lock() {
+                    *guard = sinks;
+                }
+            }
+            let _ = event_tx.send(BackendEvent::AudioSinksUpdated);
+        }
+        Err(err) => warn!("failed to list output devices: {err:#}"),
     }
 }
 
@@ -195,6 +214,10 @@ async fn apply_runtime_config(
         publish_mic_sources(event_tx).await;
     }
 
+    // Output devices don't depend on audio routing; refresh on every apply so
+    // the monitor-device picker reflects the current sink list.
+    publish_audio_sinks(event_tx).await;
+
     if volume_changed {
         apply_volumes(VolumeState {
             output_percent: config.audio.output_volume,
@@ -259,6 +282,7 @@ fn run_backend(
             output_muted: active_config.audio.output_muted,
             monitor_muted: active_config.audio.monitor_muted,
         });
+        player.set_monitor_sink(&active_config.audio.monitor_sink);
         loop {
             tokio::select! {
                 command = backend_cmd_rx.recv() => {
@@ -278,6 +302,7 @@ fn run_backend(
                                 output_muted: new_config.audio.output_muted,
                                 monitor_muted: new_config.audio.monitor_muted,
                             });
+                            player.set_monitor_sink(&new_config.audio.monitor_sink);
                             active_config = new_config;
                         }
                         Some(BackendCommand::BindShortcuts) => {
@@ -291,6 +316,9 @@ fn run_backend(
                         }
                         Some(BackendCommand::RefreshMicSources) => {
                             publish_mic_sources(&backend_event_tx).await;
+                        }
+                        Some(BackendCommand::RefreshAudioSinks) => {
+                            publish_audio_sinks(&backend_event_tx).await;
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player
@@ -311,6 +339,7 @@ fn run_backend(
                 }
                 _ = source_watch_rx.recv() => {
                     publish_mic_sources(&backend_event_tx).await;
+                    publish_audio_sinks(&backend_event_tx).await;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     for (tab_index, slot) in player.reap_finished().await {

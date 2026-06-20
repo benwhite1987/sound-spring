@@ -26,6 +26,10 @@ pub struct Config {
 pub struct AudioConfig {
     #[serde(default)]
     pub mic_source: String,
+    /// Local monitor output device sink name. Empty follows the system default
+    /// output device (`@DEFAULT_SINK@`).
+    #[serde(default)]
+    pub monitor_sink: String,
     #[serde(default = "default_latency_ms")]
     pub latency_ms: u32,
     #[serde(default = "default_true")]
@@ -82,6 +86,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             mic_source: String::new(),
+            monitor_sink: String::new(),
             latency_ms: DEFAULT_LATENCY_MS,
             auto_teardown: true,
             output_volume: default_volume(),

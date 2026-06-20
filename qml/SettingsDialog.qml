@@ -40,7 +40,7 @@ Window {
     function openSettings() {
         if (settings)
             settings.loadFromConfig()
-        controller.refreshMicSources()
+        controller.refreshAudioDevices()
         controller.syncGlobalShortcutsStatus()
         show()
         raise()
@@ -89,7 +89,10 @@ Window {
                             model: controller.micSourceCount
                             delegate: ItemDelegate {
                                 required property int index
-                                text: controller.micSourceDescriptionAt(index)
+                                text: {
+                                    controller.micSourcesVersion
+                                    return controller.micSourceDescriptionAt(index)
+                                }
                             }
                             contentItem: Text {
                                 text: {
@@ -138,14 +141,76 @@ Window {
                         }
                         Button {
                             text: "Refresh"
-                            onClicked: controller.refreshMicSources()
+                            onClicked: controller.refreshAudioDevices()
                         }
                     }
+
+                    Label { text: "Monitor output device"; font.bold: true }
+                    ComboBox {
+                        id: monitorCombo
+                        Layout.fillWidth: true
+                        // Index 0 is the system default; sinks follow.
+                        model: controller.audioSinkCount + 1
+                        delegate: ItemDelegate {
+                            required property int index
+                            text: index === 0
+                                  ? "Default output device"
+                                  : controller.audioSinkDescriptionAt(index - 1)
+                        }
+                        contentItem: Text {
+                            text: {
+                                controller.audioSinksVersion
+                                return monitorCombo.selectedDescription()
+                            }
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 8
+                        }
+                        onActivated: if (settings) {
+                            settings.monitorSink = currentIndex <= 0
+                                ? ""
+                                : controller.audioSinkIdAt(currentIndex - 1)
+                        }
+                        function selectedDescription() {
+                            if (!settings) return "Default output device"
+                            var currentId = settings.monitorSink
+                            if (currentId.length === 0) return "Default output device"
+                            for (var i = 0; i < controller.audioSinkCount; ++i) {
+                                if (controller.audioSinkIdAt(i) === currentId) {
+                                    return controller.audioSinkDescriptionAt(i)
+                                }
+                            }
+                            return currentId
+                        }
+                        function syncSelection() {
+                            if (!settings) return
+                            var currentId = settings.monitorSink
+                            if (currentId.length === 0) {
+                                currentIndex = 0
+                                return
+                            }
+                            for (var i = 0; i < controller.audioSinkCount; ++i) {
+                                if (controller.audioSinkIdAt(i) === currentId) {
+                                    currentIndex = i + 1
+                                    return
+                                }
+                            }
+                            currentIndex = 0
+                        }
+                        Component.onCompleted: syncSelection()
+                        Connections {
+                            target: controller
+                            function onAudioSinksVersionChanged() {
+                                monitorCombo.syncSelection()
+                            }
+                        }
+                    }
+
                     Label {
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                         color: "#aaa"
-                        text: "The list updates automatically when devices are plugged in or removed."
+                        text: "The lists update automatically when devices are plugged in or removed."
                     }
                     Label { text: "Latency (ms)" }
                     SpinBox {

@@ -10,6 +10,7 @@ pub mod qobject {
         #[qobject]
         #[qml_element]
         #[qproperty(QString, mic_source)]
+        #[qproperty(QString, monitor_sink)]
         #[qproperty(i32, latency_ms)]
         #[qproperty(bool, auto_teardown)]
         #[qproperty(QString, tabs_root)]
@@ -81,6 +82,7 @@ use crate::services::shortcuts::{trigger_display, trigger_from_qt, ShortcutDef, 
 #[derive(Default)]
 pub struct SettingsRust {
     mic_source: QString,
+    monitor_sink: QString,
     latency_ms: i32,
     auto_teardown: bool,
     tabs_root: QString,
@@ -116,6 +118,7 @@ impl SettingsRust {
         }
 
         config.audio.mic_source = String::from(self.mic_source.clone());
+        config.audio.monitor_sink = String::from(self.monitor_sink.clone());
         config.audio.latency_ms = self.latency_ms.max(10) as u32;
         config.audio.auto_teardown = self.auto_teardown;
         config.shortcuts.mode = String::from(self.shortcut_mode.clone());
@@ -132,6 +135,7 @@ impl SettingsRust {
 
     fn apply_config_to_fields(&mut self, config: &Config) {
         self.mic_source = QString::from(config.audio.mic_source.as_str());
+        self.monitor_sink = QString::from(config.audio.monitor_sink.as_str());
         self.latency_ms = config.audio.latency_ms as i32;
         self.auto_teardown = config.audio.auto_teardown;
         self.tabs_root = QString::from(config.paths.tabs_root.to_string_lossy().as_ref());

@@ -25,6 +25,12 @@ pub struct MicSource {
     pub description: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioSink {
+    pub name: String,
+    pub description: String,
+}
+
 pub struct PipewireManager;
 
 impl PipewireManager {
@@ -43,6 +49,21 @@ impl PipewireManager {
         Ok(parse_source_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
+    pub async fn available_sinks() -> Result<Vec<AudioSink>> {
+        let output = Command::new("pactl")
+            .args(["list", "sinks"])
+            .output()
+            .await
+            .context("pactl list sinks")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl list sinks failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(parse_sink_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
     pub fn spawn_source_watch(notify_tx: TokioSender<()>) {
         tokio::spawn(async move {
             loop {
@@ -55,8 +76,10 @@ impl PipewireManager {
     }
 
     async fn run_source_subscribe(notify_tx: &TokioSender<()>) -> Result<()> {
+        // Subscribe to all PipeWire/Pulse events (not just sources) so device
+        // hotplug for both microphones and output sinks triggers a refresh.
         let mut child = Command::new("pactl")
-            .args(["subscribe", "source"])
+            .args(["subscribe"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -379,6 +402,45 @@ fn is_user_mic_source(name: &str) -> bool {
         && !name.starts_with("sound_spring_")
 }
 
+fn parse_sink_list(text: &str) -> Vec<AudioSink> {
+    let mut sinks = Vec::new();
+    let mut name = String::new();
+    let mut description = String::new();
+    let flush = |name: &mut String, description: &mut String, out: &mut Vec<AudioSink>| {
+        if !name.is_empty() && is_user_sink(name) {
+            out.push(AudioSink {
+                name: name.clone(),
+                description: if description.is_empty() {
+                    name.clone()
+                } else {
+                    description.clone()
+                },
+            });
+        }
+        name.clear();
+        description.clear();
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Sink #") {
+            flush(&mut name, &mut description, &mut sinks);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("Name: ") {
+            name = value.to_string();
+        } else if let Some(value) = trimmed.strip_prefix("Description: ") {
+            description = value.to_string();
+        }
+    }
+    flush(&mut name, &mut description, &mut sinks);
+    sinks.sort_by(|a, b| a.description.cmp(&b.description));
+    sinks
+}
+
+fn is_user_sink(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with("soundboard_") && !name.starts_with("sound_spring_")
+}
+
 fn module_matches_soundboard(rest: &str) -> bool {
     if rest.contains(&format!("sink_name={VIRTMIC_SINK}"))
         || rest.contains(&format!("sink_name={SFX_SINK}"))
@@ -438,8 +500,32 @@ Source #2
         ));
     }
 
+    #[test]
+    fn parse_sinks_skips_soundboard_sinks() {
+        let text = "\
+Sink #10
+\tName: soundboard_sfx
+\tDescription: Sound-Spring-Effects
+Sink #11
+\tName: alsa_output.pci-0000_00.analog-stereo
+\tDescription: Built-in Speakers
+Sink #12
+\tName: alsa_output.usb-headset
+\tDescription: USB Headset
+";
+        let sinks = parse_sink_list(text);
+        assert_eq!(sinks.len(), 2);
+        assert_eq!(sinks[0].description, "Built-in Speakers");
+        assert_eq!(sinks[1].name, "alsa_output.usb-headset");
+    }
+
     #[tokio::test]
     async fn list_sources_does_not_panic() {
         let _ = PipewireManager::available_sources().await;
+    }
+
+    #[tokio::test]
+    async fn list_sinks_does_not_panic() {
+        let _ = PipewireManager::available_sinks().await;
     }
 }

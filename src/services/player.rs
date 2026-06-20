@@ -8,7 +8,8 @@ use tracing::warn;
 
 use crate::config::SFX_SINK;
 
-const MONITOR_SINK: &str = "@DEFAULT_SINK@";
+/// PipeWire/Pulse sink that follows the system default output device.
+const DEFAULT_MONITOR_SINK: &str = "@DEFAULT_SINK@";
 
 #[derive(Debug, Clone, Copy)]
 pub struct VolumeState {
@@ -79,6 +80,7 @@ struct PlaySession {
 
 pub struct Player {
     sink: String,
+    monitor_sink: String,
     next_id: u64,
     volumes: VolumeState,
     children: Arc<Mutex<HashMap<u64, PlaySession>>>,
@@ -88,6 +90,7 @@ impl Player {
     pub fn new(sink: impl Into<String>) -> Self {
         Self {
             sink: sink.into(),
+            monitor_sink: DEFAULT_MONITOR_SINK.to_string(),
             next_id: 1,
             volumes: VolumeState::default(),
             children: Arc::new(Mutex::new(HashMap::new())),
@@ -100,6 +103,16 @@ impl Player {
 
     pub fn set_volumes(&mut self, volumes: VolumeState) {
         self.volumes = volumes;
+    }
+
+    /// Select the local monitor output device. An empty string follows the
+    /// system default output (`@DEFAULT_SINK@`).
+    pub fn set_monitor_sink(&mut self, sink: &str) {
+        self.monitor_sink = if sink.trim().is_empty() {
+            DEFAULT_MONITOR_SINK.to_string()
+        } else {
+            sink.trim().to_string()
+        };
     }
 
     pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<Option<PlayerEvent>> {
@@ -146,7 +159,7 @@ impl Player {
         )
         .await?;
         let monitor = Self::spawn_playback(
-            MONITOR_SINK,
+            &self.monitor_sink,
             &file,
             &monitor_tag,
             self.volumes.monitor_paplay_volume(),

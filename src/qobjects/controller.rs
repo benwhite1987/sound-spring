@@ -15,6 +15,8 @@ pub mod qobject {
         #[qproperty(i32, playing_version)]
         #[qproperty(i32, mic_source_count)]
         #[qproperty(i32, mic_sources_version)]
+        #[qproperty(i32, audio_sink_count)]
+        #[qproperty(i32, audio_sinks_version)]
         #[qproperty(i32, tab_version)]
         #[qproperty(i32, progress_version)]
         #[qproperty(i32, shortcut_version)]
@@ -119,6 +121,15 @@ pub mod qobject {
         fn refresh_mic_sources(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
+        fn audio_sink_id_at(self: &SoundboardController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn audio_sink_description_at(self: &SoundboardController, index: i32) -> QString;
+
+        #[qinvokable]
+        fn refresh_audio_devices(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
         fn reload_from_config(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
@@ -167,7 +178,7 @@ extern "C" {
 }
 
 use crate::config::Config;
-use crate::services::pipewire::MicSource;
+use crate::services::pipewire::{AudioSink, MicSource};
 use crate::services::player::{PlayerCommand, VolumeState};
 use crate::services::shortcuts::{
     accept_shortcut, format_global_shortcut_status, global_shortcut_status, play_slot_from_qt_key,
@@ -184,6 +195,7 @@ pub enum BackendCommand {
     ConfigurePortalShortcuts,
     Player(PlayerCommand),
     RefreshMicSources,
+    RefreshAudioSinks,
     ApplyVolumes(VolumeState),
 }
 
@@ -194,12 +206,14 @@ pub enum BackendEvent {
     GlobalShortcutStatusChanged,
     ConfigApplied,
     MicSourcesUpdated,
+    AudioSinksUpdated,
 }
 
 pub static BACKEND_TX: OnceLock<TokioSender<BackendCommand>> = OnceLock::new();
 pub static BACKEND_EVENT_RX: OnceLock<Mutex<StdReceiver<BackendEvent>>> = OnceLock::new();
 
 pub static MIC_SOURCES: OnceLock<Mutex<Vec<MicSource>>> = OnceLock::new();
+pub static AUDIO_SINKS: OnceLock<Mutex<Vec<AudioSink>>> = OnceLock::new();
 pub static SHORTCUT_BINDINGS: OnceLock<Mutex<Vec<ShortcutDef>>> = OnceLock::new();
 pub static WINDOW_ACTIVE: AtomicBool = AtomicBool::new(true);
 
@@ -235,6 +249,8 @@ pub struct SoundboardControllerRust {
     playing_version: i32,
     mic_source_count: i32,
     mic_sources_version: i32,
+    audio_sink_count: i32,
+    audio_sinks_version: i32,
     tab_version: i32,
     progress_version: i32,
     shortcut_version: i32,
@@ -354,6 +370,24 @@ impl SoundboardControllerRust {
                 .lock()
                 .ok()
                 .and_then(|sources| sources.get(index as usize).cloned())
+        })
+    }
+
+    fn refresh_audio_sink_count(&mut self) {
+        self.audio_sink_count = AUDIO_SINKS
+            .get()
+            .and_then(|sinks| sinks.lock().ok())
+            .map(|sinks| sinks.len() as i32)
+            .unwrap_or(0);
+        self.audio_sinks_version += 1;
+    }
+
+    fn audio_sink_at(&self, index: i32) -> Option<AudioSink> {
+        AUDIO_SINKS.get().and_then(|store| {
+            store
+                .lock()
+                .ok()
+                .and_then(|sinks| sinks.get(index as usize).cloned())
         })
     }
 
@@ -889,6 +923,7 @@ impl qobject::SoundboardController {
                     let tabs = TabsRepository::scan(&config).unwrap_or_default();
                     rust.replace_tabs(tabs, Some(&saved.current_tab));
                     rust.refresh_mic_source_count();
+                    rust.refresh_audio_sink_count();
                     SoundboardControllerRust::reload_shortcut_bindings();
                     self.as_mut().rust_mut().bump_shortcut_version();
                     playback_changed = true;
@@ -897,6 +932,10 @@ impl qobject::SoundboardController {
                 BackendEvent::MicSourcesUpdated => {
                     self.as_mut().rust_mut().refresh_mic_source_count();
                     properties::sync_mic_properties(self.as_mut());
+                }
+                BackendEvent::AudioSinksUpdated => {
+                    self.as_mut().rust_mut().refresh_audio_sink_count();
+                    properties::sync_audio_sink_properties(self.as_mut());
                 }
                 BackendEvent::GlobalShortcutStatusChanged => {
                     Self::refresh_global_shortcuts_status(self.as_mut());
@@ -926,8 +965,10 @@ impl qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
+        rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
         properties::sync_mic_properties(self.as_mut());
+        properties::sync_audio_sink_properties(self.as_mut());
         self.as_mut().current_tab_changed();
         self.as_mut().playing_state_changed();
     }
@@ -1037,8 +1078,31 @@ impl qobject::SoundboardController {
     }
 
     pub fn refresh_mic_sources(self: Pin<&mut Self>) {
+        self.refresh_audio_devices();
+    }
+
+    pub fn audio_sink_id_at(&self, index: i32) -> QString {
+        QString::from(
+            self.audio_sink_at(index)
+                .map(|sink| sink.name)
+                .unwrap_or_default()
+                .as_str(),
+        )
+    }
+
+    pub fn audio_sink_description_at(&self, index: i32) -> QString {
+        QString::from(
+            self.audio_sink_at(index)
+                .map(|sink| sink.description)
+                .unwrap_or_default()
+                .as_str(),
+        )
+    }
+
+    pub fn refresh_audio_devices(self: Pin<&mut Self>) {
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::RefreshMicSources);
+            let _ = tx.blocking_send(BackendCommand::RefreshAudioSinks);
         }
     }
 }
@@ -1082,8 +1146,10 @@ impl Constructor<()> for qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.refresh_mic_source_count();
+        rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
         properties::sync_mic_properties(self.as_mut());
+        properties::sync_audio_sink_properties(self.as_mut());
         properties::sync_volume_properties(self.as_mut());
         Self::refresh_global_shortcuts_status(self.as_mut());
     }
@@ -1123,6 +1189,13 @@ pub(crate) mod properties {
         let version = controller.as_ref().rust().mic_sources_version;
         controller.as_mut().set_mic_source_count(count);
         controller.as_mut().set_mic_sources_version(version);
+    }
+
+    pub fn sync_audio_sink_properties(mut controller: Pin<&mut SoundboardController>) {
+        let count = controller.as_ref().rust().audio_sink_count;
+        let version = controller.as_ref().rust().audio_sinks_version;
+        controller.as_mut().set_audio_sink_count(count);
+        controller.as_mut().set_audio_sinks_version(version);
     }
 
     pub fn sync_volume_properties(mut controller: Pin<&mut SoundboardController>) {
