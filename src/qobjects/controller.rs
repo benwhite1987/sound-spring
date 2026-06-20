@@ -205,6 +205,7 @@ pub enum BackendEvent {
     ShortcutTriggered { id: String },
     GlobalShortcutStatusChanged,
     ConfigApplied,
+    TabsChanged,
     MicSourcesUpdated,
     AudioSinksUpdated,
 }
@@ -353,6 +354,21 @@ impl SoundboardControllerRust {
         self.current_tab_name =
             QString::from(self.active_tab().map(|t| t.display_name()).unwrap_or(""));
         self.tab_version += 1;
+    }
+
+    fn refresh_tabs_from_disk(&mut self) {
+        let config = crate::config::load_config().unwrap_or_default();
+        let current = self
+            .active_tab()
+            .map(|tab| tab.path.to_string_lossy().into_owned());
+        self.tabs_root = config.paths.tabs_root.clone();
+        match TabsRepository::scan(&config) {
+            Ok(tabs) => {
+                tracing::info!("rescanned {} tab(s)", tabs.len());
+                self.replace_tabs(tabs, current.as_deref());
+            }
+            Err(err) => tracing::warn!("tab rescan failed: {err:#}"),
+        }
     }
 
     fn refresh_mic_source_count(&mut self) {
@@ -927,6 +943,10 @@ impl qobject::SoundboardController {
                     SoundboardControllerRust::reload_shortcut_bindings();
                     self.as_mut().rust_mut().bump_shortcut_version();
                     playback_changed = true;
+                    tab_changed = true;
+                }
+                BackendEvent::TabsChanged => {
+                    self.as_mut().rust_mut().refresh_tabs_from_disk();
                     tab_changed = true;
                 }
                 BackendEvent::MicSourcesUpdated => {

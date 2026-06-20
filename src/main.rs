@@ -13,7 +13,7 @@ use qobjects::controller::{
 use services::pipewire::{Modules, PipewireManager};
 use services::player::{Player, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
-use services::tabs::TabsRepository;
+use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -88,7 +88,6 @@ fn main() -> Result<()> {
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
-            info!("detected {} microphone source(s)", sources.len());
             if let Some(store) = MIC_SOURCES.get() {
                 if let Ok(mut guard) = store.lock() {
                     *guard = sources;
@@ -103,7 +102,6 @@ async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
 async fn publish_audio_sinks(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sinks().await {
         Ok(sinks) => {
-            info!("detected {} output device(s)", sinks.len());
             if let Some(store) = AUDIO_SINKS.get() {
                 if let Ok(mut guard) = store.lock() {
                     *guard = sinks;
@@ -275,6 +273,10 @@ fn run_backend(
         let (source_watch_tx, mut source_watch_rx) = tokio::sync::mpsc::channel(8);
         PipewireManager::spawn_source_watch(source_watch_tx);
 
+        let (tab_watch_tx, mut tab_watch_rx) = tokio::sync::mpsc::channel(8);
+        let mut tab_watch = TabFilesystemWatch::new();
+        tab_watch.restart(watch_paths(&active_config), tab_watch_tx.clone());
+
         let mut player = Player::default_sink();
         player.set_volumes(VolumeState {
             output_percent: active_config.audio.output_volume,
@@ -303,6 +305,10 @@ fn run_backend(
                                 monitor_muted: new_config.audio.monitor_muted,
                             });
                             player.set_monitor_sink(&new_config.audio.monitor_sink);
+                            let new_watch_paths = watch_paths(&new_config);
+                            if new_watch_paths != watch_paths(&active_config) {
+                                tab_watch.restart(new_watch_paths, tab_watch_tx.clone());
+                            }
                             active_config = new_config;
                         }
                         Some(BackendCommand::BindShortcuts) => {
@@ -340,6 +346,9 @@ fn run_backend(
                 _ = source_watch_rx.recv() => {
                     publish_mic_sources(&backend_event_tx).await;
                     publish_audio_sinks(&backend_event_tx).await;
+                }
+                _ = tab_watch_rx.recv() => {
+                    let _ = backend_event_tx.send(BackendEvent::TabsChanged);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     for (tab_index, slot) in player.reap_finished().await {

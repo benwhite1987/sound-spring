@@ -1,11 +1,18 @@
 use crate::config::Config;
 use crate::services::audio_meta;
 use anyhow::{Context, Result};
+use notify::event::{CreateKind, Event, EventKind, ModifyKind};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc as std_mpsc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::Sender as TokioSender;
 use tracing::warn;
 
 pub const MAX_SLOTS: usize = 10;
+pub const TAB_WATCH_DEBOUNCE_MS: u64 = 300;
 
 static AUDIO_EXTENSIONS: &[&str] = &["ogg", "oga", "opus", "wav", "flac", "mp3", "m4a", "aac"];
 
@@ -137,6 +144,128 @@ impl TabsRepository {
     }
 }
 
+/// Paths that should be watched for tab content changes.
+pub fn watch_paths(config: &Config) -> Vec<PathBuf> {
+    if !config.tabs.is_empty() {
+        return config
+            .tabs
+            .iter()
+            .map(|entry| entry.path.clone())
+            .filter(|path| path.is_dir())
+            .collect();
+    }
+    let root = config.paths.tabs_root.clone();
+    if root.is_dir() {
+        vec![root]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Owns a background thread with a debounced `notify` watcher.
+pub struct TabFilesystemWatch {
+    shutdown_tx: Option<std_mpsc::Sender<()>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl TabFilesystemWatch {
+    pub fn new() -> Self {
+        Self {
+            shutdown_tx: None,
+            join: None,
+        }
+    }
+
+    pub fn restart(&mut self, paths: Vec<PathBuf>, notify_tx: TokioSender<()>) {
+        self.stop();
+        if paths.is_empty() {
+            return;
+        }
+        let (shutdown_tx, shutdown_rx) = std_mpsc::channel();
+        let join = thread::spawn(move || run_tab_filesystem_watch(paths, notify_tx, shutdown_rx));
+        self.shutdown_tx = Some(shutdown_tx);
+        self.join = Some(join);
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for TabFilesystemWatch {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn run_tab_filesystem_watch(
+    paths: Vec<PathBuf>,
+    notify_tx: TokioSender<()>,
+    shutdown_rx: std_mpsc::Receiver<()>,
+) {
+    let (event_tx, event_rx) = std_mpsc::channel();
+    let mut watcher = match RecommendedWatcher::new(
+        move |res: notify::Result<Event>| {
+            if let Ok(event) = res {
+                if is_tab_content_change(&event.kind) {
+                    let _ = event_tx.send(());
+                }
+            }
+        },
+        NotifyConfig::default(),
+    ) {
+        Ok(watcher) => watcher,
+        Err(err) => {
+            warn!("tab filesystem watcher failed to start: {err:#}");
+            return;
+        }
+    };
+
+    for path in &paths {
+        if let Err(err) = watcher.watch(path, RecursiveMode::Recursive) {
+            warn!("watch {}: {err:#}", path.display());
+        }
+    }
+
+    let debounce = Duration::from_millis(TAB_WATCH_DEBOUNCE_MS);
+    let poll = Duration::from_millis(50);
+    let mut deadline: Option<Instant> = None;
+
+    loop {
+        while event_rx.try_recv().is_ok() {
+            deadline = Some(Instant::now() + debounce);
+        }
+        if shutdown_rx.try_recv().is_ok() {
+            break;
+        }
+        if let Some(until) = deadline {
+            if Instant::now() >= until {
+                let _ = notify_tx.blocking_send(());
+                deadline = None;
+            }
+        }
+        thread::sleep(poll);
+    }
+}
+
+fn is_tab_content_change(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(
+                ModifyKind::Data(_)
+                    | ModifyKind::Name(_)
+                    | ModifyKind::Metadata(_)
+            )
+    )
+}
+
 pub fn tab_name_from_path(path: &Path) -> String {
     let file_name = path
         .file_name()
@@ -197,5 +326,49 @@ mod tests {
         assert_eq!(tab.slot(1).unwrap(), &PathBuf::from("/tmp/00.ogg"));
         assert_eq!(tab.slot(10).unwrap(), &PathBuf::from("/tmp/09.ogg"));
         assert!(tab.slot(11).is_none());
+    }
+
+    #[test]
+    fn watch_paths_uses_tabs_root_when_no_custom_tabs() {
+        let dir = std::env::temp_dir().join("sound_spring_watch_paths_root");
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            paths: crate::config::PathsConfig {
+                tabs_root: dir.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(watch_paths(&config), vec![dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_paths_uses_custom_tab_dirs() {
+        let dir = std::env::temp_dir().join("sound_spring_watch_paths_custom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {
+            tabs: vec![
+                crate::config::TabEntry {
+                    path: dir.clone(),
+                    name: Some("Memes".into()),
+                },
+                crate::config::TabEntry {
+                    path: PathBuf::from("/missing"),
+                    name: None,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(watch_paths(&config), vec![dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_tab_content_change_filters_access_events() {
+        assert!(!is_tab_content_change(&EventKind::Access(
+            notify::event::AccessKind::Read
+        )));
+        assert!(is_tab_content_change(&EventKind::Create(CreateKind::File)));
     }
 }
