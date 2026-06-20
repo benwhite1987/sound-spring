@@ -326,6 +326,10 @@ fn run_backend(
                         Some(BackendCommand::RefreshAudioSinks) => {
                             publish_audio_sinks(&backend_event_tx).await;
                         }
+                        Some(BackendCommand::RestartTabWatch) => {
+                            let config = config::load_config().unwrap_or_default();
+                            tab_watch.restart(watch_paths(&config), tab_watch_tx.clone());
+                        }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player
                                 .handle_command(services::player::PlayerCommand::SetVolumes(volumes))

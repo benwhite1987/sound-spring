@@ -1,9 +1,10 @@
-use crate::config::Config;
+use crate::config::{Config, TabEntry};
 use crate::services::audio_meta;
 use anyhow::{Context, Result};
 use notify::event::{CreateKind, Event, EventKind, ModifyKind};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::thread::{self, JoinHandle};
@@ -56,6 +57,25 @@ pub struct TabsRepository;
 
 impl TabsRepository {
     pub fn scan(config: &Config) -> Result<Vec<Tab>> {
+        if !config.tabs.is_empty() {
+            let mut tabs = Vec::new();
+            for entry in &config.tabs {
+                if !entry.path.is_dir() {
+                    continue;
+                }
+                match Self::scan_tab_dir(&entry.path) {
+                    Ok(mut tab) => {
+                        if let Some(name) = entry.name.as_deref().filter(|name| !name.is_empty()) {
+                            tab.name = name.to_string();
+                        }
+                        tabs.push(tab);
+                    }
+                    Err(err) => warn!("skip tab {}: {err:#}", entry.path.display()),
+                }
+            }
+            return Ok(tabs);
+        }
+
         let paths = Self::tab_paths(config)?;
         let mut tabs = paths
             .into_iter()
@@ -141,6 +161,71 @@ impl TabsRepository {
                 let candidate = tabs_root.join(current);
                 tabs.iter().find(|tab| tab.path == candidate)
             })
+    }
+
+    pub fn create_tab_dir(root: &Path, display_name: &str) -> Result<PathBuf> {
+        fs::create_dir_all(root).with_context(|| format!("create tabs root {}", root.display()))?;
+        let segment = sanitize_tab_segment(display_name);
+        let prefix = next_order_prefix(root);
+        let path = root.join(format!("{prefix}-{segment}"));
+        fs::create_dir_all(&path).with_context(|| format!("create tab dir {}", path.display()))?;
+        Ok(path)
+    }
+
+    pub fn rename_tab_dir(path: &Path, new_display_name: &str) -> Result<PathBuf> {
+        let parent = path
+            .parent()
+            .context("tab directory has no parent path")?;
+        let prefix = order_prefix_from_path(path).unwrap_or_else(|| "99".to_string());
+        let segment = sanitize_tab_segment(new_display_name);
+        let new_path = parent.join(format!("{prefix}-{segment}"));
+        if new_path != path {
+            fs::rename(path, &new_path)
+                .with_context(|| format!("rename tab {} -> {}", path.display(), new_path.display()))?;
+        }
+        Ok(new_path)
+    }
+
+    /// Renumber `NN-name` folders under `tabs_root` to match `ordered_paths`.
+    pub fn reorder_tabs_root(root: &Path, ordered_paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        if ordered_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut temps = Vec::with_capacity(ordered_paths.len());
+        for (index, path) in ordered_paths.iter().enumerate() {
+            let temp = root.join(format!(".sound_spring_reorder_{index}"));
+            if path.exists() {
+                fs::rename(path, &temp).with_context(|| {
+                    format!("stage tab reorder {} -> {}", path.display(), temp.display())
+                })?;
+            }
+            temps.push(temp);
+        }
+
+        let mut final_paths = Vec::with_capacity(ordered_paths.len());
+        for (index, temp) in temps.iter().enumerate() {
+            let display = tab_name_from_path(&ordered_paths[index]);
+            let final_path = root.join(format!(
+                "{:02}-{}",
+                index + 1,
+                sanitize_tab_segment(&display)
+            ));
+            if temp.exists() {
+                fs::rename(temp, &final_path).with_context(|| {
+                    format!("finalize tab reorder {} -> {}", temp.display(), final_path.display())
+                })?;
+            }
+            final_paths.push(final_path);
+        }
+        Ok(final_paths)
+    }
+
+    pub fn reorder_custom_tabs(tabs: &mut Vec<TabEntry>, from: usize, to: usize) {
+        if from >= tabs.len() || to >= tabs.len() || from == to {
+            return;
+        }
+        let entry = tabs.remove(from);
+        tabs.insert(to, entry);
     }
 }
 
@@ -286,6 +371,54 @@ pub fn strip_order_prefix(name: &str) -> String {
     }
 }
 
+pub fn sanitize_tab_segment(name: &str) -> String {
+    let sanitized: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "tab".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn order_prefix_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let (prefix, rest) = name.split_once('-')?;
+    if prefix.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
+        Some(prefix.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn next_order_prefix(root: &Path) -> String {
+    let mut max = 0u32;
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if let Some(prefix) = order_prefix_from_path(&entry.path()) {
+                if let Ok(value) = prefix.parse::<u32>() {
+                    max = max.max(value);
+                }
+            }
+        }
+    }
+    format!("{:02}", max.saturating_add(1))
+}
+
+pub fn uses_custom_tabs(config: &Config) -> bool {
+    !config.tabs.is_empty()
+}
+
 fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
@@ -370,5 +503,48 @@ mod tests {
             notify::event::AccessKind::Read
         )));
         assert!(is_tab_content_change(&EventKind::Create(CreateKind::File)));
+    }
+
+    #[test]
+    fn sanitize_tab_segment_replaces_invalid_chars() {
+        assert_eq!(sanitize_tab_segment("  My Tab!  "), "My-Tab");
+        assert_eq!(sanitize_tab_segment("---"), "tab");
+    }
+
+    #[test]
+    fn next_order_prefix_increments_existing_tabs() {
+        let root = std::env::temp_dir().join("sound_spring_next_prefix");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.join("01-memes")).unwrap();
+        fs::create_dir_all(root.join("02-music")).unwrap();
+        assert_eq!(next_order_prefix(&root), "03");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_preserves_custom_tab_order_and_names() {
+        let first = std::env::temp_dir().join("sound_spring_tab_a");
+        let second = std::env::temp_dir().join("sound_spring_tab_b");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let config = Config {
+            tabs: vec![
+                TabEntry {
+                    path: second.clone(),
+                    name: Some("Second".into()),
+                },
+                TabEntry {
+                    path: first.clone(),
+                    name: Some("First".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let tabs = TabsRepository::scan(&config).unwrap();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].name, "Second");
+        assert_eq!(tabs[1].name, "First");
+        let _ = fs::remove_dir_all(&first);
+        let _ = fs::remove_dir_all(&second);
     }
 }

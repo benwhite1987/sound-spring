@@ -53,33 +53,140 @@ ApplicationWindow {
                 exclusive: true
             }
 
-            Repeater {
-                model: controller.tabCount
-                delegate: ToolButton {
-                    id: tabButton
-                    focusPolicy: Qt.NoFocus
-                    ButtonGroup.group: tabButtonGroup
-                    checkable: true
-                    text: {
-                        controller.tabVersion
-                        return controller.tabNameAt(index)
+            ListView {
+                id: tabList
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                orientation: ListView.Horizontal
+                spacing: 4
+                clip: true
+                property int tabStripTick: 0
+                model: {
+                    tabStripTick
+                    controller.uiVersion
+                    return controller.tabCount
+                }
+
+                Connections {
+                    target: controller
+                    function onTabsChanged() {
+                        tabList.tabStripTick++
+                        tabList.forceLayout()
                     }
-                    checked: {
+                    function onCurrentTabChanged() {
+                        tabList.tabStripTick++
+                    }
+                }
+
+                property int dragIndex: -1
+
+                delegate: Item {
+                    id: tabDelegate
+                    height: tabList.height
+                    width: {
+                        tabList.tabStripTick
                         controller.uiVersion
-                        return controller.currentTabIndex === index
+                        return Math.max(tabButton.implicitWidth + 12, 48)
                     }
-                    onClicked: controller.selectTab(index)
-                    background: Rectangle {
-                        implicitWidth: tabButton.implicitWidth + 12
-                        implicitHeight: tabButton.implicitHeight + 6
-                        radius: 4
-                        color: tabButton.checked ? palette.highlight : "transparent"
-                        opacity: tabButton.checked ? 0.35 : 0
+
+                    ToolButton {
+                        id: tabButton
+                        anchors.fill: parent
+                        focusPolicy: Qt.NoFocus
+                        ButtonGroup.group: tabButtonGroup
+                        checkable: true
+                        text: (tabList.tabStripTick, controller.uiVersion, controller.tabVersion,
+                               controller.tabNameAt(index))
+                        checked: {
+                            controller.uiVersion
+                            return controller.currentTabIndex === index
+                        }
+                        background: Rectangle {
+                            implicitWidth: tabButton.implicitWidth + 12
+                            implicitHeight: tabButton.implicitHeight + 6
+                            radius: 4
+                            color: tabButton.checked ? palette.highlight : "transparent"
+                            opacity: tabButton.checked ? 0.35 : 0
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabMouse
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        propagateComposedEvents: true
+
+                        property real pressX: 0
+                        property bool dragging: false
+
+                        onPressed: (mouse) => {
+                            if (mouse.button === Qt.RightButton) {
+                                tabContextMenu.tabIndex = index
+                                tabContextMenu.popup()
+                                mouse.accepted = true
+                                return
+                            }
+                            pressX = mouse.x
+                            dragging = false
+                            tabList.dragIndex = index
+                            mouse.accepted = true
+                        }
+
+                        onPositionChanged: (mouse) => {
+                            if (!pressed || mouse.buttons !== Qt.LeftButton)
+                                return
+                            if (!dragging && Math.abs(mouse.x - pressX) > 10) {
+                                dragging = true
+                                dragHandle.visible = true
+                            }
+                            if (dragging)
+                                dragHandle.x = Math.max(0, Math.min(
+                                    tabDelegate.width - dragHandle.width,
+                                    mouse.x - dragHandle.width / 2))
+                        }
+
+                        onReleased: (mouse) => {
+                            if (dragging) {
+                                var dropX = tabList.contentX + tabDelegate.x + dragHandle.x + dragHandle.width / 2
+                                var dropIdx = tabList.indexAt(dropX, tabDelegate.height / 2)
+                                if (dropIdx < 0)
+                                    dropIdx = tabList.dragIndex
+                                if (dropIdx !== tabList.dragIndex)
+                                    controller.moveTab(tabList.dragIndex, dropIdx)
+                            } else if (mouse.button === Qt.LeftButton) {
+                                controller.selectTab(index)
+                            }
+                            dragging = false
+                            dragHandle.visible = false
+                            dragHandle.x = 0
+                            tabList.dragIndex = -1
+                        }
+
+                        Rectangle {
+                            id: dragHandle
+                            visible: false
+                            width: parent.width
+                            height: parent.height - 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: 4
+                            color: palette.highlight
+                            opacity: 0.45
+                        }
                     }
                 }
             }
 
-            Item { Layout.fillWidth: true }
+            ToolButton {
+                focusPolicy: Qt.NoFocus
+                text: "+"
+                ToolTip.visible: hovered
+                ToolTip.text: "Add tab"
+                onClicked: {
+                    addTabNameField.text = ""
+                    addTabDialog.existingPath = ""
+                    addTabDialog.open()
+                }
+            }
 
             ToolButton {
                 focusPolicy: Qt.NoFocus
@@ -250,6 +357,115 @@ ApplicationWindow {
         controller: controller
         settings: settings
         ownerWindow: root
+    }
+
+    Menu {
+        id: tabContextMenu
+        property int tabIndex: -1
+
+        MenuItem {
+            text: "Rename…"
+            onTriggered: {
+                renameTabDialog.tabIndex = tabContextMenu.tabIndex
+                renameTabNameField.text = controller.tabNameAt(tabContextMenu.tabIndex)
+                renameTabDialog.open()
+            }
+        }
+        MenuItem {
+            text: "Remove"
+            enabled: controller.tabUsesCustomList
+            onTriggered: controller.removeTab(tabContextMenu.tabIndex)
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: "Move Left"
+            enabled: tabContextMenu.tabIndex > 0
+            onTriggered: controller.moveTab(tabContextMenu.tabIndex, tabContextMenu.tabIndex - 1)
+        }
+        MenuItem {
+            text: "Move Right"
+            enabled: tabContextMenu.tabIndex >= 0
+                    && tabContextMenu.tabIndex < controller.tabCount - 1
+            onTriggered: controller.moveTab(tabContextMenu.tabIndex, tabContextMenu.tabIndex + 1)
+        }
+    }
+
+    Dialog {
+        id: addTabDialog
+        title: "Add Tab"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 80, 420)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        property string existingPath: ""
+
+        onAboutToShow: {
+            addTabNameField.text = ""
+            existingPath = ""
+        }
+
+        onAccepted: {
+            controller.addTab(addTabDialog.existingPath, addTabNameField.text)
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+
+            Label { text: "Tab name" }
+            TextField {
+                id: addTabNameField
+                Layout.fillWidth: true
+                placeholderText: "New Tab"
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#aaa"
+                text: addTabDialog.existingPath.length > 0
+                      ? addTabDialog.existingPath
+                      : "Creates a new folder under the tabs root."
+            }
+            Button {
+                text: "Choose existing folder…"
+                onClicked: addTabFolderDialog.open()
+            }
+        }
+    }
+
+    FolderDialog {
+        id: addTabFolderDialog
+        title: "Choose tab folder"
+        onAccepted: {
+            var path = selectedFolder.toString()
+            if (path.startsWith("file://"))
+                path = path.substring(7)
+            addTabDialog.existingPath = decodeURIComponent(path)
+        }
+    }
+
+    Dialog {
+        id: renameTabDialog
+        title: "Rename Tab"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 80, 360)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        property int tabIndex: -1
+
+        onAccepted: controller.renameTab(renameTabDialog.tabIndex, renameTabNameField.text)
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+            Label { text: "Display name" }
+            TextField {
+                id: renameTabNameField
+                Layout.fillWidth: true
+            }
+        }
     }
 
     QtObject {
