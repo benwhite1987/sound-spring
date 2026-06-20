@@ -45,7 +45,20 @@ impl Tab {
         if slot == 0 || slot > MAX_SLOTS {
             return None;
         }
-        self.sounds.get(slot - 1).map(|s| &s.path)
+        self.sounds.iter().find_map(|sound| {
+            slot_number_from_path(&sound.path)
+                .filter(|number| *number == slot)
+                .map(|_| &sound.path)
+        })
+    }
+
+    pub fn sound_at_slot(&self, slot: usize) -> Option<&SoundFile> {
+        if slot == 0 || slot > MAX_SLOTS {
+            return None;
+        }
+        self.sounds.iter().find(|sound| {
+            slot_number_from_path(&sound.path).map(|number| number == slot) == Some(true)
+        })
     }
 
     pub fn display_name(&self) -> &str {
@@ -116,8 +129,18 @@ impl TabsRepository {
     }
 
     pub fn scan_tab_dir(path: &Path) -> Result<Tab> {
+        let (tab, warnings) = Self::scan_tab_dir_with_warnings(path)?;
+        for message in &warnings {
+            warn!("{message}");
+        }
+        Ok(tab)
+    }
+
+    pub fn scan_tab_dir_with_warnings(path: &Path) -> Result<(Tab, Vec<String>)> {
         let name = tab_name_from_path(path);
-        let mut sounds = Vec::new();
+        let mut warnings = Vec::new();
+
+        let mut files = Vec::new();
         for entry in std::fs::read_dir(path).with_context(|| format!("read {}", path.display()))? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
@@ -127,18 +150,85 @@ impl TabsRepository {
             if !is_audio_file(&file_path) {
                 continue;
             }
-            sounds.push(SoundFile {
-                name: file_name(&file_path),
-                path: file_path.clone(),
-                duration_ms: audio_meta::probe_duration_ms(&file_path).unwrap_or(0),
-            });
+            files.push(file_path);
         }
-        sounds.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Tab {
-            path: path.to_path_buf(),
-            name,
-            sounds,
-        })
+        files.sort();
+
+        let mut by_slot: [Option<PathBuf>; MAX_SLOTS] = std::array::from_fn(|_| None);
+        let mut overflow = Vec::new();
+
+        for file_path in files {
+            match slot_number_from_path(&file_path) {
+                Some(number) if (1..=MAX_SLOTS).contains(&number) => {
+                    let index = number - 1;
+                    if by_slot[index].is_some() {
+                        overflow.push((number, file_path));
+                    } else {
+                        by_slot[index] = Some(file_path);
+                    }
+                }
+                Some(number) => overflow.push((number, file_path)),
+                None => overflow.push((usize::MAX, file_path)),
+            }
+        }
+
+        overflow.sort_by(|(key_a, path_a), (key_b, path_b)| {
+            key_a.cmp(key_b).then_with(|| path_a.cmp(path_b))
+        });
+
+        let total_files = by_slot.iter().filter(|slot| slot.is_some()).count() + overflow.len();
+        if total_files > MAX_SLOTS {
+            warnings.push(format!(
+                "Ignoring {} excess audio file(s) in {} (only {MAX_SLOTS} slots available)",
+                total_files - MAX_SLOTS,
+                path.display()
+            ));
+            for slot_index in 0..MAX_SLOTS {
+                if by_slot[slot_index].is_some() || overflow.is_empty() {
+                    continue;
+                }
+                let (_, file_path) = overflow.remove(0);
+                by_slot[slot_index] = Some(file_path);
+            }
+        } else {
+            for slot_index in 0..MAX_SLOTS {
+                if by_slot[slot_index].is_some() || overflow.is_empty() {
+                    continue;
+                }
+                let (_, file_path) = overflow.remove(0);
+                by_slot[slot_index] = Some(file_path);
+            }
+        }
+
+        let assigned: Vec<(PathBuf, usize)> = by_slot
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, file_path)| file_path.map(|path| (path, index + 1)))
+            .collect();
+
+        let sources: Vec<PathBuf> = assigned.iter().map(|(src, _)| src.clone()).collect();
+        let sounds = match normalize_assigned_files(path, &assigned, &sources) {
+            Ok(paths) => paths
+                .into_iter()
+                .map(|file_path| sound_file_from_path(&file_path))
+                .collect(),
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to normalize files in {}: {err:#}",
+                    path.display()
+                ));
+                Vec::new()
+            }
+        };
+
+        Ok((
+            Tab {
+                path: path.to_path_buf(),
+                name,
+                sounds,
+            },
+            warnings,
+        ))
     }
 
     pub fn resolve_current_tab<'a>(
@@ -226,6 +316,84 @@ impl TabsRepository {
         }
         let entry = tabs.remove(from);
         tabs.insert(to, entry);
+    }
+
+    pub fn replace_slot_file(tab_dir: &Path, slot: usize, source: &Path) -> Result<PathBuf> {
+        if !is_audio_file(source) {
+            anyhow::bail!("{} is not a supported audio file", source.display());
+        }
+        let tab = Self::scan_tab_dir(tab_dir)?;
+        if let Some(existing) = tab.slot(slot) {
+            fs::copy(source, existing)
+                .with_context(|| format!("replace {}", existing.display()))?;
+            return Ok(existing.clone());
+        }
+        let dest = destination_for_empty_slot(tab_dir, slot, source)?;
+        fs::copy(source, &dest).with_context(|| format!("copy into {}", dest.display()))?;
+        Ok(dest)
+    }
+
+    pub fn remove_slot_file(tab_dir: &Path, slot: usize) -> Result<()> {
+        let tab = Self::scan_tab_dir(tab_dir)?;
+        let path = tab
+            .slot(slot)
+            .context("slot is empty")?
+            .clone();
+        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))
+    }
+
+    pub fn rename_slot_file(tab_dir: &Path, slot: usize, new_name: &str) -> Result<PathBuf> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            anyhow::bail!("new name is empty");
+        }
+        let tab = Self::scan_tab_dir(tab_dir)?;
+        let existing = tab
+            .slot(slot)
+            .context("slot is empty")?
+            .clone();
+        let ext = existing
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("ogg");
+        let prefix = format!("{slot:02}");
+        let segment = new_name.trim();
+        if segment.contains('/') || segment.contains('\\') {
+            anyhow::bail!("new name contains invalid path characters");
+        }
+        let new_path = tab_dir.join(format!("{prefix}-{segment}.{ext}"));
+        if new_path != existing {
+            fs::rename(&existing, &new_path).with_context(|| {
+                format!("rename {} -> {}", existing.display(), new_path.display())
+            })?;
+        }
+        Ok(new_path)
+    }
+
+    pub fn move_slot_file(tab_dir: &Path, from_slot: usize, to_slot: usize) -> Result<()> {
+        if from_slot == 0
+            || from_slot > MAX_SLOTS
+            || to_slot == 0
+            || to_slot > MAX_SLOTS
+            || from_slot == to_slot
+        {
+            anyhow::bail!("invalid slot move {from_slot} -> {to_slot}");
+        }
+        let tab = Self::scan_tab_dir(tab_dir)?;
+        let from_path = tab
+            .slot(from_slot)
+            .context("source slot is empty")?
+            .clone();
+        match tab.slot(to_slot) {
+            None => {
+                let dest = path_with_slot_prefix(&from_path, tab_dir, to_slot)?;
+                fs::rename(&from_path, &dest).with_context(|| {
+                    format!("move {} -> {}", from_path.display(), dest.display())
+                })?;
+            }
+            Some(to_path) => swap_slot_files(tab_dir, &from_path, to_path)?,
+        }
+        Ok(())
     }
 }
 
@@ -361,14 +529,39 @@ pub fn tab_name_from_path(path: &Path) -> String {
 }
 
 pub fn strip_order_prefix(name: &str) -> String {
-    let Some((prefix, rest)) = name.split_once('-') else {
-        return name.to_string();
-    };
-    if prefix.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
-        rest.to_string()
-    } else {
-        name.to_string()
+    parse_slot_prefix_from_stem(name)
+        .map(|(_, label)| label.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Parses `01-name`, `01 name`, and similar slot prefixes from a file or tab stem.
+pub fn parse_slot_prefix_from_stem(stem: &str) -> Option<(usize, &str)> {
+    let stem = stem.trim();
+    if stem.is_empty() {
+        return None;
     }
+    let digit_len: usize = stem
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .map(|c| c.len_utf8())
+        .sum();
+    if digit_len == 0 {
+        return None;
+    }
+    let number = stem[..digit_len].parse::<usize>().ok()?;
+    let rest = &stem[digit_len..];
+    if rest.is_empty() {
+        return None;
+    }
+    let separator = rest.chars().next()?;
+    if separator != '-' && !separator.is_whitespace() {
+        return None;
+    }
+    let label = rest[separator.len_utf8()..].trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some((number, label))
 }
 
 pub fn sanitize_tab_segment(name: &str) -> String {
@@ -419,18 +612,149 @@ pub fn uses_custom_tabs(config: &Config) -> bool {
     !config.tabs.is_empty()
 }
 
+fn destination_for_empty_slot(tab_dir: &Path, slot: usize, source: &Path) -> Result<PathBuf> {
+    let ext = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .context("audio file has no extension")?;
+    let label = label_from_path(source);
+    unique_canonical_path(tab_dir, slot, &label, ext, &[])
+}
+
+pub fn slot_number_from_path(path: &Path) -> Option<usize> {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .and_then(|stem| parse_slot_prefix_from_stem(stem).map(|(number, _)| number))
+}
+
+fn label_from_path(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("sound");
+    parse_slot_prefix_from_stem(stem)
+        .map(|(_, label)| label.to_string())
+        .unwrap_or_else(|| stem.to_string())
+}
+
+fn canonical_sound_filename(slot: usize, label: &str, ext: &str) -> String {
+    format!("{slot:02}-{label}.{ext}")
+}
+
+fn canonical_path_for_slot(
+    tab_dir: &Path,
+    src: &Path,
+    slot: usize,
+    moving_sources: &[PathBuf],
+) -> Result<PathBuf> {
+    let ext = src
+        .extension()
+        .and_then(|value| value.to_str())
+        .context("audio file has no extension")?;
+    let label = label_from_path(src);
+    unique_canonical_path(tab_dir, slot, &label, ext, moving_sources)
+}
+
+fn unique_canonical_path(
+    tab_dir: &Path,
+    slot: usize,
+    label: &str,
+    ext: &str,
+    moving_sources: &[PathBuf],
+) -> Result<PathBuf> {
+    let mut dest = tab_dir.join(canonical_sound_filename(slot, label, ext));
+    let mut suffix = 1u32;
+    while dest.exists() && !moving_sources.iter().any(|path| path == &dest) {
+        dest = tab_dir.join(format!("{slot:02}-{label}-{suffix}.{ext}"));
+        suffix += 1;
+    }
+    Ok(dest)
+}
+
+fn normalize_assigned_files(
+    tab_dir: &Path,
+    assigned: &[(PathBuf, usize)],
+    sources: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let plans: Vec<(PathBuf, PathBuf)> = assigned
+        .iter()
+        .map(|(src, slot)| {
+            let dest = canonical_path_for_slot(tab_dir, src, *slot, sources)?;
+            Ok((src.clone(), dest))
+        })
+        .collect::<Result<_>>()?;
+
+    let mut staged = Vec::new();
+    for (index, (src, dest)) in plans.iter().enumerate() {
+        if src == dest {
+            continue;
+        }
+        let temp = tab_dir.join(format!(".sound_spring_norm_{index}"));
+        fs::rename(src, &temp).with_context(|| {
+            format!("stage normalize {} -> {}", src.display(), temp.display())
+        })?;
+        staged.push((temp, dest.clone()));
+    }
+
+    for (temp, dest) in staged {
+        fs::rename(&temp, &dest).with_context(|| {
+            format!("finalize normalize {} -> {}", temp.display(), dest.display())
+        })?;
+    }
+
+    Ok(plans.into_iter().map(|(_, dest)| dest).collect())
+}
+
+fn display_name_for_path(path: &Path) -> String {
+    label_from_path(path)
+}
+
+fn sound_file_from_path(path: &Path) -> SoundFile {
+    SoundFile {
+        name: display_name_for_path(path),
+        path: path.to_path_buf(),
+        duration_ms: audio_meta::probe_duration_ms(path).unwrap_or(0),
+    }
+}
+
+fn path_with_slot_prefix(source: &Path, tab_dir: &Path, slot: usize) -> Result<PathBuf> {
+    canonical_path_for_slot(tab_dir, source, slot, &[source.to_path_buf()])
+}
+
+fn swap_slot_files(tab_dir: &Path, path_a: &Path, path_b: &Path) -> Result<()> {
+    let slot_a = slot_number_from_path(path_a).context("source file has no slot prefix")?;
+    let slot_b = slot_number_from_path(path_b).context("target file has no slot prefix")?;
+    let sources = vec![path_a.to_path_buf(), path_b.to_path_buf()];
+    let dest_b = canonical_path_for_slot(tab_dir, path_a, slot_b, &sources)?;
+    let dest_a = canonical_path_for_slot(tab_dir, path_b, slot_a, &sources)?;
+    let temp_a = tab_dir.join(".sound_spring_swap_a");
+    let temp_b = tab_dir.join(".sound_spring_swap_b");
+    fs::rename(path_a, &temp_a)
+        .with_context(|| format!("stage swap {} -> {}", path_a.display(), temp_a.display()))?;
+    fs::rename(path_b, &temp_b)
+        .with_context(|| format!("stage swap {} -> {}", path_b.display(), temp_b.display()))?;
+    fs::rename(&temp_a, &dest_b).with_context(|| {
+        format!(
+            "finalize swap {} -> {}",
+            temp_a.display(),
+            dest_b.display()
+        )
+    })?;
+    fs::rename(&temp_b, &dest_a).with_context(|| {
+        format!(
+            "finalize swap {} -> {}",
+            temp_b.display(),
+            dest_a.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .map(|ext| AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -440,25 +764,194 @@ mod tests {
     #[test]
     fn strip_prefix() {
         assert_eq!(strip_order_prefix("01-memes"), "memes");
+        assert_eq!(strip_order_prefix("01 memes"), "memes");
         assert_eq!(strip_order_prefix("memes"), "memes");
     }
 
     #[test]
-    fn tab_slot_mapping() {
+    fn slot_number_accepts_space_separated_prefix() {
+        assert_eq!(
+            slot_number_from_path(&PathBuf::from("/tmp/01 airhorn.ogg")),
+            Some(1)
+        );
+        assert_eq!(
+            slot_number_from_path(&PathBuf::from("/tmp/03-third.ogg")),
+            Some(3)
+        );
+        assert_eq!(
+            slot_number_from_path(&PathBuf::from("/tmp/airhorn.ogg")),
+            None
+        );
+    }
+
+    #[test]
+    fn scan_renames_space_separated_prefixes() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_space_prefix");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("01 airhorn.ogg"), b"fake").unwrap();
+        fs::write(dir.join("02 bruh.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert!(warnings.is_empty());
+        assert!(dir.join("01-airhorn.ogg").exists());
+        assert!(dir.join("02-bruh.ogg").exists());
+        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-airhorn.ogg"));
+        assert_eq!(tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()), Some("02-bruh.ogg"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_preserves_spaces_in_sound_label() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_label_spaces");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("01 my cool sound.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert!(warnings.is_empty());
+        assert!(dir.join("01-my cool sound.ogg").exists());
+        assert_eq!(
+            tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("01-my cool sound.ogg")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_renames_unnumbered_files_into_free_slots() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_unnumbered");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("01-first.ogg"), b"fake").unwrap();
+        fs::write(dir.join("second.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-first.ogg"));
+        assert_eq!(tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()), Some("02-second.ogg"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_remaps_high_prefixes_when_ten_or_fewer_files() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_high_prefix");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("01-one.ogg"), b"fake").unwrap();
+        fs::write(dir.join("15-fifteen.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(tab.sounds.len(), 2);
+        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-one.ogg"));
+        assert_eq!(
+            tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("02-fifteen.ogg")
+        );
+        assert!(dir.join("15-fifteen.ogg").exists() == false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_warns_when_more_than_ten_files() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_eleven");
+        fs::create_dir_all(&dir).unwrap();
+        for index in 1..=11 {
+            fs::write(dir.join(format!("{index:02}-file.ogg")), b"fake").unwrap();
+        }
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert_eq!(tab.sounds.len(), 10);
+        assert!(warnings.iter().any(|msg| msg.contains("Ignoring 1 excess")));
+        assert!(dir.join("11-file.ogg").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_preserves_empty_slots_after_deletion() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_empty_slot");
+        fs::create_dir_all(&dir).unwrap();
+        for index in 1..=8 {
+            fs::write(dir.join(format!("{index:02}-file.ogg")), b"fake").unwrap();
+        }
+        fs::write(dir.join("10-tenth.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert!(warnings.is_empty());
+        assert!(tab.slot(9).is_none());
+        assert_eq!(
+            tab.slot(10).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("10-tenth.ogg")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_fills_empty_slots_from_overflow_when_more_than_ten_files() {
+        let dir = std::env::temp_dir().join("sound_spring_scan_overflow_fill");
+        fs::create_dir_all(&dir).unwrap();
+        for index in 1..=9 {
+            fs::write(dir.join(format!("{index:02}-file.ogg")), b"fake").unwrap();
+        }
+        fs::write(dir.join("11-eleventh.ogg"), b"fake").unwrap();
+        fs::write(dir.join("12-twelfth.ogg"), b"fake").unwrap();
+        let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
+        assert_eq!(tab.sounds.len(), 10);
+        assert!(tab.slot(9).is_some());
+        assert_eq!(
+            tab.slot(10).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("10-eleventh.ogg")
+        );
+        assert!(warnings.iter().any(|msg| msg.contains("Ignoring 1 excess")));
+        assert!(dir.join("12-twelfth.ogg").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tab_slot_mapping_uses_prefix_numbers() {
         let tab = Tab {
             path: PathBuf::from("/tmp/t"),
             name: "t".into(),
-            sounds: (0..11)
-                .map(|i| SoundFile {
-                    path: PathBuf::from(format!("/tmp/{i:02}.ogg")),
-                    name: format!("{i:02}.ogg"),
+            sounds: vec![
+                SoundFile {
+                    path: PathBuf::from("/tmp/t/03-third.ogg"),
+                    name: "third".into(),
                     duration_ms: 0,
-                })
-                .collect(),
+                },
+                SoundFile {
+                    path: PathBuf::from("/tmp/t/01-first.ogg"),
+                    name: "first".into(),
+                    duration_ms: 0,
+                },
+            ],
         };
-        assert_eq!(tab.slot(1).unwrap(), &PathBuf::from("/tmp/00.ogg"));
-        assert_eq!(tab.slot(10).unwrap(), &PathBuf::from("/tmp/09.ogg"));
-        assert!(tab.slot(11).is_none());
+        assert_eq!(
+            tab.slot(1).unwrap(),
+            &PathBuf::from("/tmp/t/01-first.ogg")
+        );
+        assert!(tab.slot(2).is_none());
+        assert_eq!(
+            tab.slot(3).unwrap(),
+            &PathBuf::from("/tmp/t/03-third.ogg")
+        );
+        assert!(tab.slot(10).is_none());
+    }
+
+    #[test]
+    fn move_slot_file_swaps_occupied_targets() {
+        let dir = std::env::temp_dir().join("sound_spring_move_swap");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("01-a.ogg"), b"a").unwrap();
+        fs::write(dir.join("02-b.ogg"), b"b").unwrap();
+        TabsRepository::move_slot_file(&dir, 1, 2).unwrap();
+        assert!(dir.join("01-b.ogg").exists());
+        assert!(dir.join("02-a.ogg").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn destination_for_empty_slot_strips_import_prefix() {
+        let dir = std::env::temp_dir().join("sound_spring_slot_dest_strip");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("15-oldname.ogg");
+        fs::write(&source, b"fake").unwrap();
+        let dest = destination_for_empty_slot(&dir, 10, &source).unwrap();
+        assert_eq!(
+            dest.file_name().and_then(|s| s.to_str()),
+            Some("10-oldname.ogg")
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -546,5 +1039,30 @@ mod tests {
         assert_eq!(tabs[1].name, "First");
         let _ = fs::remove_dir_all(&first);
         let _ = fs::remove_dir_all(&second);
+    }
+
+    #[test]
+    fn destination_for_empty_slot_uses_slot_prefix() {
+        let dir = std::env::temp_dir().join("sound_spring_slot_dest");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("clip.ogg");
+        fs::write(&source, b"fake").unwrap();
+        let dest = destination_for_empty_slot(&dir, 3, &source).unwrap();
+        assert_eq!(dest.file_name().and_then(|s| s.to_str()), Some("03-clip.ogg"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_slot_file_preserves_order_prefix() {
+        let dir = std::env::temp_dir().join("sound_spring_slot_rename");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("01-airhorn.ogg");
+        fs::write(&file, b"fake").unwrap();
+        let renamed = TabsRepository::rename_slot_file(&dir, 1, "bruh").unwrap();
+        assert_eq!(
+            renamed.file_name().and_then(|s| s.to_str()),
+            Some("01-bruh.ogg")
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

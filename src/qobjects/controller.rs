@@ -26,6 +26,7 @@ pub mod qobject {
         #[qproperty(bool, output_muted)]
         #[qproperty(bool, monitor_muted)]
         #[qproperty(QString, global_shortcuts_status)]
+        #[qproperty(QString, tab_warning)]
         type SoundboardController = super::SoundboardControllerRust;
 
         #[qinvokable]
@@ -112,7 +113,25 @@ pub mod qobject {
         fn slot_label(self: &SoundboardController, slot: i32) -> QString;
 
         #[qinvokable]
+        fn slot_path_at(self: &SoundboardController, slot: i32) -> QString;
+
+        #[qinvokable]
         fn slot_empty(self: &SoundboardController, slot: i32) -> bool;
+
+        #[qinvokable]
+        fn replace_slot(self: Pin<&mut SoundboardController>, slot: i32, path: QString) -> bool;
+
+        #[qinvokable]
+        fn remove_slot(self: Pin<&mut SoundboardController>, slot: i32) -> bool;
+
+        #[qinvokable]
+        fn rename_slot(self: Pin<&mut SoundboardController>, slot: i32, name: QString) -> bool;
+
+        #[qinvokable]
+        fn move_slot(self: Pin<&mut SoundboardController>, from_slot: i32, to_slot: i32) -> bool;
+
+        #[qinvokable]
+        fn open_tab_folder(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
         fn slot_playing(self: &SoundboardController, slot: i32) -> bool;
@@ -282,6 +301,7 @@ pub struct SoundboardControllerRust {
     output_muted: bool,
     monitor_muted: bool,
     global_shortcuts_status: QString,
+    tab_warning: QString,
     tabs: Vec<Tab>,
     active_playbacks: HashMap<SessionKey, ActivePlayback>,
     play_coalesce: Option<PlayCoalesce>,
@@ -377,19 +397,24 @@ impl SoundboardControllerRust {
         self.tab_version += 1;
     }
 
+    fn rescan_tabs(&mut self, config: &Config, current_path: Option<&str>) {
+        match TabsRepository::scan(config) {
+            Ok(tabs) => {
+                tracing::info!("rescanned {} tab(s)", tabs.len());
+                self.replace_tabs(tabs, current_path);
+            }
+            Err(err) => tracing::warn!("tab rescan failed: {err:#}"),
+        }
+        self.set_tab_warning(&Self::collect_tab_warnings(config));
+    }
+
     fn refresh_tabs_from_disk(&mut self) {
         let config = crate::config::load_config().unwrap_or_default();
         let current = self
             .active_tab()
             .map(|tab| tab.path.to_string_lossy().into_owned());
         self.tabs_root = config.paths.tabs_root.clone();
-        match TabsRepository::scan(&config) {
-            Ok(tabs) => {
-                tracing::info!("rescanned {} tab(s)", tabs.len());
-                self.replace_tabs(tabs, current.as_deref());
-            }
-            Err(err) => tracing::warn!("tab rescan failed: {err:#}"),
-        }
+        self.rescan_tabs(&config, current.as_deref());
     }
 
     fn request_tab_watch_restart() {
@@ -416,7 +441,10 @@ impl SoundboardControllerRust {
                     .map(|tab| tab.path.to_string_lossy().into_owned())
             });
         match TabsRepository::scan(config) {
-            Ok(tabs) => self.replace_tabs(tabs, select.as_deref()),
+            Ok(tabs) => {
+                self.replace_tabs(tabs, select.as_deref());
+                self.set_tab_warning(&Self::collect_tab_warnings(config));
+            }
             Err(err) => {
                 tracing::warn!("tab rescan failed: {err:#}");
                 return false;
@@ -430,6 +458,52 @@ impl SoundboardControllerRust {
 
     fn config_index_for_tab_path(config: &Config, path: &Path) -> Option<usize> {
         config.tabs.iter().position(|entry| entry.path == path)
+    }
+
+    fn refresh_active_tab_slots(&mut self) {
+        let config = config::load_config().unwrap_or_default();
+        let current = self
+            .active_tab()
+            .map(|tab| tab.path.to_string_lossy().into_owned());
+        self.rescan_tabs(&config, current.as_deref());
+    }
+
+    fn set_tab_warning(&mut self, messages: &[String]) {
+        let warning = if messages.is_empty() {
+            String::new()
+        } else {
+            messages.join("\n")
+        };
+        self.tab_warning = QString::from(warning.as_str());
+    }
+
+    fn collect_tab_warnings(config: &Config) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let tab_paths = if !config.tabs.is_empty() {
+            config
+                .tabs
+                .iter()
+                .filter(|entry| entry.path.is_dir())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        } else if config.paths.tabs_root.is_dir() {
+            TabsRepository::tab_paths(config).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for path in tab_paths {
+            match TabsRepository::scan_tab_dir_with_warnings(&path) {
+                Ok((_, mut tab_warnings)) => warnings.append(&mut tab_warnings),
+                Err(err) => warnings.push(format!("Failed to scan {}: {err:#}", path.display())),
+            }
+        }
+        warnings
+    }
+
+    fn slot_path_internal(&self, slot: i32) -> Option<PathBuf> {
+        let tab = self.active_tab()?;
+        let index = normalize_slot(slot)?;
+        tab.slot(index).cloned()
     }
 
     fn refresh_mic_source_count(&mut self) {
@@ -640,8 +714,7 @@ impl SoundboardControllerRust {
                 return;
             };
             let cached = tab
-                .sounds
-                .get(index - 1)
+                .sound_at_slot(index)
                 .map(|sound| sound.duration_ms)
                 .unwrap_or(0);
             (path, cached)
@@ -999,6 +1072,7 @@ impl qobject::SoundboardController {
                     rust.state_path = state_path;
                     let tabs = TabsRepository::scan(&config).unwrap_or_default();
                     rust.replace_tabs(tabs, Some(&saved.current_tab));
+                    rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
                     rust.refresh_mic_source_count();
                     rust.refresh_audio_sink_count();
                     SoundboardControllerRust::reload_shortcut_bindings();
@@ -1046,6 +1120,7 @@ impl qobject::SoundboardController {
         rust.state_path = state_path;
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
+        rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
         rust.refresh_mic_source_count();
         rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
@@ -1295,10 +1370,19 @@ impl qobject::SoundboardController {
             return QString::from("");
         };
         QString::from(
-            tab.sounds
-                .get(index - 1)
+            tab.sound_at_slot(index)
                 .map(|sound| sound.name.as_str())
                 .unwrap_or(""),
+        )
+    }
+
+    pub fn slot_path_at(&self, slot: i32) -> QString {
+        QString::from(
+            self.rust()
+                .slot_path_internal(slot)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .as_str(),
         )
     }
 
@@ -1309,6 +1393,123 @@ impl qobject::SoundboardController {
         normalize_slot(slot)
             .and_then(|index| tab.slot(index))
             .is_none()
+    }
+
+    pub fn replace_slot(mut self: Pin<&mut Self>, slot: i32, path: QString) -> bool {
+        let Some(index) = normalize_slot(slot) else {
+            return false;
+        };
+        let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            return false;
+        };
+        let source = PathBuf::from(String::from(path));
+        match TabsRepository::replace_slot_file(&tab_dir, index, &source) {
+            Ok(_) => {
+                self.as_mut().rust_mut().refresh_active_tab_slots();
+                properties::sync_tab_properties(self.as_mut());
+                self.as_mut().tabs_changed();
+                self.as_mut().playing_state_changed();
+                true
+            }
+            Err(err) => {
+                tracing::warn!("replace slot {slot}: {err:#}");
+                false
+            }
+        }
+    }
+
+    pub fn remove_slot(mut self: Pin<&mut Self>, slot: i32) -> bool {
+        let Some(index) = normalize_slot(slot) else {
+            return false;
+        };
+        let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            return false;
+        };
+        let tab_index = self.rust().current_tab_index;
+        match TabsRepository::remove_slot_file(&tab_dir, index) {
+            Ok(()) => {
+                self.as_mut()
+                    .rust_mut()
+                    .stop_session_internal(tab_index, slot);
+                self.as_mut().rust_mut().refresh_active_tab_slots();
+                properties::sync_tab_properties(self.as_mut());
+                self.as_mut().tabs_changed();
+                self.as_mut().playing_state_changed();
+                true
+            }
+            Err(err) => {
+                tracing::warn!("remove slot {slot}: {err:#}");
+                false
+            }
+        }
+    }
+
+    pub fn rename_slot(mut self: Pin<&mut Self>, slot: i32, name: QString) -> bool {
+        let Some(index) = normalize_slot(slot) else {
+            return false;
+        };
+        let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            return false;
+        };
+        let name = String::from(name);
+        match TabsRepository::rename_slot_file(&tab_dir, index, &name) {
+            Ok(_) => {
+                self.as_mut().rust_mut().refresh_active_tab_slots();
+                properties::sync_tab_properties(self.as_mut());
+                self.as_mut().tabs_changed();
+                self.as_mut().playing_state_changed();
+                true
+            }
+            Err(err) => {
+                tracing::warn!("rename slot {slot}: {err:#}");
+                false
+            }
+        }
+    }
+
+    pub fn move_slot(mut self: Pin<&mut Self>, from_slot: i32, to_slot: i32) -> bool {
+        let Some(from_index) = normalize_slot(from_slot) else {
+            return false;
+        };
+        let Some(to_index) = normalize_slot(to_slot) else {
+            return false;
+        };
+        let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            return false;
+        };
+        let tab_index = self.rust().current_tab_index;
+        match TabsRepository::move_slot_file(&tab_dir, from_index, to_index) {
+            Ok(()) => {
+                self.as_mut()
+                    .rust_mut()
+                    .stop_session_internal(tab_index, from_slot);
+                if from_slot != to_slot {
+                    self.as_mut()
+                        .rust_mut()
+                        .stop_session_internal(tab_index, to_slot);
+                }
+                self.as_mut().rust_mut().refresh_active_tab_slots();
+                properties::sync_tab_properties(self.as_mut());
+                self.as_mut().tabs_changed();
+                self.as_mut().playing_state_changed();
+                true
+            }
+            Err(err) => {
+                tracing::warn!("move slot {from_slot} -> {to_slot}: {err:#}");
+                false
+            }
+        }
+    }
+
+    pub fn open_tab_folder(self: Pin<&mut Self>) {
+        let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            return;
+        };
+        std::thread::spawn(move || {
+            if let Err(err) = std::process::Command::new("xdg-open").arg(tab_dir).spawn() {
+                tracing::warn!("open tab folder failed: {err:#}");
+            }
+        });
     }
 
     pub fn slot_playing(&self, slot: i32) -> bool {
@@ -1449,6 +1650,7 @@ impl Constructor<()> for qobject::SoundboardController {
         rust.push_volumes();
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
+        rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
         rust.refresh_mic_source_count();
         rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
@@ -1481,10 +1683,12 @@ pub(crate) mod properties {
         let tab_count = controller.as_ref().rust().tab_count;
         let tab_version = controller.as_ref().rust().tab_version;
         let name = controller.as_ref().rust().current_tab_name.clone();
+        let tab_warning = controller.as_ref().rust().tab_warning.clone();
         controller.as_mut().set_current_tab_index(index);
         controller.as_mut().set_current_tab_name(name);
         controller.as_mut().set_tab_count(tab_count);
         controller.as_mut().set_tab_version(tab_version);
+        controller.as_mut().set_tab_warning(tab_warning);
         bump_ui_version(controller);
     }
 
