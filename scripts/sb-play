@@ -38,16 +38,14 @@ if [[ ! -d "$TAB_DIR" ]]; then
     exit 1
 fi
 
-mapfile -t FILES < <(list_tab_audio_files "$TAB_DIR")
-
-# slot 0 → file 10, slots 1-9 → files 1-9
+# slot 0 → slot 10, slots 1-9 → slots 1-9
 if [[ "$SLOT" == "0" ]]; then
-    IDX=9
+    TARGET_SLOT=10
 else
-    IDX=$((SLOT - 1))
+    TARGET_SLOT=$SLOT
 fi
 
-FILE="${FILES[$IDX]:-}"
+FILE="$(resolve_tab_slot_file "$TAB_DIR" "$TARGET_SLOT" || true)"
 if [[ -z "$FILE" ]]; then
     notify-send "Sound Spring" "Empty slot $SLOT"
     exit 0
