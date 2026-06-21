@@ -166,6 +166,10 @@ pub fn play_slot_from_qt_key(key: i32, modifiers: i32, native_scan_code: u32) ->
 }
 
 fn map_event_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<String> {
+    if is_modifier_key(key) {
+        return None;
+    }
+
     let keypad = modifiers & QT_KEYPAD_MODIFIER != 0;
 
     if (QT_KEY_KEYPAD0..=QT_KEY_KEYPAD9).contains(&key) {
@@ -180,20 +184,8 @@ fn map_event_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<Stri
         QT_KEY_KP_ADD => return Some("KP_Add".into()),
         QT_KEY_KP_SUBTRACT => return Some("KP_Subtract".into()),
         QT_KEY_KP_ENTER => return Some("KP_Enter".into()),
+        QT_KEY_KP_DECIMAL => return Some("KP_Decimal".into()),
         _ => {}
-    }
-
-    if let Some(trigger) = map_native_scan_code(native_scan_code) {
-        if is_keypad_digit(&trigger) {
-            return Some(trigger);
-        }
-        if key != QT_KEY_KP_DECIMAL && key != 0x2e && key != 0x2c {
-            return Some(trigger);
-        }
-    }
-
-    if key == QT_KEY_KP_DECIMAL {
-        return Some("KP_Decimal".into());
     }
 
     if keypad {
@@ -211,11 +203,11 @@ fn map_event_key(key: i32, modifiers: i32, native_scan_code: u32) -> Option<Stri
         }
     }
 
-    if is_modifier_key(key) {
-        return None;
+    if let Some(trigger) = map_native_scan_code(native_scan_code) {
+        return Some(trigger);
     }
 
-    qt_key_to_internal(key).or_else(|| map_native_scan_code(native_scan_code))
+    qt_key_to_internal(key)
 }
 
 fn is_modifier_key(key: i32) -> bool {
@@ -386,15 +378,6 @@ pub fn trigger_from_portal(portal: &str) -> Option<String> {
     Some(modifiers.join("+"))
 }
 
-fn is_keypad_digit(trigger: &str) -> bool {
-    trigger.len() == 4
-        && trigger.starts_with("KP_")
-        && trigger
-            .as_bytes()
-            .get(3)
-            .is_some_and(|b| b.is_ascii_digit())
-}
-
 /// Qt on Linux reports X11 keycodes; convert to evdev before lookup.
 fn map_native_scan_code(native_scan_code: u32) -> Option<String> {
     if native_scan_code == 0 {
@@ -403,9 +386,14 @@ fn map_native_scan_code(native_scan_code: u32) -> Option<String> {
 
     let evdev = native_scan_code.saturating_sub(8);
     if evdev != native_scan_code {
+        if evdev == 69 {
+            // KEY_NUMLOCK — X11 keycode 77 must not fall through to evdev 77 (KP_6).
+            return None;
+        }
         if let Some(trigger) = map_evdev_scancode(evdev) {
             return Some(trigger);
         }
+        return None;
     }
 
     map_evdev_scancode(native_scan_code)
@@ -557,6 +545,26 @@ mod tests {
         assert_eq!(
             trigger_from_qt(QT_KEY_KP_DECIMAL, 0, 91),
             Some("KP_Decimal".into())
+        );
+    }
+
+    #[test]
+    fn numlock_key_does_not_map_to_kp_6() {
+        const QT_KEY_NUM_LOCK: i32 = 0x0100_0025;
+        assert_eq!(trigger_from_qt(QT_KEY_NUM_LOCK, 0, 77), None);
+        assert_eq!(play_slot_from_qt_key(QT_KEY_NUM_LOCK, 0, 77), None);
+        assert_eq!(trigger_from_qt(0, 0, 77), None);
+    }
+
+    #[test]
+    fn kp_decimal_wins_over_misleading_scancode() {
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KP_DECIMAL, 0, 83),
+            Some("KP_Decimal".into())
+        );
+        assert_eq!(
+            trigger_from_qt(QT_KEY_KP_DECIMAL, QT_CONTROL_MODIFIER, 83),
+            Some("Ctrl+KP_Decimal".into())
         );
     }
 
