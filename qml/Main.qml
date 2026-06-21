@@ -542,18 +542,14 @@ ApplicationWindow {
 
             Item { Layout.fillWidth: true }
 
-            Button {
+            AppButton {
                 focusPolicy: Qt.NoFocus
-                text: "Stop All"
-                padding: 10
-                palette.buttonText: appTheme.textPrimary
-                background: Rectangle {
-                    radius: 5
-                    color: parent.down ? appTheme.danger
-                          : (parent.hovered ? "#a83232" : "#8b2525")
-                    border.color: appTheme.border
-                    border.width: 1
+                text: {
+                    controller.shortcutVersion
+                    var seq = controller.shortcutSequence("stop_all")
+                    return seq.length > 0 ? ("Stop All (" + seq + ")") : "Stop All"
                 }
+                role: "danger"
                 onClicked: controller.stopAll()
             }
         }
@@ -603,7 +599,8 @@ ApplicationWindow {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 420)
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        padding: 24
+        standardButtons: Dialog.NoButton
 
         property string existingPath: ""
 
@@ -617,11 +614,13 @@ ApplicationWindow {
         }
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 16
             spacing: 12
+            width: addTabDialog.availableWidth
 
-            Label { text: "Tab name" }
+            Label {
+                Layout.fillWidth: true
+                text: "Tab name"
+            }
             TextField {
                 id: addTabNameField
                 Layout.fillWidth: true
@@ -635,9 +634,24 @@ ApplicationWindow {
                       ? addTabDialog.existingPath
                       : "Creates a new folder under the tabs root."
             }
-            Button {
+            AppButton {
                 text: "Choose existing folder…"
                 onClicked: addTabFolderDialog.open()
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: addTabDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: addTabDialog.reject()
+            }
+            AppButton {
+                text: "OK"
+                role: "primary"
+                onClicked: addTabDialog.accept()
             }
         }
     }
@@ -659,20 +673,39 @@ ApplicationWindow {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 360)
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        padding: 24
+        standardButtons: Dialog.NoButton
 
         property int tabIndex: -1
 
         onAccepted: controller.renameTab(renameTabDialog.tabIndex, renameTabNameField.text)
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 16
             spacing: 12
-            Label { text: "Display name" }
+            width: renameTabDialog.availableWidth
+
+            Label {
+                Layout.fillWidth: true
+                text: "Display name"
+            }
             TextField {
                 id: renameTabNameField
                 Layout.fillWidth: true
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: renameTabDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: renameTabDialog.reject()
+            }
+            AppButton {
+                text: "OK"
+                role: "primary"
+                onClicked: renameTabDialog.accept()
             }
         }
     }
@@ -711,14 +744,12 @@ ApplicationWindow {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 500)
-        implicitHeight: 210
         padding: 24
         standardButtons: Dialog.NoButton
 
         ColumnLayout {
-            id: closeActionLayout
-            anchors.fill: parent
             spacing: 16
+            width: closeActionDialog.availableWidth
 
             Label {
                 Layout.fillWidth: true
@@ -735,33 +766,29 @@ ApplicationWindow {
                 checked: true
                 palette.text: appTheme.textPrimary
             }
+        }
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: 8
-                spacing: 10
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: "Cancel"
-                    padding: 10
-                    onClicked: closeActionDialog.close()
+        footer: RowLayout {
+            spacing: 10
+            width: closeActionDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: closeActionDialog.close()
+            }
+            AppButton {
+                text: "Exit"
+                onClicked: {
+                    closeActionDialog.close()
+                    applyCloseChoice(false, rememberCloseChoice.checked)
                 }
-                Button {
-                    text: "Exit"
-                    padding: 10
-                    onClicked: {
-                        closeActionDialog.close()
-                        applyCloseChoice(false, rememberCloseChoice.checked)
-                    }
-                }
-                Button {
-                    text: "Minimize to Tray"
-                    padding: 10
-                    highlighted: true
-                    onClicked: {
-                        closeActionDialog.close()
-                        applyCloseChoice(true, rememberCloseChoice.checked)
-                    }
+            }
+            AppButton {
+                text: "Minimize to Tray"
+                role: "primary"
+                onClicked: {
+                    closeActionDialog.close()
+                    applyCloseChoice(true, rememberCloseChoice.checked)
                 }
             }
         }

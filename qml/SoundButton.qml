@@ -33,7 +33,13 @@ Button {
     background: Rectangle {
         id: bg
         radius: 6
-        color: root.down ? appTheme.surfaceHover : (root.playing ? appTheme.accentDark : appTheme.surface)
+        color: {
+            if (root.playing)
+                return appTheme.accentDark
+            if (root.down || root.hovered)
+                return appTheme.surfaceHover
+            return appTheme.surface
+        }
         border.color: root.playing ? appTheme.borderAccent : (root.enabled ? appTheme.border : "#444")
         border.width: root.playing ? 2 : 1
 
@@ -43,7 +49,7 @@ Button {
             anchors.bottom: parent.bottom
             width: parent.width * Math.min(1, Math.max(0, root.progress))
             radius: parent.radius
-            color: "#4caf50"
+            color: appTheme.progressFill
             opacity: 0.55
             clip: true
         }

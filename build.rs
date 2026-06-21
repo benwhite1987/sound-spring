@@ -28,6 +28,8 @@ fn main() {
                 "qml/ShortcutCapture.qml",
                 "qml/SettingsDialog.qml",
                 "qml/SoundSpringTheme.qml",
+                "qml/AppButton.qml",
+                "qml/SettingsSection.qml",
             ],
             ..Default::default()
         })

@@ -8,6 +8,10 @@ Item {
     id: root
     required property SoundboardController controller
 
+    SoundSpringTheme {
+        id: appTheme
+    }
+
     property int uiTick: 0
     property int columnSpacing: 8
     property int rowSpacing: 8
@@ -130,7 +134,8 @@ Item {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 360)
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        padding: 24
+        standardButtons: Dialog.NoButton
 
         onAccepted: {
             if (root.pendingSlot < 0)
@@ -145,14 +150,32 @@ Item {
         }
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 16
             spacing: 12
-            Label { text: "Display filename (without extension)" }
+            width: renameSlotDialog.availableWidth
+
+            Label {
+                Layout.fillWidth: true
+                text: "Display filename (without extension)"
+            }
             TextField {
                 id: renameSlotField
                 Layout.fillWidth: true
                 onAccepted: renameSlotDialog.accept()
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: renameSlotDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: renameSlotDialog.reject()
+            }
+            AppButton {
+                text: "OK"
+                role: "primary"
+                onClicked: renameSlotDialog.accept()
             }
         }
     }
@@ -163,7 +186,8 @@ Item {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 360)
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        padding: 24
+        standardButtons: Dialog.NoButton
 
         onAccepted: {
             if (root.moveFromSlot < 0)
@@ -181,18 +205,43 @@ Item {
         onRejected: root.moveFromSlot = -1
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 16
             spacing: 12
+            width: moveSlotDialog.availableWidth
+
             Label {
+                Layout.fillWidth: true
                 text: root.moveFromSlot < 0 ? ""
                       : "Move from slot " + (root.moveFromSlot === 0 ? "10" : String(root.moveFromSlot))
             }
-            Label { text: "Target slot (1–10)" }
+            Label {
+                Layout.fillWidth: true
+                text: "Target slot (1–10)"
+            }
             TextField {
                 id: moveTargetField
                 Layout.fillWidth: true
                 inputMethodHints: Qt.ImhDigitsOnly
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: appTheme.textMuted
+                text: "Enter 1–10; empty slots are valid targets."
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: moveSlotDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: moveSlotDialog.reject()
+            }
+            AppButton {
+                text: "OK"
+                role: "primary"
+                onClicked: moveSlotDialog.accept()
             }
         }
     }
@@ -203,7 +252,8 @@ Item {
         modal: true
         anchors.centerIn: parent
         width: Math.min(root.width - 80, 360)
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        padding: 24
+        standardButtons: Dialog.NoButton
 
         onAccepted: {
             if (root.pendingSlot < 0)
@@ -214,10 +264,24 @@ Item {
         onRejected: root.pendingSlot = -1
 
         Label {
-            anchors.fill: parent
-            anchors.margins: 16
-            text: "Are you sure? File will be permanently deleted."
+            width: removeSlotDialog.availableWidth
             wrapMode: Text.WordWrap
+            text: "Are you sure? File will be permanently deleted."
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: removeSlotDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: removeSlotDialog.reject()
+            }
+            AppButton {
+                text: "Remove"
+                role: "danger"
+                onClicked: removeSlotDialog.accept()
+            }
         }
     }
 

@@ -14,4 +14,12 @@ QtObject {
     readonly property color accent: "#6abf69"
     readonly property color accentDark: "#3a4a3a"
     readonly property color danger: "#c62828"
+    readonly property color dangerHover: "#a83232"
+    readonly property color progressFill: "#4caf50"
+    readonly property color warningBg: "#3a2d12"
+    readonly property color warningBorder: "#8a6d2a"
+    readonly property color warningText: "#ffd57a"
+    readonly property color warningTextMuted: "#e6cf94"
+    readonly property color warningDetail: "#a89567"
+    readonly property color warningAccent: "#ffb74d"
 }

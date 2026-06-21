@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import com.benkahn.soundboard
 
 Button {
     id: root
@@ -9,9 +10,27 @@ Button {
 
     property bool listening: captureHost && captureHost.activeCaptureIndex === shortcutIndex
 
+    SoundSpringTheme {
+        id: appTheme
+    }
+
     focusPolicy: Qt.NoFocus
+    implicitWidth: 0
     text: listening ? "Press a key…" : settings.shortcutDisplayAt(shortcutIndex)
     font.pointSize: 11
+    palette.buttonText: appTheme.textPrimary
+
+    contentItem: Text {
+        text: root.text
+        font: root.font
+        color: root.palette.buttonText
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+        width: parent.width
+        leftPadding: 8
+        rightPadding: 8
+    }
 
     onClicked: {
         if (captureHost)
@@ -20,7 +39,14 @@ Button {
 
     background: Rectangle {
         radius: 4
-        color: root.listening ? "#3a4a3a" : (root.down ? "#444" : "#333")
-        border.color: root.listening ? "#4caf50" : "#666"
+        color: {
+            if (root.listening)
+                return appTheme.surfaceActive
+            if (root.down || root.hovered)
+                return appTheme.surfaceHover
+            return appTheme.surface
+        }
+        border.color: root.listening ? appTheme.borderAccent : appTheme.border
+        border.width: 1
     }
 }
