@@ -255,6 +255,21 @@ impl PipewireManager {
             .unwrap_or(false)
     }
 
+    /// Re-applies routing when the effects sink disappeared (e.g. PipeWire
+    /// restarted). Mirrors `sb-play`'s `sink_exists` check before playback.
+    pub async fn ensure_routing_for_playback(
+        mic_source: &str,
+        latency_ms: u32,
+        modules: &mut Modules,
+    ) -> Result<()> {
+        if Self::sink_exists(SFX_SINK).await {
+            return Ok(());
+        }
+        info!("{SFX_SINK} missing; re-running PipeWire setup");
+        *modules = Self::setup(mic_source, latency_ms).await?;
+        Ok(())
+    }
+
     async fn sinks_ready() -> bool {
         Self::sink_exists(SFX_SINK).await
             && Self::sink_exists(VIRTMIC_SINK).await
@@ -527,5 +542,19 @@ Sink #12
     #[tokio::test]
     async fn list_sinks_does_not_panic() {
         let _ = PipewireManager::available_sinks().await;
+    }
+
+    #[tokio::test]
+    async fn ensure_routing_skips_when_sfx_sink_exists() {
+        if !PipewireManager::sink_exists(SFX_SINK).await {
+            return;
+        }
+        let mut modules = Modules {
+            ids: vec![42],
+        };
+        PipewireManager::ensure_routing_for_playback("", 20, &mut modules)
+            .await
+            .expect("ensure routing");
+        assert_eq!(modules.ids, vec![42]);
     }
 }

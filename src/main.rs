@@ -11,7 +11,7 @@ use qobjects::controller::{
     BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
 use services::pipewire::{Modules, PipewireManager};
-use services::player::{Player, VolumeState};
+use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
 use std::ffi::CString;
@@ -193,6 +193,36 @@ async fn apply_volumes(volumes: VolumeState) {
     }
 }
 
+async fn ensure_playback_routing(
+    config: &Config,
+    modules: &mut Modules,
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+) -> bool {
+    match PipewireManager::ensure_routing_for_playback(
+        &config.audio.mic_source,
+        config.audio.latency_ms,
+        modules,
+    )
+    .await
+    {
+        Ok(()) => {
+            apply_volumes(VolumeState {
+                output_percent: config.audio.output_volume,
+                monitor_percent: config.audio.monitor_volume,
+                output_muted: config.audio.output_muted,
+                monitor_muted: config.audio.monitor_muted,
+            })
+            .await;
+            publish_mic_sources(event_tx).await;
+            true
+        }
+        Err(err) => {
+            warn!("PipeWire setup before play failed: {err:#}");
+            false
+        }
+    }
+}
+
 async fn apply_runtime_config(
     config: &Config,
     event_tx: &std::sync::mpsc::Sender<BackendEvent>,
@@ -352,6 +382,17 @@ fn run_backend(
                             apply_volumes(volumes).await;
                         }
                         Some(BackendCommand::Player(cmd)) => {
+                            let play = matches!(cmd, PlayerCommand::Play { .. });
+                            if play
+                                && !ensure_playback_routing(
+                                    &active_config,
+                                    &mut modules,
+                                    &backend_event_tx,
+                                )
+                                .await
+                            {
+                                continue;
+                            }
                             if let Err(err) = player.handle_command(cmd).await {
                                 warn!("player command failed: {err:#}");
                             }
