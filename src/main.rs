@@ -15,6 +15,7 @@ use services::pipewire::{Modules, PipewireManager};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
+use services::voice::VoiceSession;
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::{Mutex, OnceLock};
@@ -372,6 +373,11 @@ fn run_backend(
         });
         player.set_monitor_sink(&active_config.audio.monitor_sink);
         player.set_interruption_mode(&active_config.audio.interruption_mode);
+
+        // Phase 2 voice visualization capture. Runs only while the Voice panel
+        // is showing; it monitors the configured mic for the spectrum display
+        // and does not touch the Phase 1 mic-to-virtmic routing.
+        let mut voice_session: Option<VoiceSession> = None;
         loop {
             tokio::select! {
                 command = backend_cmd_rx.recv() => {
@@ -417,6 +423,17 @@ fn run_backend(
                         Some(BackendCommand::RestartTabWatch) => {
                             let config = config::load_config().unwrap_or_default();
                             tab_watch.restart(watch_paths(&config), tab_watch_tx.clone());
+                        }
+                        Some(BackendCommand::StartVoiceCapture) => {
+                            if voice_session.is_none() {
+                                match VoiceSession::start(&active_config.audio.mic_source) {
+                                    Ok(session) => voice_session = Some(session),
+                                    Err(err) => warn!("voice capture start failed: {err:#}"),
+                                }
+                            }
+                        }
+                        Some(BackendCommand::StopVoiceCapture) => {
+                            voice_session = None;
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player

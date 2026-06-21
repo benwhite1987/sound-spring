@@ -45,6 +45,25 @@ ApplicationWindow {
         }
     }
 
+    component PanelButton: ToolButton {
+        property int panelIndex: 0
+        readonly property bool isActive: root.activePanel === panelIndex
+        focusPolicy: Qt.NoFocus
+        padding: 8
+        palette.buttonText: appTheme.textPrimary
+        background: Rectangle {
+            implicitHeight: 32
+            radius: 4
+            color: parent.isActive ? appTheme.surfaceActive
+                                    : (parent.hovered ? appTheme.surface : "transparent")
+            border.color: parent.isActive ? appTheme.borderAccent : "transparent"
+            border.width: 1
+        }
+        onClicked: root.activePanel = panelIndex
+    }
+
+    // 0 = Soundboard (Phase 1), 1 = Voice (Phase 2).
+    property int activePanel: 0
     property bool windowGeometryReady: false
 
     function applyCloseChoice(minimizeToTray, remember) {
@@ -202,8 +221,25 @@ ApplicationWindow {
             anchors.fill: parent
             spacing: 8
 
+            PanelButton {
+                text: "Soundboard"
+                panelIndex: 0
+            }
+            PanelButton {
+                text: "Voice"
+                panelIndex: 1
+            }
+
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 24
+                color: appTheme.border
+                opacity: 0.5
+            }
+
             ListView {
                 id: tabList
+                visible: root.activePanel === 0
                 Layout.fillWidth: true
                 Layout.preferredHeight: 36
                 orientation: ListView.Horizontal
@@ -330,6 +366,7 @@ ApplicationWindow {
             }
 
             ChromeButton {
+                visible: root.activePanel === 0
                 text: "+"
                 ToolTip.visible: hovered
                 ToolTip.text: "Add tab"
@@ -341,17 +378,25 @@ ApplicationWindow {
             }
 
             ChromeButton {
+                visible: root.activePanel === 0
                 text: "◀"
                 ToolTip.visible: hovered
                 ToolTip.text: "Previous tab"
                 onClicked: controller.prevTab()
             }
             ChromeButton {
+                visible: root.activePanel === 0
                 text: "▶"
                 ToolTip.visible: hovered
                 ToolTip.text: "Next tab"
                 onClicked: controller.nextTab()
             }
+
+            Item {
+                visible: root.activePanel === 1
+                Layout.fillWidth: true
+            }
+
             ChromeButton {
                 text: "⚙"
                 ToolTip.visible: hovered
@@ -361,13 +406,25 @@ ApplicationWindow {
         }
     }
 
-    TabPage {
+    StackLayout {
         anchors.fill: parent
-        anchors.margins: 12
-        controller: controller
+        currentIndex: root.activePanel
+
+        Item {
+            TabPage {
+                anchors.fill: parent
+                anchors.margins: 12
+                controller: controller
+            }
+        }
+
+        VoicePanel {
+            theme: appTheme
+        }
     }
 
     footer: ToolBar {
+        visible: root.activePanel === 0
         padding: 8
         spacing: 8
         background: Rectangle {

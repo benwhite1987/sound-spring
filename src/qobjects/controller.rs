@@ -283,6 +283,8 @@ pub enum BackendCommand {
     RefreshAudioSinks,
     RestartTabWatch,
     ApplyVolumes(VolumeState),
+    StartVoiceCapture,
+    StopVoiceCapture,
 }
 
 #[derive(Debug, Clone)]

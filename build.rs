@@ -20,7 +20,11 @@ fn main() {
         .qt_module("Widgets")
         .qml_module(QmlModule {
             uri: "com.benkahn.soundboard",
-            rust_files: &["src/qobjects/controller.rs", "src/qobjects/settings.rs"],
+            rust_files: &[
+                "src/qobjects/controller.rs",
+                "src/qobjects/settings.rs",
+                "src/qobjects/voice_controller.rs",
+            ],
             qml_files: &[
                 "qml/Main.qml",
                 "qml/TabPage.qml",
@@ -30,6 +34,8 @@ fn main() {
                 "qml/SoundSpringTheme.qml",
                 "qml/AppButton.qml",
                 "qml/SettingsSection.qml",
+                "qml/VoicePanel.qml",
+                "qml/Spectrum.qml",
             ],
             ..Default::default()
         })

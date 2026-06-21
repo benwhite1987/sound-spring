@@ -26,6 +26,11 @@ thiserror = "1"
 anyhow = "1"
 futures-util = "0.3"
 time = { version = "0.3", features = ["formatting"] }
+rubato = "0.16"
+realfft = "3.5.0"
+parking_lot = "0.12.5"
+rtrb = "0.3.4"
+crossbeam-queue = "0.3.12"
 
 [build-dependencies]
 cxx-qt-build = { version = "0.7", features = ["link_qt_object_files"] }

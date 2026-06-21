@@ -17,6 +17,8 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
     #[serde(default)]
+    pub voice: VoiceConfig,
+    #[serde(default)]
     pub paths: PathsConfig,
     #[serde(default)]
     pub tabs: Vec<TabEntry>,
@@ -77,6 +79,30 @@ pub struct UiConfig {
     pub close_action_prompt_dismissed: bool,
 }
 
+/// Phase 2 voice-enhancement settings. Only `spectrum_fps` is consumed in
+/// Milestone 1 (the live spectrum visualization); the remaining fields are
+/// persisted now for forward compatibility with later milestones (VAD,
+/// speaker verification, DeepFilterNet denoise, enrollment).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    #[serde(default)]
+    pub verification_enabled: bool,
+    #[serde(default = "default_true")]
+    pub suppression_enabled: bool,
+    #[serde(default = "default_suppression_model")]
+    pub suppression_model: String,
+    #[serde(default = "default_match_threshold")]
+    pub match_threshold: f32,
+    #[serde(default = "default_vad_open_threshold")]
+    pub vad_open_threshold: f32,
+    #[serde(default = "default_vad_close_threshold")]
+    pub vad_close_threshold: f32,
+    #[serde(default = "default_enrollment_path")]
+    pub enrollment_path: String,
+    #[serde(default = "default_spectrum_fps")]
+    pub spectrum_fps: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathsConfig {
     pub tabs_root: PathBuf,
@@ -134,6 +160,45 @@ impl Default for UiConfig {
             close_action_prompt_dismissed: false,
         }
     }
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            verification_enabled: false,
+            suppression_enabled: true,
+            suppression_model: default_suppression_model(),
+            match_threshold: default_match_threshold(),
+            vad_open_threshold: default_vad_open_threshold(),
+            vad_close_threshold: default_vad_close_threshold(),
+            enrollment_path: default_enrollment_path(),
+            spectrum_fps: default_spectrum_fps(),
+        }
+    }
+}
+
+fn default_suppression_model() -> String {
+    "deepfilternet3".into()
+}
+
+fn default_match_threshold() -> f32 {
+    0.6
+}
+
+fn default_vad_open_threshold() -> f32 {
+    0.7
+}
+
+fn default_vad_close_threshold() -> f32 {
+    0.3
+}
+
+fn default_enrollment_path() -> String {
+    "voiceprints/default.bin".into()
+}
+
+fn default_spectrum_fps() -> u32 {
+    30
 }
 
 impl Default for PathsConfig {
@@ -222,6 +287,10 @@ mod tests {
         let parsed: Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.audio.latency_ms, DEFAULT_LATENCY_MS);
         assert_eq!(parsed.audio.interruption_mode, "overlap");
+        assert_eq!(parsed.voice.spectrum_fps, 30);
+        assert_eq!(parsed.voice.suppression_model, "deepfilternet3");
+        assert!(parsed.voice.suppression_enabled);
+        assert!(!parsed.voice.verification_enabled);
     }
 
     #[test]

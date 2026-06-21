@@ -4,3 +4,4 @@ pub mod pipewire;
 pub mod player;
 pub mod shortcuts;
 pub mod tabs;
+pub mod voice;
