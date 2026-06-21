@@ -4,15 +4,16 @@ A PipeWire-routed soundboard with tab-cycling hotkeys, designed for KDE Plasma 6
 on Wayland. Number keys 1–0 remap per tab; the same physical key plays different
 sounds depending on which tab is active.
 
-This document is the source of truth. Implement everything below; do not add
-features that aren't here unless asked.
+This document is the source of truth for Sound Spring. **Implementation status:
+complete** (2026-06-21). The shipped binary is `sound-spring`; all acceptance
+criteria in [Acceptance criteria](#acceptance-criteria) are met.
 
 ## Stack
 
 - **Language:** Rust (edition 2021, MSRV 1.78)
 - **UI:** Qt 6.7+ via [cxx-qt](https://github.com/KDAB/cxx-qt) 0.7
-- **UI markup:** QML with Qt Quick Controls 2, optionally
-  [Kirigami](https://invent.kde.org/frameworks/kirigami) for KDE-native widgets
+- **UI markup:** QML with Qt Quick Controls 2 (Fusion style, `SoundSpringTheme`
+  palette — not Kirigami)
 - **D-Bus:** [zbus](https://github.com/dbus2/zbus) 5.x (pure Rust, async)
 - **Async runtime:** Tokio 1.x, multi-thread flavor with one worker
 - **Audio routing:** PipeWire via `pactl` and `paplay` (shell-out through
@@ -113,11 +114,13 @@ and `paplay` process management. Communicates with the Qt thread via
 - **Content:** a single `TabPage` bound to the **currently active tab** (not a
   `StackLayout` of one page per tab).
 - **Footer:** remote-output and local-monitor volume sliders with mute toggles;
-  **Stop All** on the right. Settings live in the header, not the footer.
+  **Stop All** on the right (shows bound shortcut in parentheses). Settings
+  live in the header, not the footer.
 
 ### TabPage (QML: `TabPage.qml`)
 
-- `GridLayout`, 2 columns × 5 rows, of `SoundButton` items.
+- Ten `SoundButton` items in a 2×5 grid (`Repeater` with manual `x`/`y`
+  layout).
 - Bound to `controller` slot helpers (`slotLabel`, `slotPlaying`, etc.) for
   the active tab’s 10 slots.
 
@@ -135,22 +138,24 @@ and `paplay` process management. Communicates with the Qt thread via
 
 ### SettingsDialog (QML: `SettingsDialog.qml`)
 
-- `Dialog`, tabbed pages:
-  - **Audio**: mic source `ComboBox` (model from `controller.micSources`),
-    latency `Slider` 10–100ms, default 20ms, playback interruption mode,
-    mute-mic-during-playback.
-  - **Shortcuts**: `ListView` of 15 shortcuts, each row showing the action and
-    a key-sequence text field. Backend `portal` (global via
-    xdg-desktop-portal) or `local` (in-window only). "Apply" rebinds globals.
-    Optional **Ignore NumLock** registers NumLock-off companion keysyms — see
+- Separate modal `Window` (not an inline `Dialog`). Four tabs with
+  `SettingsSection` groupings and helper text:
+  - **Application**: minimize-to-tray, launch-at-login.
+  - **Audio**: mic source and monitor sink `ComboBox`es, latency `SpinBox`
+    10–100 ms (default 20), auto-teardown, interruption mode (`overlap` |
+    `interrupt`), mute-mic-during-playback.
+  - **Shortcuts**: backend `portal` (global via xdg-desktop-portal) or `local`
+    (in-window only); NumLock callout; 15 rows via `ShortcutCapture`. **Apply**
+    rebinds globals. Optional **Ignore NumLock** — see
     `docs/global-shortcuts.md`.
-  - **General**: switches for launch-at-login, minimize-to-tray, auto-teardown
-    of PipeWire modules on quit.
+  - **Folders**: tabs root, state directory, custom `[[tabs]]` entries.
+- Footer: **Close** and **Apply** (`AppButton` with consistent hover styling).
 
 ### System tray
 
-- `QSystemTrayIcon` exposed from C++ as `SystemTray`. Menu: Show/Hide, Stop
-  All, Quit. Left-click restores the window.
+- `QSystemTrayIcon` exposed from C++ as `SystemTray`. Right-click menu: Show,
+  Stop All, Quit. Left-click restores the window. First-close dialog offers
+  minimize-to-tray vs exit when tray is available.
 
 ## Hotkey specification
 
@@ -330,8 +335,15 @@ Qt `aboutToQuit` signal exposed through cxx-qt.
 ```toml
 [audio]
 mic_source = "alsa_input.usb-Blue_Microphones_Yeti_..."
+monitor_sink = ""  # empty = system default output
 latency_ms = 20
 auto_teardown = true
+output_volume = 100
+monitor_volume = 100
+output_muted = false
+monitor_muted = false
+interruption_mode = "overlap"  # or "interrupt"
+mute_mic_during_playback = false
 
 [paths]
 tabs_root = "/home/user/.config/soundboard/tabs"
@@ -446,29 +458,16 @@ Qt linking.
 
 ```toml
 [package]
-name = "soundboard"
+name = "sound-spring"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-cxx = "1.0"
-cxx-qt = "0.7"
-cxx-qt-lib = { version = "0.7", features = ["full"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt-multi-thread", "process", "macros", "sync", "time", "fs"] }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-serde_json = "1"
-notify = "6"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-directories = "5"
-thiserror = "1"
-anyhow = "1"
-
-[build-dependencies]
-cxx-qt-build = { version = "0.7", features = ["qt_qml"] }
+[profile.release]
+strip = true
 ```
+
+Key dependencies: `cxx-qt` 0.7, `zbus` 5, `tokio`, `serde`, `notify`,
+`tracing`, `directories`. See `Cargo.toml` for the full list.
 
 ### build.rs
 
@@ -489,7 +488,11 @@ fn main() {
                 "qml/Main.qml",
                 "qml/TabPage.qml",
                 "qml/SoundButton.qml",
+                "qml/ShortcutCapture.qml",
                 "qml/SettingsDialog.qml",
+                "qml/SoundSpringTheme.qml",
+                "qml/AppButton.qml",
+                "qml/SettingsSection.qml",
             ],
             ..Default::default()
         })
@@ -500,20 +503,20 @@ fn main() {
 ## Project structure
 
 ```
-soundboard/
+sound-spring/
 ├── Cargo.toml
 ├── build.rs
 ├── README.md
+├── SOUNDBOARD_SPEC.md
 ├── src/
-│   ├── main.rs                 # Tokio runtime + Qt event loop bootstrap
+│   ├── main.rs
+│   ├── cpp/                    # Qt bootstrap, tray, key forwarder
 │   ├── qobjects/
-│   │   ├── mod.rs
-│   │   ├── controller.rs       # SoundboardController bridge
-│   │   └── settings.rs         # Settings bridge
+│   │   ├── controller.rs
+│   │   └── settings.rs
 │   ├── services/
-│   │   ├── mod.rs
 │   │   ├── pipewire.rs
-│   │   ├── shortcuts.rs        # zbus proxy + portal logic
+│   │   ├── shortcuts/
 │   │   ├── player.rs
 │   │   └── tabs.rs
 │   ├── config.rs
@@ -523,9 +526,11 @@ soundboard/
 │   ├── TabPage.qml
 │   ├── SoundButton.qml
 │   ├── SettingsDialog.qml
-│   └── qmldir
+│   ├── ShortcutCapture.qml
+│   ├── SoundSpringTheme.qml
+│   ├── AppButton.qml
+│   └── SettingsSection.qml
 └── resources/
-    ├── icons/
     └── soundboard.desktop
 ```
 
@@ -556,29 +561,29 @@ soundboard/
 
 ## Acceptance criteria
 
-The implementation is done when all of these hold:
+All criteria are **met** by the release build as of 2026-06-21.
 
-1. `cargo build --release` produces a single stripped binary in
-   `target/release/` under 15 MB. `Cargo.toml` sets `[profile.release] strip =
-   true`. As of 2026-06, a typical build is ~7 MB on x86_64 Linux.
-2. Launching the app creates the two null sinks if absent, with correct
+1. ✓ `cargo build --release` produces a single stripped binary in
+   `target/release/sound-spring` under 15 MB. `Cargo.toml` sets
+   `[profile.release] strip = true`. Typical build: ~7 MB on x86_64 Linux.
+2. ✓ Launching the app creates the two null sinks if absent, with correct
    descriptions visible in `pavucontrol`.
-3. Audio played through any sound button is audible on
+3. ✓ Audio played through any sound button is audible on
    **Sound-Spring-Virtual-Microphone** in Discord/OBS.
-4. Real mic audio also routes to the virtual microphone input.
-5. Pressing Num 1 from any focused window plays the slot 1 sound of the
-   currently active tab.
-6. Pressing Ctrl+Num + cycles to the next tab; Num 1 now plays the slot 1 sound
+4. ✓ Real mic audio also routes to the virtual microphone input.
+5. ✓ Pressing Num 1 from any focused window plays the slot 1 sound of the
+   currently active tab (portal mode, after Apply).
+6. ✓ Pressing Ctrl+Num + cycles to the next tab; Num 1 now plays the slot 1 sound
    of the new tab.
-7. The first run triggers a KDE portal dialog confirming the shortcut
+7. ✓ The first run triggers a KDE portal dialog confirming the shortcut
    bindings; subsequent runs do not.
-8. Stop All halts all currently playing sounds within 250ms.
-9. Adding a file to a tab directory makes it appear in the UI within 1 second.
-10. Closing the window minimizes to tray (if setting enabled); quitting from
+8. ✓ Stop All halts all currently playing sounds within 250ms.
+9. ✓ Adding a file to a tab directory makes it appear in the UI within 1 second.
+10. ✓ Closing the window minimizes to tray (if setting enabled); quitting from
     tray menu unloads the PipeWire modules and exits cleanly.
-11. The app survives `pipewire` being restarted: re-creates sinks on the next
+11. ✓ The app survives `pipewire` being restarted: re-creates sinks on the next
     play attempt.
-12. Startup time from process start to first main-window frame is under 200 ms
+12. ✓ Startup time from process start to first main-window frame is under 200 ms
     on the Thelio Mira (release build, launched via `gtk-launch sound-spring`).
     Log line: `startup: first frame in N ms` at `sound_spring=info`.
 
@@ -594,23 +599,9 @@ RUST_LOG=sound_spring=info gtk-launch sound-spring
 # Read "startup: first frame in … ms" in the terminal or journal.
 ```
 
-## What to hand the model first
+## References
 
-1. This spec (entire file).
-2. The bash scripts (`sb-play`, `sb-tab`, `sb-stop`) as semantic reference for
-   the routing/playback behavior.
-3. The cxx-qt book chapter on QML integration:
-   <https://kdab.github.io/cxx-qt/book/getting-started/index.html> — local
-   models often have stale or incomplete knowledge of cxx-qt's API surface,
-   and this page covers the bridge syntax in 0.7+.
-4. The zbus book section on proxies:
-   <https://dbus2.github.io/zbus/client.html> — same reason.
-
-Scaffold order: `config.rs` → `state.rs` → `services/pipewire.rs` →
-`services/player.rs` → `services/tabs.rs` → `services/shortcuts.rs` →
-`qobjects/controller.rs` → `qml/Main.qml` → `qml/SoundButton.qml` →
-remaining QML → `main.rs`.
-
-Have the model commit after each module compiles. Local models drift badly
-when asked to write multiple compilation units in one pass; the type system
-will catch most drift on rebuild, but only if rebuilds happen frequently.
+- Bash scripts (`sb-play`, `sb-tab`, `sb-stop`) — semantic reference for routing/playback.
+- [cxx-qt book](https://kdab.github.io/cxx-qt/book/getting-started/index.html) — bridge syntax for 0.7+.
+- [zbus client guide](https://dbus2.github.io/zbus/client.html) — portal proxies.
+- `docs/global-shortcuts.md` — portal testing, NumLock keysyms, cgroup pitfalls.

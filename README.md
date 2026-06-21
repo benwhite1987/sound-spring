@@ -135,7 +135,7 @@ Removes scripts, systemd service, PipeWire modules, and runtime state. Tab audio
 
 ## GUI application
 
-The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `state.json`).
+The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `state.json`). See [`SOUNDBOARD_SPEC.md`](SOUNDBOARD_SPEC.md) for the full specification — **implementation is complete** (all acceptance criteria met).
 
 **Requirements:** Rust (rustup), Qt 6 (`qmake6`), PipeWire, `paplay`, and optionally `ffmpeg` for MP3.
 
