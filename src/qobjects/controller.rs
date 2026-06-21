@@ -215,6 +215,15 @@ pub mod qobject {
             height: i32,
         );
 
+        #[qinvokable]
+        fn save_session_on_quit(
+            self: Pin<&mut SoundboardController>,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+        );
+
         #[qsignal]
         fn tabs_changed(self: Pin<&mut SoundboardController>);
 
@@ -618,6 +627,18 @@ impl SoundboardControllerRust {
         });
     }
 
+    fn persist_session_on_quit(&self, geometry: WindowGeometry) {
+        let path = self.state_path.clone();
+        std::thread::spawn(move || {
+            let mut state = State::load(&path).unwrap_or_default();
+            state.window_geometry = Some(geometry);
+            state.last_session = Some(State::utc_now_rfc3339());
+            if let Err(err) = state.save(&path) {
+                tracing::warn!("failed to save session on quit: {err:#}");
+            }
+        });
+    }
+
     fn toggle_output_mute_internal(&mut self) {
         self.output_muted = !self.output_muted;
         self.persist_volumes();
@@ -984,6 +1005,20 @@ impl qobject::SoundboardController {
         };
         self.as_mut().rust_mut().window_geometry = Some(geometry);
         self.as_mut().rust_mut().persist_window_geometry(geometry);
+    }
+
+    pub fn save_session_on_quit(mut self: Pin<&mut Self>, x: i32, y: i32, width: i32, height: i32) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let geometry = WindowGeometry {
+            x,
+            y,
+            width,
+            height,
+        };
+        self.as_mut().rust_mut().window_geometry = Some(geometry);
+        self.as_mut().rust_mut().persist_session_on_quit(geometry);
     }
 
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {

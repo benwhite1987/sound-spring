@@ -25,6 +25,7 @@ directories = "5"
 thiserror = "1"
 anyhow = "1"
 futures-util = "0.3"
+time = { version = "0.3", features = ["formatting"] }
 
 [build-dependencies]
 cxx-qt-build = { version = "0.7", features = ["link_qt_object_files"] }

@@ -1,4 +1,5 @@
 pub mod audio_meta;
+pub mod autostart;
 pub mod pipewire;
 pub mod player;
 pub mod shortcuts;

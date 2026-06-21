@@ -242,6 +242,28 @@ Window {
                         checked: settings ? settings.autoTeardown : true
                         onCheckedChanged: if (settings) settings.autoTeardown = checked
                     }
+                    Label { text: "Playback"; font.bold: true }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["overlap", "interrupt"]
+                        currentIndex: {
+                            if (!settings) return 0
+                            var idx = model.indexOf(settings.interruptionMode)
+                            return idx >= 0 ? idx : 0
+                        }
+                        onActivated: if (settings) settings.interruptionMode = model[currentIndex]
+                    }
+                    Label {
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        color: appTheme.textMuted
+                        text: "Overlap allows multiple sounds per slot; Interrupt stops the current sound on that slot before playing again."
+                    }
+                    CheckBox {
+                        text: "Mute real microphone during playback"
+                        checked: settings ? settings.muteMicDuringPlayback : false
+                        onCheckedChanged: if (settings) settings.muteMicDuringPlayback = checked
+                    }
                 }
 
                 // Shortcuts tab
@@ -426,9 +448,9 @@ Window {
                         onCheckedChanged: if (settings) settings.minimizeToTray = checked
                     }
                     CheckBox {
-                        text: "Launch at login (not yet implemented)"
-                        enabled: false
+                        text: "Launch at login"
                         checked: settings ? settings.launchAtLogin : false
+                        onCheckedChanged: if (settings) settings.launchAtLogin = checked
                     }
                 }
             }

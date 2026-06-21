@@ -81,6 +81,7 @@ struct PlaySession {
 pub struct Player {
     sink: String,
     monitor_sink: String,
+    interruption_mode: String,
     next_id: u64,
     volumes: VolumeState,
     children: Arc<Mutex<HashMap<u64, PlaySession>>>,
@@ -91,6 +92,7 @@ impl Player {
         Self {
             sink: sink.into(),
             monitor_sink: DEFAULT_MONITOR_SINK.to_string(),
+            interruption_mode: "overlap".into(),
             next_id: 1,
             volumes: VolumeState::default(),
             children: Arc::new(Mutex::new(HashMap::new())),
@@ -113,6 +115,18 @@ impl Player {
         } else {
             sink.trim().to_string()
         };
+    }
+
+    pub fn set_interruption_mode(&mut self, mode: &str) {
+        self.interruption_mode = mode.to_string();
+    }
+
+    fn interrupts_same_slot(&self) -> bool {
+        self.interruption_mode == "interrupt"
+    }
+
+    pub async fn active_session_count(&self) -> usize {
+        self.children.lock().await.len()
     }
 
     pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<Option<PlayerEvent>> {
@@ -145,6 +159,10 @@ impl Player {
     }
 
     pub async fn play(&mut self, file: PathBuf, tab_index: i32, slot: i32) -> Result<u64> {
+        if self.interrupts_same_slot() {
+            self.stop_session(tab_index, slot).await;
+        }
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -413,6 +431,15 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interrupt_mode_matches_config_value() {
+        let mut player = super::Player::default_sink();
+        player.set_interruption_mode("interrupt");
+        assert!(player.interrupts_same_slot());
+        player.set_interruption_mode("overlap");
+        assert!(!player.interrupts_same_slot());
+    }
+
     #[test]
     fn stop_session_filter_is_tab_scoped() {
         let sessions = [(0_i32, 1_i32), (1, 1), (0, 2)];

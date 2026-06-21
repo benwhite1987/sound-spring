@@ -42,6 +42,12 @@ pub struct AudioConfig {
     pub output_muted: bool,
     #[serde(default)]
     pub monitor_muted: bool,
+    /// `overlap` allows multiple instances per slot; `interrupt` stops the
+    /// previous playback on the same slot before starting a new one.
+    #[serde(default = "default_interruption_mode")]
+    pub interruption_mode: String,
+    #[serde(default)]
+    pub mute_mic_during_playback: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,8 +101,14 @@ impl Default for AudioConfig {
             monitor_volume: default_volume(),
             output_muted: false,
             monitor_muted: false,
+            interruption_mode: default_interruption_mode(),
+            mute_mic_during_playback: false,
         }
     }
+}
+
+fn default_interruption_mode() -> String {
+    "overlap".into()
 }
 
 fn default_volume() -> u8 {
@@ -209,6 +221,7 @@ mod tests {
         let text = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed.audio.latency_ms, DEFAULT_LATENCY_MS);
+        assert_eq!(parsed.audio.interruption_mode, "overlap");
     }
 
     #[test]

@@ -13,6 +13,8 @@ pub mod qobject {
         #[qproperty(QString, monitor_sink)]
         #[qproperty(i32, latency_ms)]
         #[qproperty(bool, auto_teardown)]
+        #[qproperty(QString, interruption_mode)]
+        #[qproperty(bool, mute_mic_during_playback)]
         #[qproperty(QString, tabs_root)]
         #[qproperty(QString, state_dir)]
         #[qproperty(QString, shortcut_mode)]
@@ -77,6 +79,7 @@ use std::path::PathBuf;
 
 use crate::config::{self, Config, TabEntry};
 use crate::qobjects::controller::{BackendCommand, SoundboardControllerRust, BACKEND_TX};
+use crate::services::autostart;
 use crate::services::shortcuts::{trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
 
 #[derive(Default)]
@@ -85,6 +88,8 @@ pub struct SettingsRust {
     monitor_sink: QString,
     latency_ms: i32,
     auto_teardown: bool,
+    interruption_mode: QString,
+    mute_mic_during_playback: bool,
     tabs_root: QString,
     state_dir: QString,
     shortcut_mode: QString,
@@ -121,6 +126,12 @@ impl SettingsRust {
         config.audio.monitor_sink = String::from(self.monitor_sink.clone());
         config.audio.latency_ms = self.latency_ms.max(10) as u32;
         config.audio.auto_teardown = self.auto_teardown;
+        config.audio.interruption_mode =
+            String::from(self.interruption_mode.clone());
+        if config.audio.interruption_mode != "interrupt" {
+            config.audio.interruption_mode = "overlap".to_string();
+        }
+        config.audio.mute_mic_during_playback = self.mute_mic_during_playback;
         config.shortcuts.mode = String::from(self.shortcut_mode.clone());
         config.shortcuts.bindings = bindings;
         config.shortcuts.ignore_numlock = self.ignore_numlock;
@@ -138,6 +149,8 @@ impl SettingsRust {
         self.monitor_sink = QString::from(config.audio.monitor_sink.as_str());
         self.latency_ms = config.audio.latency_ms as i32;
         self.auto_teardown = config.audio.auto_teardown;
+        self.interruption_mode = QString::from(config.audio.interruption_mode.as_str());
+        self.mute_mic_during_playback = config.audio.mute_mic_during_playback;
         self.tabs_root = QString::from(config.paths.tabs_root.to_string_lossy().as_ref());
         self.state_dir = QString::from(config.paths.state_dir.to_string_lossy().as_ref());
         self.shortcut_mode = QString::from(config.shortcuts.mode.as_str());
@@ -166,12 +179,14 @@ impl qobject::Settings {
         match config::ensure_default_layout(&mut config).and_then(|_| config::save_config(&config))
         {
             Ok(()) => {
+                let mut status = "Settings saved. Audio and shortcuts will reload.".to_string();
+                if let Err(err) = autostart::sync_launch_at_login(config.ui.launch_at_login) {
+                    status = format!("Settings saved, but autostart update failed: {err:#}");
+                }
                 if let Some(tx) = BACKEND_TX.get() {
                     let _ = tx.blocking_send(BackendCommand::ApplyConfig(config));
                 }
-                self.as_mut()
-                    .rust_mut()
-                    .set_status("Settings saved. Audio and shortcuts will reload.");
+                self.as_mut().rust_mut().set_status(&status);
             }
             Err(err) => self
                 .as_mut()

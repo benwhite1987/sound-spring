@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct WindowGeometry {
@@ -39,6 +41,12 @@ impl State {
         let text = serde_json::to_string_pretty(self).context("serialize state")?;
         fs::write(path, text).with_context(|| format!("write state {}", path.display()))
     }
+
+    pub fn utc_now_rfc3339() -> String {
+        OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -55,10 +63,17 @@ mod tests {
                 width: 800,
                 height: 600,
             }),
-            last_session: None,
+            last_session: Some("2026-05-22T14:32:11Z".into()),
         };
         let json = serde_json::to_string(&state).unwrap();
         let parsed: State = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn utc_now_rfc3339_ends_with_z() {
+        let stamp = State::utc_now_rfc3339();
+        assert!(stamp.ends_with('Z'));
+        assert!(stamp.contains('T'));
     }
 }

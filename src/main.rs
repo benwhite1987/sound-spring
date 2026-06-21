@@ -10,6 +10,7 @@ use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 use qobjects::controller::{
     BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
+use services::autostart;
 use services::pipewire::{Modules, PipewireManager};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
@@ -39,6 +40,9 @@ fn main() -> Result<()> {
 
     let mut config = config::load_config().unwrap_or_default();
     config::ensure_default_layout(&mut config).context("ensure config layout")?;
+    if let Err(err) = autostart::sync_launch_at_login(config.ui.launch_at_login) {
+        warn!("failed to sync autostart entry: {err:#}");
+    }
 
     MIC_SOURCES
         .set(Mutex::new(Vec::new()))
@@ -89,12 +93,32 @@ fn main() -> Result<()> {
 
     let _ = unsafe { sound_spring_exec_qt_application() };
 
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(restore_mic_after_playback(&config));
     if config.audio.auto_teardown {
-        let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(PipewireManager::unload_stale_modules())?;
     }
 
     Ok(())
+}
+
+async fn restore_mic_after_playback(config: &Config) {
+    sync_mic_mute_for_playback(config, 0).await;
+}
+
+async fn sync_mic_mute_for_playback(config: &Config, active_sessions: usize) {
+    if !config.audio.mute_mic_during_playback || config.audio.mic_source.is_empty() {
+        return;
+    }
+    let muted = active_sessions > 0;
+    if let Err(err) =
+        PipewireManager::set_source_mute(&config.audio.mic_source, muted).await
+    {
+        warn!(
+            "failed to {} mic for playback: {err:#}",
+            if muted { "mute" } else { "unmute" }
+        );
+    }
 }
 
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
@@ -268,6 +292,15 @@ async fn apply_runtime_config(
         .await;
     }
 
+    if previous.is_some_and(|prev| {
+        prev.audio.mute_mic_during_playback && !config.audio.mute_mic_during_playback
+    }) && !config.audio.mic_source.is_empty()
+    {
+        if let Err(err) = PipewireManager::set_source_mute(&config.audio.mic_source, false).await {
+            warn!("failed to restore mic after setting change: {err:#}");
+        }
+    }
+
     if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
         // On startup, the main window is not visible yet, so don't bother fetching
         // a parent window handle. Subsequent re-binds (Apply, mode change) do use it
@@ -327,6 +360,7 @@ fn run_backend(
             monitor_muted: active_config.audio.monitor_muted,
         });
         player.set_monitor_sink(&active_config.audio.monitor_sink);
+        player.set_interruption_mode(&active_config.audio.interruption_mode);
         loop {
             tokio::select! {
                 command = backend_cmd_rx.recv() => {
@@ -347,6 +381,7 @@ fn run_backend(
                                 monitor_muted: new_config.audio.monitor_muted,
                             });
                             player.set_monitor_sink(&new_config.audio.monitor_sink);
+                            player.set_interruption_mode(&new_config.audio.interruption_mode);
                             let new_watch_paths = watch_paths(&new_config);
                             if new_watch_paths != watch_paths(&active_config) {
                                 tab_watch.restart(new_watch_paths, tab_watch_tx.clone());
@@ -396,6 +431,11 @@ fn run_backend(
                             if let Err(err) = player.handle_command(cmd).await {
                                 warn!("player command failed: {err:#}");
                             }
+                            sync_mic_mute_for_playback(
+                                &active_config,
+                                player.active_session_count().await,
+                            )
+                            .await;
                         }
                         None => break,
                     }
@@ -408,11 +448,20 @@ fn run_backend(
                     let _ = backend_event_tx.send(BackendEvent::TabsChanged);
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    for (tab_index, slot) in player.reap_finished().await {
+                    let finished = player.reap_finished().await;
+                    let had_finished = !finished.is_empty();
+                    for (tab_index, slot) in finished {
                         let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
                             tab_index,
                             slot,
                         });
+                    }
+                    if had_finished {
+                        sync_mic_mute_for_playback(
+                            &active_config,
+                            player.active_session_count().await,
+                        )
+                        .await;
                     }
                 }
             }

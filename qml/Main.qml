@@ -56,12 +56,12 @@ ApplicationWindow {
         } else {
             if (SystemTray.available)
                 SystemTray.visible = false
-            Qt.quit()
+            quitApplication()
         }
     }
 
     function quitApplication() {
-        controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
+        controller.saveSessionOnQuit(root.x, root.y, root.width, root.height)
         if (SystemTray.available)
             SystemTray.visible = false
         Qt.quit()
