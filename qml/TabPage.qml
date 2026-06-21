@@ -50,14 +50,38 @@ Item {
             height: root.cellHeight
             controller: root.controller
             slotNumber: index < 9 ? index + 1 : 0
-            label: (uiTick, controller.tabVersion, controller.slotLabel(slotNumber))
-            shortcutLabel: (uiTick, controller.tabVersion, controller.shortcutVersion,
-                            controller.slotShortcutLabel(slotNumber))
-            filePath: (uiTick, controller.tabVersion, controller.slotPathAt(slotNumber))
-            empty: (uiTick, controller.tabVersion, controller.slotEmpty(slotNumber))
-            playing: (uiTick, controller.playingVersion, controller.slotPlaying(slotNumber))
-            progress: (uiTick, controller.progressVersion, controller.playingVersion,
-                       controller.slotProgress(slotNumber))
+            label: {
+                uiTick
+                controller.tabVersion
+                return controller.slotLabel(slotNumber)
+            }
+            shortcutLabel: {
+                uiTick
+                controller.tabVersion
+                controller.shortcutVersion
+                return controller.slotShortcutLabel(slotNumber)
+            }
+            filePath: {
+                uiTick
+                controller.tabVersion
+                return controller.slotPathAt(slotNumber)
+            }
+            empty: {
+                uiTick
+                controller.tabVersion
+                return controller.slotEmpty(slotNumber)
+            }
+            playing: {
+                uiTick
+                controller.playingVersion
+                return controller.slotPlaying(slotNumber)
+            }
+            progress: {
+                uiTick
+                controller.progressVersion
+                controller.playingVersion
+                return controller.slotProgress(slotNumber)
+            }
             onClicked: {
                 if (!empty)
                     controller.playSlot(slotNumber)
@@ -122,7 +146,8 @@ Item {
 
         ColumnLayout {
             anchors.fill: parent
-            spacing: 10
+            anchors.margins: 16
+            spacing: 12
             Label { text: "Display filename (without extension)" }
             TextField {
                 id: renameSlotField
@@ -157,7 +182,8 @@ Item {
 
         ColumnLayout {
             anchors.fill: parent
-            spacing: 10
+            anchors.margins: 16
+            spacing: 12
             Label {
                 text: root.moveFromSlot < 0 ? ""
                       : "Move from slot " + (root.moveFromSlot === 0 ? "10" : String(root.moveFromSlot))
@@ -189,6 +215,7 @@ Item {
 
         Label {
             anchors.fill: parent
+            anchors.margins: 16
             text: "Are you sure? File will be permanently deleted."
             wrapMode: Text.WordWrap
         }

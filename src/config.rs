@@ -67,6 +67,8 @@ pub struct UiConfig {
     pub launch_at_login: bool,
     #[serde(default)]
     pub global_shortcuts_prompt_dismissed: bool,
+    #[serde(default)]
+    pub close_action_prompt_dismissed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +119,7 @@ impl Default for UiConfig {
             minimize_to_tray: true,
             launch_at_login: false,
             global_shortcuts_prompt_dismissed: false,
+            close_action_prompt_dismissed: false,
         }
     }
 }

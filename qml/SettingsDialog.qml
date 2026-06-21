@@ -12,7 +12,25 @@ Window {
     minimumHeight: 560
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowMinMaxButtonsHint
     modality: Qt.ApplicationModal
-    color: palette.window
+    color: appTheme.windowBg
+
+    SoundSpringTheme {
+        id: appTheme
+    }
+
+    palette: Palette {
+        alternateBase: appTheme.surface
+        base: appTheme.surface
+        button: appTheme.surface
+        buttonText: appTheme.textPrimary
+        highlight: appTheme.accent
+        highlightedText: appTheme.textPrimary
+        text: appTheme.textPrimary
+        window: appTheme.windowBg
+        windowText: appTheme.textPrimary
+        toolTipBase: appTheme.chromeBg
+        toolTipText: appTheme.textPrimary
+    }
 
     required property SoundboardController controller
     required property var settings
@@ -209,7 +227,7 @@ Window {
                     Label {
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
-                        color: "#aaa"
+                        color: appTheme.textMuted
                         text: "The lists update automatically when devices are plugged in or removed."
                     }
                     Label { text: "Latency (ms)" }
@@ -252,7 +270,7 @@ Window {
                 Label {
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    color: "#aaa"
+                    color: appTheme.textMuted
                     text: "Edit bindings below, then Apply to sync with System Settings. " +
                           "Use Open in System Settings for advanced changes in KDE."
                 }
@@ -263,7 +281,7 @@ Window {
                     color: {
                         var status = controller.globalShortcutsStatus
                         if (status.indexOf("Global shortcuts active:") === 0)
-                            return "#8bc34a"
+                            return appTheme.accent
                         return "#ffb74d"
                     }
                 }
@@ -403,9 +421,9 @@ Window {
                         }
                     }
                     CheckBox {
-                        text: "Minimize to tray (not yet implemented)"
-                        enabled: false
+                        text: "Minimize to tray"
                         checked: settings ? settings.minimizeToTray : true
+                        onCheckedChanged: if (settings) settings.minimizeToTray = checked
                     }
                     CheckBox {
                         text: "Launch at login (not yet implemented)"
@@ -419,7 +437,7 @@ Window {
         Label {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            color: settings && settings.statusMessage.length > 0 ? "#8bc34a" : "transparent"
+            color: settings && settings.statusMessage.length > 0 ? appTheme.accent : "transparent"
             text: settings ? settings.statusMessage : ""
         }
 
@@ -438,6 +456,8 @@ Window {
                     if (settings) {
                         controller.refreshPortalParentWindow()
                         settings.apply()
+                        if (ownerWindow && ownerWindow.syncTray)
+                            ownerWindow.syncTray()
                     }
                 }
             }

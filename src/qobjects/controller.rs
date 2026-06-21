@@ -182,6 +182,16 @@ pub mod qobject {
         fn dismiss_global_shortcuts_prompt(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
+        fn needs_close_action_prompt(self: &SoundboardController) -> bool;
+
+        #[qinvokable]
+        fn apply_close_action_choice(
+            self: Pin<&mut SoundboardController>,
+            minimize_to_tray: bool,
+            remember: bool,
+        );
+
+        #[qinvokable]
         fn has_saved_window_geometry(self: &SoundboardController) -> bool;
 
         #[qinvokable]
@@ -910,6 +920,22 @@ impl qobject::SoundboardController {
         std::thread::spawn(|| {
             let mut config = crate::config::load_config().unwrap_or_default();
             config.ui.global_shortcuts_prompt_dismissed = true;
+            let _ = crate::config::save_config(&config);
+        });
+    }
+
+    pub fn needs_close_action_prompt(&self) -> bool {
+        let config = crate::config::load_config().unwrap_or_default();
+        !config.ui.close_action_prompt_dismissed
+    }
+
+    pub fn apply_close_action_choice(self: Pin<&mut Self>, minimize_to_tray: bool, remember: bool) {
+        std::thread::spawn(move || {
+            let mut config = crate::config::load_config().unwrap_or_default();
+            config.ui.minimize_to_tray = minimize_to_tray;
+            if remember {
+                config.ui.close_action_prompt_dismissed = true;
+            }
             let _ = crate::config::save_config(&config);
         });
     }

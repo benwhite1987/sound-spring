@@ -6,7 +6,7 @@ mod state;
 use anyhow::{Context, Result};
 use config::Config;
 use config::SFX_SINK;
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 use qobjects::controller::{
     BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
@@ -14,6 +14,8 @@ use services::pipewire::{Modules, PipewireManager};
 use services::player::{Player, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
+use std::ffi::CString;
+use std::os::raw::c_char;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -22,7 +24,10 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 extern "C" {
+    fn sound_spring_init_qt_application(argc: i32, argv: *mut *mut c_char);
+    fn sound_spring_exec_qt_application() -> i32;
     fn sound_spring_register_key_forwarder();
+    fn sound_spring_register_system_tray();
     fn sound_spring_init_app_identity();
     fn sound_spring_refresh_portal_parent_window();
 }
@@ -58,11 +63,20 @@ fn main() -> Result<()> {
         }
     });
 
-    let mut app = QGuiApplication::new();
+    let qt_args: Vec<CString> = std::env::args()
+        .map(|arg| CString::new(arg).unwrap_or_default())
+        .collect();
+    let mut qt_argv: Vec<*mut c_char> = qt_args
+        .iter()
+        .map(|arg| arg.as_ptr() as *mut c_char)
+        .collect();
+    qt_argv.push(std::ptr::null_mut());
 
     unsafe {
+        sound_spring_init_qt_application((qt_argv.len() - 1) as i32, qt_argv.as_mut_ptr());
         sound_spring_init_app_identity();
         sound_spring_register_key_forwarder();
+        sound_spring_register_system_tray();
     }
 
     let mut engine = QQmlApplicationEngine::new();
@@ -73,9 +87,7 @@ fn main() -> Result<()> {
         ));
     }
 
-    if let Some(app) = app.as_mut() {
-        app.exec();
-    }
+    let _ = unsafe { sound_spring_exec_qt_application() };
 
     if config.audio.auto_teardown {
         let rt = tokio::runtime::Runtime::new()?;

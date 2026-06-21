@@ -13,6 +13,10 @@ Button {
     property real progress: 0
     property SoundboardController controller
 
+    SoundSpringTheme {
+        id: appTheme
+    }
+
     signal replaceRequested(int slot)
     signal renameRequested(int slot)
     signal moveRequested(int slot)
@@ -29,8 +33,8 @@ Button {
     background: Rectangle {
         id: bg
         radius: 6
-        color: root.down ? "#444" : (root.playing ? "#3a4a3a" : "#333")
-        border.color: root.playing ? "#6abf69" : (root.enabled ? "#666" : "#444")
+        color: root.down ? appTheme.surfaceHover : (root.playing ? appTheme.accentDark : appTheme.surface)
+        border.color: root.playing ? appTheme.borderAccent : (root.enabled ? appTheme.border : "#444")
         border.width: root.playing ? 2 : 1
 
         Rectangle {
@@ -53,15 +57,15 @@ Button {
         width: badgeText.implicitWidth + 10
         height: badgeText.implicitHeight + 4
         radius: 3
-        color: "#222"
-        border.color: "#555"
+        color: appTheme.chromeBg
+        border.color: appTheme.border
         z: 2
 
         Text {
             id: badgeText
             anchors.centerIn: parent
             text: root.slotNumber === 0 ? "10" : String(root.slotNumber)
-            color: "#ccc"
+            color: appTheme.textSecondary
             font.pointSize: root.font.pointSize - 3
             font.bold: true
         }
@@ -80,7 +84,7 @@ Button {
                 text: root.empty
                       ? ("Empty (slot " + (root.slotNumber === 0 ? 10 : root.slotNumber) + ")")
                       : root.label
-                color: root.enabled ? "white" : "#888"
+                color: root.enabled ? appTheme.textPrimary : appTheme.textMuted
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
                 maximumLineCount: 3
@@ -92,7 +96,7 @@ Button {
                 width: parent.width
                 visible: !root.empty && root.shortcutLabel.length > 0
                 text: root.shortcutLabel
-                color: root.playing ? "#c8e6c9" : "#aaa"
+                color: root.playing ? appTheme.accent : appTheme.textSecondary
                 horizontalAlignment: Text.AlignHCenter
                 font.pointSize: root.font.pointSize - 2
             }
@@ -104,7 +108,7 @@ Button {
             anchors.margins: 8
             visible: root.playing
             text: "▶"
-            color: "#a5d6a7"
+            color: appTheme.accent
             font.pointSize: root.font.pointSize
             z: 2
         }

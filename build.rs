@@ -4,16 +4,20 @@ fn main() {
     CxxQtBuilder::new()
         .include_prefix("src/cpp")
         .qobject_header(QObjectHeaderOpts::from("src/cpp/key_forwarder.h"))
+        .qobject_header(QObjectHeaderOpts::from("src/cpp/system_tray.h"))
         .cc_builder(|builder| {
             builder
                 .include("src/cpp")
                 .file("src/cpp/key_forwarder.cpp")
-                .file("src/cpp/app_identity.cpp");
+                .file("src/cpp/app_identity.cpp")
+                .file("src/cpp/system_tray.cpp")
+                .file("src/cpp/app_bootstrap.cpp");
         })
         .qt_module("Network")
         .qt_module("Quick")
         .qt_module("QuickControls2")
         .qt_module("QuickDialogs2")
+        .qt_module("Widgets")
         .qml_module(QmlModule {
             uri: "com.benkahn.soundboard",
             rust_files: &["src/qobjects/controller.rs", "src/qobjects/settings.rs"],
@@ -23,6 +27,7 @@ fn main() {
                 "qml/SoundButton.qml",
                 "qml/ShortcutCapture.qml",
                 "qml/SettingsDialog.qml",
+                "qml/SoundSpringTheme.qml",
             ],
             ..Default::default()
         })

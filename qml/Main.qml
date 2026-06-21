@@ -10,8 +10,94 @@ ApplicationWindow {
     height: controller.hasSavedWindowGeometry() ? controller.savedWindowHeight() : 600
     visible: true
     title: "Sound Spring"
+    color: appTheme.windowBg
+
+    SoundSpringTheme {
+        id: appTheme
+    }
+
+    palette: Palette {
+        alternateBase: appTheme.surface
+        base: appTheme.surface
+        button: appTheme.surface
+        buttonText: appTheme.textPrimary
+        highlight: appTheme.accent
+        highlightedText: appTheme.textPrimary
+        text: appTheme.textPrimary
+        window: appTheme.windowBg
+        windowText: appTheme.textPrimary
+        toolTipBase: appTheme.chromeBg
+        toolTipText: appTheme.textPrimary
+    }
+
+    component ChromeButton: ToolButton {
+        focusPolicy: Qt.NoFocus
+        padding: 8
+        palette.buttonText: appTheme.textPrimary
+        background: Rectangle {
+            implicitWidth: 36
+            implicitHeight: 32
+            radius: 4
+            color: parent.down ? appTheme.surfaceHover
+                               : (parent.hovered ? appTheme.surface : "transparent")
+            border.color: parent.hovered ? appTheme.border : "transparent"
+            border.width: 1
+        }
+    }
 
     property bool windowGeometryReady: false
+
+    function applyCloseChoice(minimizeToTray, remember) {
+        controller.applyCloseActionChoice(minimizeToTray, remember)
+        settings.minimizeToTray = minimizeToTray
+        syncTray()
+        if (minimizeToTray && SystemTray.available) {
+            root.hide()
+        } else {
+            if (SystemTray.available)
+                SystemTray.visible = false
+            Qt.quit()
+        }
+    }
+
+    function quitApplication() {
+        controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
+        if (SystemTray.available)
+            SystemTray.visible = false
+        Qt.quit()
+    }
+
+    onClosing: function(close) {
+        controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
+
+        if (controller.needsCloseActionPrompt() && SystemTray.available) {
+            close.accepted = false
+            closeActionDialog.open()
+            return
+        }
+
+        if (settings.minimizeToTray && SystemTray.available) {
+            close.accepted = false
+            root.hide()
+            return
+        }
+
+        close.accepted = false
+        quitApplication()
+    }
+
+    function syncTray() {
+        if (!SystemTray.available)
+            return
+        SystemTray.initialize()
+        if (settings.minimizeToTray) {
+            SystemTray.setIconThemeName("audio-volume-high")
+            SystemTray.setToolTip("Sound Spring")
+            SystemTray.visible = true
+        } else {
+            SystemTray.visible = false
+        }
+    }
 
     Component.onCompleted: {
         if (controller.hasSavedWindowGeometry()) {
@@ -19,6 +105,11 @@ ApplicationWindow {
             root.y = controller.savedWindowY()
         }
         windowGeometryReady = true
+        Qt.callLater(function() {
+            syncTray()
+            if (SystemTray.available)
+                SystemTray.setWindowVisible(root.visible)
+        })
     }
 
     Timer {
@@ -38,10 +129,31 @@ ApplicationWindow {
     onWidthChanged: scheduleWindowGeometrySave()
     onHeightChanged: scheduleWindowGeometrySave()
 
-    onClosing: controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
-
     onActiveChanged: controller.setWindowActive(active && visible)
-    onVisibilityChanged: controller.setWindowActive(active && visible)
+
+    onVisibilityChanged: {
+        controller.setWindowActive(active && visible)
+        if (SystemTray.available)
+            SystemTray.setWindowVisible(visible)
+    }
+
+    Connections {
+        target: SystemTray
+        function onShowWindowRequested() {
+            root.show()
+            root.raise()
+            root.requestActivate()
+        }
+        function onHideWindowRequested() {
+            root.hide()
+        }
+        function onStopAllRequested() {
+            controller.stopAll()
+        }
+        function onQuitRequested() {
+            quitApplication()
+        }
+    }
 
     SoundboardController {
         id: controller
@@ -72,22 +184,29 @@ ApplicationWindow {
     }
 
     header: ToolBar {
+        padding: 8
+        spacing: 8
+        background: Rectangle {
+            color: appTheme.chromeBg
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: appTheme.border
+                opacity: 0.45
+            }
+        }
+
         RowLayout {
             anchors.fill: parent
-            anchors.margins: 6
             spacing: 8
-
-            ButtonGroup {
-                id: tabButtonGroup
-                exclusive: true
-            }
 
             ListView {
                 id: tabList
                 Layout.fillWidth: true
-                Layout.preferredHeight: 40
+                Layout.preferredHeight: 36
                 orientation: ListView.Horizontal
-                spacing: 4
+                spacing: 6
                 clip: true
                 property int tabStripTick: 0
                 model: {
@@ -112,38 +231,42 @@ ApplicationWindow {
                 delegate: Item {
                     id: tabDelegate
                     height: tabList.height
-                    width: {
+                    readonly property bool isActive: {
+                        controller.uiVersion
+                        return controller.currentTabIndex === index
+                    }
+                    readonly property string tabLabel: {
                         tabList.tabStripTick
                         controller.uiVersion
-                        return Math.max(tabButton.implicitWidth + 12, 48)
+                        controller.tabVersion
+                        return controller.tabNameAt(index)
+                    }
+                    width: Math.max(tabLabelText.implicitWidth + 24, 52)
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 5
+                        color: tabDelegate.isActive ? appTheme.surfaceActive
+                              : (tabMouse.containsMouse ? appTheme.surfaceHover : "transparent")
+                        border.color: tabDelegate.isActive ? appTheme.borderAccent : appTheme.border
+                        border.width: tabDelegate.isActive ? 1 : 0
+                        opacity: tabDelegate.isActive ? 1.0 : (tabMouse.containsMouse ? 0.85 : 0.0)
                     }
 
-                    ToolButton {
-                        id: tabButton
-                        anchors.fill: parent
-                        focusPolicy: Qt.NoFocus
-                        ButtonGroup.group: tabButtonGroup
-                        checkable: true
-                        text: (tabList.tabStripTick, controller.uiVersion, controller.tabVersion,
-                               controller.tabNameAt(index))
-                        checked: {
-                            controller.uiVersion
-                            return controller.currentTabIndex === index
-                        }
-                        background: Rectangle {
-                            implicitWidth: tabButton.implicitWidth + 12
-                            implicitHeight: tabButton.implicitHeight + 6
-                            radius: 4
-                            color: tabButton.checked ? palette.highlight : "transparent"
-                            opacity: tabButton.checked ? 0.35 : 0
-                        }
+                    Text {
+                        id: tabLabelText
+                        anchors.centerIn: parent
+                        text: tabDelegate.tabLabel
+                        color: tabDelegate.isActive ? appTheme.textPrimary : appTheme.textSecondary
+                        font.pixelSize: 13
+                        font.weight: tabDelegate.isActive ? Font.DemiBold : Font.Normal
                     }
 
                     MouseArea {
                         id: tabMouse
                         anchors.fill: parent
+                        hoverEnabled: true
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        propagateComposedEvents: true
 
                         property real pressX: 0
                         property bool dragging: false
@@ -195,18 +318,17 @@ ApplicationWindow {
                             id: dragHandle
                             visible: false
                             width: parent.width
-                            height: parent.height - 4
-                            anchors.verticalCenter: parent.verticalCenter
-                            radius: 4
-                            color: palette.highlight
-                            opacity: 0.45
+                            height: parent.height
+                            radius: 5
+                            color: appTheme.accent
+                            opacity: 0.35
+                            z: -1
                         }
                     }
                 }
             }
 
-            ToolButton {
-                focusPolicy: Qt.NoFocus
+            ChromeButton {
                 text: "+"
                 ToolTip.visible: hovered
                 ToolTip.text: "Add tab"
@@ -217,19 +339,22 @@ ApplicationWindow {
                 }
             }
 
-            ToolButton {
-                focusPolicy: Qt.NoFocus
+            ChromeButton {
                 text: "◀"
+                ToolTip.visible: hovered
+                ToolTip.text: "Previous tab"
                 onClicked: controller.prevTab()
             }
-            ToolButton {
-                focusPolicy: Qt.NoFocus
+            ChromeButton {
                 text: "▶"
+                ToolTip.visible: hovered
+                ToolTip.text: "Next tab"
                 onClicked: controller.nextTab()
             }
-            ToolButton {
-                focusPolicy: Qt.NoFocus
+            ChromeButton {
                 text: "⚙"
+                ToolTip.visible: hovered
+                ToolTip.text: "Settings"
                 onClicked: settingsDialog.openSettings()
             }
         }
@@ -242,16 +367,34 @@ ApplicationWindow {
     }
 
     footer: ToolBar {
+        padding: 8
+        spacing: 8
+        background: Rectangle {
+            color: appTheme.chromeBg
+            Rectangle {
+                anchors.top: parent.top
+                width: parent.width
+                height: 1
+                color: appTheme.border
+                opacity: 0.45
+            }
+        }
+
         RowLayout {
             anchors.fill: parent
-            anchors.margins: 6
-            spacing: 10
+            spacing: 12
 
-            Label { text: "Out"; color: "#aaa" }
+            Label {
+                text: "Remote Output"
+                color: appTheme.textSecondary
+                Layout.rightMargin: 2
+            }
             ToolButton {
                 id: outMuteButton
                 focusPolicy: Qt.NoFocus
                 display: AbstractButton.TextBesideIcon
+                padding: 6
+                palette.buttonText: appTheme.textPrimary
                 icon.width: 20
                 icon.height: 20
                 icon.name: {
@@ -266,6 +409,10 @@ ApplicationWindow {
                     controller.uiVersion
                     return controller.outputMuted ? 0.45 : 1.0
                 }
+                background: Rectangle {
+                    radius: 4
+                    color: parent.hovered ? appTheme.surfaceHover : "transparent"
+                }
                 ToolTip.visible: hovered
                 ToolTip.text: {
                     controller.uiVersion
@@ -278,7 +425,8 @@ ApplicationWindow {
             Slider {
                 id: outVolumeSlider
                 focusPolicy: Qt.NoFocus
-                Layout.preferredWidth: 100
+                Layout.preferredWidth: 110
+                Layout.leftMargin: 4
                 from: 0
                 to: 100
                 value: controller.outputVolume
@@ -296,12 +444,12 @@ ApplicationWindow {
                     controller.updateOutputVolume(Math.round(value))
             }
             Label {
-                Layout.preferredWidth: 36
+                Layout.preferredWidth: 40
                 horizontalAlignment: Text.AlignRight
                 text: Math.round(outVolumeSlider.value) + "%"
                 color: {
                     controller.uiVersion
-                    return controller.outputMuted ? "#666" : "#ccc"
+                    return controller.outputMuted ? appTheme.textMuted : appTheme.textSecondary
                 }
                 opacity: {
                     controller.uiVersion
@@ -309,11 +457,26 @@ ApplicationWindow {
                 }
             }
 
-            Label { text: "Mon"; color: "#aaa" }
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 28
+                Layout.leftMargin: 8
+                Layout.rightMargin: 8
+                color: appTheme.border
+                opacity: 0.5
+            }
+
+            Label {
+                text: "Local Monitor"
+                color: appTheme.textSecondary
+                Layout.rightMargin: 2
+            }
             ToolButton {
                 id: monMuteButton
                 focusPolicy: Qt.NoFocus
                 display: AbstractButton.TextBesideIcon
+                padding: 6
+                palette.buttonText: appTheme.textPrimary
                 icon.width: 20
                 icon.height: 20
                 icon.name: {
@@ -328,6 +491,10 @@ ApplicationWindow {
                     controller.uiVersion
                     return controller.monitorMuted ? 0.45 : 1.0
                 }
+                background: Rectangle {
+                    radius: 4
+                    color: parent.hovered ? appTheme.surfaceHover : "transparent"
+                }
                 ToolTip.visible: hovered
                 ToolTip.text: {
                     controller.uiVersion
@@ -340,7 +507,8 @@ ApplicationWindow {
             Slider {
                 id: monVolumeSlider
                 focusPolicy: Qt.NoFocus
-                Layout.preferredWidth: 100
+                Layout.preferredWidth: 110
+                Layout.leftMargin: 4
                 from: 0
                 to: 100
                 value: controller.monitorVolume
@@ -358,12 +526,12 @@ ApplicationWindow {
                     controller.updateMonitorVolume(Math.round(value))
             }
             Label {
-                Layout.preferredWidth: 36
+                Layout.preferredWidth: 40
                 horizontalAlignment: Text.AlignRight
                 text: Math.round(monVolumeSlider.value) + "%"
                 color: {
                     controller.uiVersion
-                    return controller.monitorMuted ? "#666" : "#ccc"
+                    return controller.monitorMuted ? appTheme.textMuted : appTheme.textSecondary
                 }
                 opacity: {
                     controller.uiVersion
@@ -376,6 +544,15 @@ ApplicationWindow {
             Button {
                 focusPolicy: Qt.NoFocus
                 text: "Stop All"
+                padding: 10
+                palette.buttonText: appTheme.textPrimary
+                background: Rectangle {
+                    radius: 5
+                    color: parent.down ? appTheme.danger
+                          : (parent.hovered ? "#a83232" : "#8b2525")
+                    border.color: appTheme.border
+                    border.width: 1
+                }
                 onClicked: controller.stopAll()
             }
         }
@@ -440,7 +617,8 @@ ApplicationWindow {
 
         ColumnLayout {
             anchors.fill: parent
-            spacing: 10
+            anchors.margins: 16
+            spacing: 12
 
             Label { text: "Tab name" }
             TextField {
@@ -451,7 +629,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                color: "#aaa"
+                color: appTheme.textMuted
                 text: addTabDialog.existingPath.length > 0
                       ? addTabDialog.existingPath
                       : "Creates a new folder under the tabs root."
@@ -488,7 +666,8 @@ ApplicationWindow {
 
         ColumnLayout {
             anchors.fill: parent
-            spacing: 10
+            anchors.margins: 16
+            spacing: 12
             Label { text: "Display name" }
             TextField {
                 id: renameTabNameField
@@ -523,5 +702,67 @@ ApplicationWindow {
         buttons: MessageDialog.Ok | MessageDialog.Cancel
         onAccepted: settingsDialog.openSettings()
         onRejected: controller.dismissGlobalShortcutsPrompt()
+    }
+
+    Dialog {
+        id: closeActionDialog
+        title: "Close Sound Spring"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 80, 500)
+        implicitHeight: 210
+        padding: 24
+        standardButtons: Dialog.NoButton
+
+        ColumnLayout {
+            id: closeActionLayout
+            anchors.fill: parent
+            spacing: 16
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: "When you close the window, should Sound Spring keep running " +
+                      "in the system tray, or exit completely?"
+                color: appTheme.textPrimary
+            }
+
+            CheckBox {
+                id: rememberCloseChoice
+                Layout.fillWidth: true
+                text: "Remember my choice"
+                checked: true
+                palette.text: appTheme.textPrimary
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                spacing: 10
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Cancel"
+                    padding: 10
+                    onClicked: closeActionDialog.close()
+                }
+                Button {
+                    text: "Exit"
+                    padding: 10
+                    onClicked: {
+                        closeActionDialog.close()
+                        applyCloseChoice(false, rememberCloseChoice.checked)
+                    }
+                }
+                Button {
+                    text: "Minimize to Tray"
+                    padding: 10
+                    highlighted: true
+                    onClicked: {
+                        closeActionDialog.close()
+                        applyCloseChoice(true, rememberCloseChoice.checked)
+                    }
+                }
+            }
+        }
     }
 }
