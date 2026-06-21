@@ -181,6 +181,30 @@ pub mod qobject {
         #[qinvokable]
         fn dismiss_global_shortcuts_prompt(self: Pin<&mut SoundboardController>);
 
+        #[qinvokable]
+        fn has_saved_window_geometry(self: &SoundboardController) -> bool;
+
+        #[qinvokable]
+        fn saved_window_x(self: &SoundboardController) -> i32;
+
+        #[qinvokable]
+        fn saved_window_y(self: &SoundboardController) -> i32;
+
+        #[qinvokable]
+        fn saved_window_width(self: &SoundboardController) -> i32;
+
+        #[qinvokable]
+        fn saved_window_height(self: &SoundboardController) -> i32;
+
+        #[qinvokable]
+        fn save_window_geometry(
+            self: Pin<&mut SoundboardController>,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+        );
+
         #[qsignal]
         fn tabs_changed(self: Pin<&mut SoundboardController>);
 
@@ -225,7 +249,7 @@ use crate::services::shortcuts::{
 use crate::services::tabs::{
     normalize_slot, tab_name_from_path, uses_custom_tabs, Tab, TabsRepository,
 };
-use crate::state::State;
+use crate::state::{State, WindowGeometry};
 
 #[derive(Debug)]
 pub enum BackendCommand {
@@ -308,6 +332,7 @@ pub struct SoundboardControllerRust {
     duration_cache: HashMap<PathBuf, u64>,
     tabs_root: PathBuf,
     state_path: PathBuf,
+    window_geometry: Option<WindowGeometry>,
 }
 
 #[derive(Debug, Default)]
@@ -568,6 +593,17 @@ impl SoundboardControllerRust {
             state.current_tab = current_tab;
             if let Err(err) = state.save(&path) {
                 tracing::warn!("failed to save state: {err:#}");
+            }
+        });
+    }
+
+    fn persist_window_geometry(&self, geometry: WindowGeometry) {
+        let path = self.state_path.clone();
+        std::thread::spawn(move || {
+            let mut state = State::load(&path).unwrap_or_default();
+            state.window_geometry = Some(geometry);
+            if let Err(err) = state.save(&path) {
+                tracing::warn!("failed to save window geometry: {err:#}");
             }
         });
     }
@@ -878,6 +914,52 @@ impl qobject::SoundboardController {
         });
     }
 
+    pub fn has_saved_window_geometry(&self) -> bool {
+        self.rust().window_geometry.is_some()
+    }
+
+    pub fn saved_window_x(&self) -> i32 {
+        self.rust()
+            .window_geometry
+            .map(|geometry| geometry.x)
+            .unwrap_or(0)
+    }
+
+    pub fn saved_window_y(&self) -> i32 {
+        self.rust()
+            .window_geometry
+            .map(|geometry| geometry.y)
+            .unwrap_or(0)
+    }
+
+    pub fn saved_window_width(&self) -> i32 {
+        self.rust()
+            .window_geometry
+            .map(|geometry| geometry.width)
+            .unwrap_or(800)
+    }
+
+    pub fn saved_window_height(&self) -> i32 {
+        self.rust()
+            .window_geometry
+            .map(|geometry| geometry.height)
+            .unwrap_or(600)
+    }
+
+    pub fn save_window_geometry(mut self: Pin<&mut Self>, x: i32, y: i32, width: i32, height: i32) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let geometry = WindowGeometry {
+            x,
+            y,
+            width,
+            height,
+        };
+        self.as_mut().rust_mut().window_geometry = Some(geometry);
+        self.as_mut().rust_mut().persist_window_geometry(geometry);
+    }
+
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
         self.as_mut().rust_mut().play_slot_internal(slot);
         self.as_mut().playing_state_changed();
@@ -1070,6 +1152,7 @@ impl qobject::SoundboardController {
                     let mut rust = self.as_mut().rust_mut();
                     rust.tabs_root = config.paths.tabs_root.clone();
                     rust.state_path = state_path;
+                    rust.window_geometry = saved.window_geometry;
                     let tabs = TabsRepository::scan(&config).unwrap_or_default();
                     rust.replace_tabs(tabs, Some(&saved.current_tab));
                     rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
@@ -1118,6 +1201,7 @@ impl qobject::SoundboardController {
         let mut rust = self.as_mut().rust_mut();
         rust.tabs_root = config.paths.tabs_root.clone();
         rust.state_path = state_path;
+        rust.window_geometry = saved.window_geometry;
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
@@ -1641,6 +1725,7 @@ impl Constructor<()> for qobject::SoundboardController {
         let mut rust = self.as_mut().rust_mut();
         rust.tabs_root = config.paths.tabs_root.clone();
         rust.state_path = state_path;
+        rust.window_geometry = saved.window_geometry;
         rust.apply_volume_state(VolumeState {
             output_percent: config.audio.output_volume,
             monitor_percent: config.audio.monitor_volume,

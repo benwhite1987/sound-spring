@@ -6,10 +6,39 @@ import com.benkahn.soundboard
 
 ApplicationWindow {
     id: root
-    width: 800
-    height: 600
+    width: controller.hasSavedWindowGeometry() ? controller.savedWindowWidth() : 800
+    height: controller.hasSavedWindowGeometry() ? controller.savedWindowHeight() : 600
     visible: true
     title: "Sound Spring"
+
+    property bool windowGeometryReady: false
+
+    Component.onCompleted: {
+        if (controller.hasSavedWindowGeometry()) {
+            root.x = controller.savedWindowX()
+            root.y = controller.savedWindowY()
+        }
+        windowGeometryReady = true
+    }
+
+    Timer {
+        id: geometrySaveTimer
+        interval: 500
+        onTriggered: controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
+    }
+
+    function scheduleWindowGeometrySave() {
+        if (!windowGeometryReady)
+            return
+        geometrySaveTimer.restart()
+    }
+
+    onXChanged: scheduleWindowGeometrySave()
+    onYChanged: scheduleWindowGeometrySave()
+    onWidthChanged: scheduleWindowGeometrySave()
+    onHeightChanged: scheduleWindowGeometrySave()
+
+    onClosing: controller.saveWindowGeometry(root.x, root.y, root.width, root.height)
 
     onActiveChanged: controller.setWindowActive(active && visible)
     onVisibilityChanged: controller.setWindowActive(active && visible)
