@@ -5,6 +5,8 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(i32, spectrum_version)]
         #[qproperty(bool, is_capturing)]
+        #[qproperty(f32, vad_probability)]
+        #[qproperty(bool, is_speaking)]
         type VoiceController = super::VoiceControllerRust;
 
         #[qinvokable]
@@ -37,6 +39,8 @@ use crate::services::voice::{voice_shared, VoiceShared, SPECTRUM_BINS};
 pub struct VoiceControllerRust {
     spectrum_version: i32,
     is_capturing: bool,
+    vad_probability: f32,
+    is_speaking: bool,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
 }
@@ -46,6 +50,8 @@ impl Default for VoiceControllerRust {
         Self {
             spectrum_version: 0,
             is_capturing: false,
+            vad_probability: 0.0,
+            is_speaking: false,
             shared: voice_shared(),
             latest: vec![0.0; SPECTRUM_BINS],
         }
@@ -71,6 +77,14 @@ impl qobject::VoiceController {
         let capturing = self.rust().shared.capturing.load(Ordering::Relaxed);
         if capturing != self.rust().is_capturing {
             self.as_mut().set_is_capturing(capturing);
+        }
+
+        let (probability, speaking) = self.rust().shared.vad_state();
+        if speaking != self.rust().is_speaking {
+            self.as_mut().set_is_speaking(speaking);
+        }
+        if (probability - self.rust().vad_probability).abs() > f32::EPSILON {
+            self.as_mut().set_vad_probability(probability);
         }
 
         let mut newest: Option<Vec<f32>> = None;

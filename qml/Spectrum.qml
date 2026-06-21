@@ -6,6 +6,8 @@ Item {
     // The VoiceController instance providing spectrum data.
     required property var controller
     property var theme
+    // Gate state: green curve when speech is passing, red when gated/silent.
+    property bool active: true
 
     // Log-frequency span must match services/voice/spectrum.rs (FREQ_MIN..Nyquist).
     readonly property real freqMin: 20.0
@@ -21,6 +23,7 @@ Item {
     onVersionChanged: curve.requestPaint()
     onWidthChanged: curve.requestPaint()
     onHeightChanged: curve.requestPaint()
+    onActiveChanged: curve.requestPaint()
 
     Rectangle {
         anchors.fill: parent
@@ -69,7 +72,11 @@ Item {
             if (bins <= 1)
                 return
 
-            var accent = spectrum.theme ? spectrum.theme.accent : "#6abf69"
+            var accent = spectrum.active
+                         ? (spectrum.theme ? spectrum.theme.accent : "#6abf69")
+                         : (spectrum.theme ? spectrum.theme.danger : "#c62828")
+            var fill = spectrum.active ? Qt.rgba(0.42, 0.75, 0.41, 0.28)
+                                       : Qt.rgba(0.78, 0.16, 0.16, 0.24)
             var w = width
             var h = height
 
@@ -84,7 +91,7 @@ Item {
             ctx.lineTo(w, h)
             ctx.closePath()
 
-            ctx.fillStyle = Qt.rgba(0.42, 0.75, 0.41, 0.28)
+            ctx.fillStyle = fill
             ctx.fill()
 
             ctx.beginPath()

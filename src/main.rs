@@ -426,7 +426,11 @@ fn run_backend(
                         }
                         Some(BackendCommand::StartVoiceCapture) => {
                             if voice_session.is_none() {
-                                match VoiceSession::start(&active_config.audio.mic_source) {
+                                match VoiceSession::start(
+                                    &active_config.audio.mic_source,
+                                    active_config.voice.vad_open_threshold,
+                                    active_config.voice.vad_close_threshold,
+                                ) {
                                     Ok(session) => voice_session = Some(session),
                                     Err(err) => warn!("voice capture start failed: {err:#}"),
                                 }

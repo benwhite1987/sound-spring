@@ -31,6 +31,7 @@ realfft = "3.5.0"
 parking_lot = "0.12.5"
 rtrb = "0.3.4"
 crossbeam-queue = "0.3.12"
+voice_activity_detector = "0.2.1"
 
 [build-dependencies]
 cxx-qt-build = { version = "0.7", features = ["link_qt_object_files"] }

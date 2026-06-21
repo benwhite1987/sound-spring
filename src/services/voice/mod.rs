@@ -10,10 +10,11 @@ pub mod capture;
 pub mod pipeline;
 pub mod resample;
 pub mod spectrum;
+pub mod vad;
 
 use anyhow::Result;
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// Capture sample rate (PipeWire mono f32).
@@ -42,6 +43,10 @@ pub struct VoiceShared {
     pub spectrum: ArrayQueue<Vec<f32>>,
     /// Whether a capture session is currently running.
     pub capturing: AtomicBool,
+    /// Latest VAD speech probability (0..1) stored as `f32` bits.
+    vad_probability: AtomicU32,
+    /// Whether VAD considers speech active (after hysteresis).
+    speech_active: AtomicBool,
 }
 
 impl VoiceShared {
@@ -49,7 +54,24 @@ impl VoiceShared {
         Self {
             spectrum: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
             capturing: AtomicBool::new(false),
+            vad_probability: AtomicU32::new(0),
+            speech_active: AtomicBool::new(false),
         }
+    }
+
+    /// Publish the latest VAD result from the audio thread.
+    pub fn set_vad(&self, probability: f32, active: bool) {
+        self.vad_probability
+            .store(probability.to_bits(), Ordering::Relaxed);
+        self.speech_active.store(active, Ordering::Relaxed);
+    }
+
+    /// Read the latest VAD result (probability, speech_active).
+    pub fn vad_state(&self) -> (f32, bool) {
+        (
+            f32::from_bits(self.vad_probability.load(Ordering::Relaxed)),
+            self.speech_active.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -74,11 +96,13 @@ pub struct VoiceSession {
 
 impl VoiceSession {
     /// Start capturing `mic_source` (empty = PipeWire default source) and run
-    /// the spectrum pipeline.
-    pub fn start(mic_source: &str) -> Result<Self> {
+    /// the spectrum + VAD pipeline. `vad_open`/`vad_close` are the hysteresis
+    /// thresholds from `[voice]` config.
+    pub fn start(mic_source: &str, vad_open: f32, vad_close: f32) -> Result<Self> {
         let shared = voice_shared();
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
-        let pipeline = pipeline::VoicePipeline::spawn(consumer, shared.clone())?;
+        let pipeline =
+            pipeline::VoicePipeline::spawn(consumer, shared.clone(), vad_open, vad_close)?;
         let capture = capture::Capture::start(mic_source, producer)?;
         shared.capturing.store(true, Ordering::Relaxed);
         Ok(Self {
@@ -90,6 +114,8 @@ impl VoiceSession {
 
 impl Drop for VoiceSession {
     fn drop(&mut self) {
-        voice_shared().capturing.store(false, Ordering::Relaxed);
+        let shared = voice_shared();
+        shared.capturing.store(false, Ordering::Relaxed);
+        shared.set_vad(0.0, false);
     }
 }

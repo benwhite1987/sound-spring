@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::resample::Resampler;
 use super::spectrum::SpectrumAnalyzer;
+use super::vad::Vad;
 use super::{VoiceShared, FFT_HOP, FFT_SIZE};
 
 pub struct VoicePipeline {
@@ -21,13 +22,18 @@ pub struct VoicePipeline {
 }
 
 impl VoicePipeline {
-    pub fn spawn(consumer: Consumer<f32>, shared: Arc<VoiceShared>) -> Result<Self> {
+    pub fn spawn(
+        consumer: Consumer<f32>,
+        shared: Arc<VoiceShared>,
+        vad_open: f32,
+        vad_close: f32,
+    ) -> Result<Self> {
         let resampler = Resampler::new()?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("voice-pipeline".into())
-            .spawn(move || run(consumer, shared, resampler, thread_stop))?;
+            .spawn(move || run(consumer, shared, resampler, vad_open, vad_close, thread_stop))?;
         Ok(Self {
             stop,
             handle: Some(handle),
@@ -48,12 +54,21 @@ fn run(
     mut consumer: Consumer<f32>,
     shared: Arc<VoiceShared>,
     mut resampler: Resampler,
+    vad_open: f32,
+    vad_close: f32,
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
+    // A VAD failure (e.g. ONNX runtime unavailable) degrades to spectrum-only.
+    let mut vad = match Vad::new(vad_open, vad_close) {
+        Ok(vad) => Some(vad),
+        Err(err) => {
+            warn!("voice VAD disabled: {err:#}");
+            None
+        }
+    };
     let mut window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
-    // Reused scratch for the (currently consumer-less) resampled stream so the
-    // resampler stays exercised ahead of later milestones.
+    // 16 kHz stream feeding the VAD; contiguous across iterations.
     let mut resampled = Vec::with_capacity(FFT_SIZE);
 
     while !stop.load(Ordering::Relaxed) {
@@ -79,6 +94,9 @@ fn run(
             resampled.clear();
             if let Err(err) = resampler.process(&window[..FFT_HOP], &mut resampled) {
                 debug!("voice resample error: {err:#}");
+            } else if let Some(vad) = vad.as_mut() {
+                let (prob, active) = vad.process(&resampled);
+                shared.set_vad(prob, active);
             }
 
             window.drain(..FFT_HOP);
