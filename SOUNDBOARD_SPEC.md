@@ -537,9 +537,9 @@ soundboard/
 - **Async on the Tokio side, sync on the Qt side**: Qt invokables are
   synchronous. They post commands to Tokio via `mpsc::Sender` and return
   immediately. Tokio replies via `CxxQtThread::queue` to update Qt state.
-- **`paplay` interruption policy**: default "overlap" (multiple instances allowed
-  per slot). "Interrupt" mode kills the previous before spawning. Setting in
-  config.toml.
+- **`paplay` interruption policy**: default "overlap" (multiple sounds may play
+  at once). "Interrupt" stops every active playback before starting a new one.
+  Setting in config.toml.
 - **Shortcut binding is async-only**: do it from `tokio::spawn` at startup,
   *after* the main window has shown. Wayland portals sometimes reject early
   calls.

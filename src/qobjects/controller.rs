@@ -389,6 +389,12 @@ impl SoundboardControllerRust {
         }
     }
 
+    fn interruption_mode_enabled(&self) -> bool {
+        crate::config::load_config()
+            .map(|config| config.audio.interruption_mode == "interrupt")
+            .unwrap_or(false)
+    }
+
     fn apply_volume_state(&mut self, state: VolumeState) {
         self.output_volume = state.output_percent as i32;
         self.monitor_volume = state.monitor_percent as i32;
@@ -771,6 +777,12 @@ impl SoundboardControllerRust {
             {
                 return;
             }
+        }
+
+        if self.interruption_mode_enabled() && !self.active_playbacks.is_empty() {
+            self.active_playbacks.clear();
+            self.play_coalesce = None;
+            self.bump_playing_version();
         }
 
         let Some(index) = normalize_slot(slot) else {

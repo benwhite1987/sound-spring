@@ -257,7 +257,7 @@ Window {
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                         color: appTheme.textMuted
-                        text: "Overlap allows multiple sounds per slot; Interrupt stops the current sound on that slot before playing again."
+                        text: "Overlap allows multiple sounds at once; Interrupt stops any playing sound before starting a new one."
                     }
                     CheckBox {
                         text: "Mute real microphone during playback"

@@ -42,8 +42,8 @@ pub struct AudioConfig {
     pub output_muted: bool,
     #[serde(default)]
     pub monitor_muted: bool,
-    /// `overlap` allows multiple instances per slot; `interrupt` stops the
-    /// previous playback on the same slot before starting a new one.
+    /// `overlap` allows multiple sounds at once; `interrupt` stops every
+    /// currently playing sound before starting a new one.
     #[serde(default = "default_interruption_mode")]
     pub interruption_mode: String,
     #[serde(default)]

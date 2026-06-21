@@ -121,7 +121,7 @@ impl Player {
         self.interruption_mode = mode.to_string();
     }
 
-    fn interrupts_same_slot(&self) -> bool {
+    fn interrupts_playback(&self) -> bool {
         self.interruption_mode == "interrupt"
     }
 
@@ -159,8 +159,8 @@ impl Player {
     }
 
     pub async fn play(&mut self, file: PathBuf, tab_index: i32, slot: i32) -> Result<u64> {
-        if self.interrupts_same_slot() {
-            self.stop_session(tab_index, slot).await;
+        if self.interrupts_playback() {
+            self.stop_all().await;
         }
 
         let id = self.next_id;
@@ -435,9 +435,9 @@ mod tests {
     fn interrupt_mode_matches_config_value() {
         let mut player = super::Player::default_sink();
         player.set_interruption_mode("interrupt");
-        assert!(player.interrupts_same_slot());
+        assert!(player.interrupts_playback());
         player.set_interruption_mode("overlap");
-        assert!(!player.interrupts_same_slot());
+        assert!(!player.interrupts_playback());
     }
 
     #[test]
