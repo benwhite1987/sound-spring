@@ -100,6 +100,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        controller.noteFirstPaint()
         if (controller.hasSavedWindowGeometry()) {
             root.x = controller.savedWindowX()
             root.y = controller.savedWindowY()

@@ -89,6 +89,9 @@ pub mod qobject {
         fn process_events(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
+        fn note_first_paint(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
         fn tab_name_at(self: &SoundboardController, index: i32) -> QString;
 
         #[qinvokable]
@@ -1160,6 +1163,15 @@ impl qobject::SoundboardController {
     pub fn toggle_monitor_mute(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().toggle_monitor_mute_internal();
         properties::sync_volume_properties(self.as_mut());
+    }
+
+    pub fn note_first_paint(self: Pin<&mut Self>) {
+        if let Some(start) = crate::PROCESS_START.get() {
+            tracing::info!(
+                "startup: first frame in {} ms",
+                start.elapsed().as_millis()
+            );
+        }
     }
 
     pub fn process_events(mut self: Pin<&mut Self>) {

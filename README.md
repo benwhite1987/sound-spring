@@ -142,8 +142,13 @@ The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `sta
 ```bash
 source "$HOME/.cargo/env"
 QMAKE=/usr/bin/qmake6 cargo build --release
+ls -lh target/release/sound-spring   # stripped; expect well under 15 MB
 RUST_LOG=sound_spring=info ./target/release/sound-spring
 ```
+
+On first launch, the log line `startup: first frame in N ms` reports time from
+process start to main-window `Component.onCompleted` (acceptance target: < 200
+ms on the Thelio Mira, release build, launched via `gtk-launch sound-spring`).
 
 Global shortcuts use **xdg-desktop-portal** (`shortcuts.mode = "portal"` or `"auto"` in config). They are **not** registered at launch — open **Settings → Shortcuts** and click **Apply** to bind globals with KDE. You may see a permission dialog the first time. In-window numpad keys work immediately without Apply.
 

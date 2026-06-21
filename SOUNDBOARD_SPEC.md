@@ -30,10 +30,11 @@ async-std, plain `std::process` for paplay (need async wait).
 
 cxx-qt supports both, but QML is the more idiomatic and better-documented path.
 For this project specifically: KDE Plasma is QML-heavy so the result feels
-native, Kirigami gives KDE-styled buttons and tabs without theming work, and
-local models have seen far more `Item { ... }` QML than `cxx_qt::QObject`
-widget construction. The binary-size penalty over widgets is ~3–4 MB, which is
-acceptable for the development ergonomics.
+native, and local models have seen far more `Item { ... }` QML than
+`cxx_qt::QObject` widget construction. The UI uses **Qt Quick Controls 2**
+with the Fusion style and a project `SoundSpringTheme` palette (not Kirigami).
+The binary-size penalty over widgets is ~3–4 MB, which is acceptable for the
+development ergonomics.
 
 ## Directory layout
 
@@ -57,7 +58,11 @@ acceptable for the development ergonomics.
 - Tab dirs use `NN-name` prefix for ordering; strip prefix for display.
 - Up to 10 sound files per tab; sorted lexically, mapped to slots 1–10.
 - Slot 10 is triggered by the `0` key.
-- Anything beyond 10 files is shown in the UI but unbound.
+- When a tab has more than 10 audio files, show a warning and **ignore** files
+  that cannot be placed (prefixes above 10, or excess after filling empty
+  slots). Overflow files with valid prefixes (1–10) or no prefix are used to
+  **fill empty slots** before any excess is dropped. There is no separate
+  “unbound” UI beyond the fixed 10-slot grid.
 
 ## Architecture
 
@@ -100,46 +105,52 @@ and `paplay` process management. Communicates with the Qt thread via
 
 ### MainWindow (QML: `Main.qml`)
 
-- `Kirigami.ApplicationWindow` (or `ApplicationWindow` from QtQuick.Controls
-  if not using Kirigami), default 800×600, restores geometry from state.json.
-- Header: tab strip (`Kirigami.NavigationTabBar` or custom `TabBar`).
-  Drag-reorder enabled.
-- Content: `StackLayout` or `SwipeView` with one `TabPage` per tab.
-- Footer: status bar — left shows current tab, center has "Stop All" button,
-  right has settings cog opening `SettingsDialog`.
+- `ApplicationWindow` from QtQuick.Controls, default 800×600, restores
+  geometry from state.json. Styled via `SoundSpringTheme` and a global
+  `palette`.
+- **Header:** tab strip (custom `ListView` delegates), drag-reorder enabled.
+  Settings cog opens `SettingsDialog`. Tab navigation buttons (prev/next).
+- **Content:** a single `TabPage` bound to the **currently active tab** (not a
+  `StackLayout` of one page per tab).
+- **Footer:** remote-output and local-monitor volume sliders with mute toggles;
+  **Stop All** on the right. Settings live in the header, not the footer.
 
 ### TabPage (QML: `TabPage.qml`)
 
 - `GridLayout`, 2 columns × 5 rows, of `SoundButton` items.
-- Bound to `controller.currentTabSounds` (a list model exposing 10 items with
-  `name`, `path`, `is_empty`, `is_playing` roles).
+- Bound to `controller` slot helpers (`slotLabel`, `slotPlaying`, etc.) for
+  the active tab’s 10 slots.
 
 ### SoundButton (QML: `SoundButton.qml`)
 
-- `Button` (or `Kirigami.AbstractCard`), minimum height 80, large font.
-- Layout: slot number badge top-left, filename centered, playing indicator
-  bottom-right when active.
+- `Button`, fixed minimum height 80, large font.
+- Layout: slot number badge top-left, filename centered.
 - Tooltip shows full path.
-- `onClicked: controller.play_slot(model.index + 1)` — slot index is 1-based.
+- `onClicked: controller.play_slot(slotNumber)` — slot index is 1-based.
 - Right-click `MouseArea` opens a context `Menu` with Replace/Remove/Rename/
-  Open Folder.
+  Move/Open Folder.
 - Empty slots: disabled, "Empty (slot N)" label.
-- Pulse animation triggered by `controller.playback_started` matching the slot.
+- **Playing indicator:** green progress fill across the button background plus
+  accent border (not a separate pulse animation on `playback_started`).
 
 ### SettingsDialog (QML: `SettingsDialog.qml`)
 
-- `Kirigami.Dialog` or `Dialog`, three pages:
+- `Dialog`, tabbed pages:
   - **Audio**: mic source `ComboBox` (model from `controller.micSources`),
-    latency `Slider` 10–100ms, default 20ms.
-  - **Shortcuts**: `ListView` of 13 shortcuts, each row showing the action and
-    a key-sequence text field. "Apply" rebinds via portal.
+    latency `Slider` 10–100ms, default 20ms, playback interruption mode,
+    mute-mic-during-playback.
+  - **Shortcuts**: `ListView` of 15 shortcuts, each row showing the action and
+    a key-sequence text field. Backend `portal` (global via
+    xdg-desktop-portal) or `local` (in-window only). "Apply" rebinds globals.
+    Optional **Ignore NumLock** registers NumLock-off companion keysyms — see
+    `docs/global-shortcuts.md`.
   - **General**: switches for launch-at-login, minimize-to-tray, auto-teardown
     of PipeWire modules on quit.
 
 ### System tray
 
-- `Kirigami.SystemTrayIcon` or fall back to a `QSystemTrayIcon` exposed from
-  Rust. Menu: Show/Hide, Stop All, Quit.
+- `QSystemTrayIcon` exposed from C++ as `SystemTray`. Menu: Show/Hide, Stop
+  All, Quit. Left-click restores the window.
 
 ## Hotkey specification
 
@@ -232,13 +243,18 @@ qt_thread.queue(move |controller: Pin<&mut SoundboardController>| {
 }).expect("Qt thread alive");
 ```
 
-### Fallback: KGlobalAccel
+### Global shortcuts (xdg-desktop-portal)
 
-If `CreateSession` returns `ServiceUnknown` or similar, fall back to
-`org.kde.kglobalaccel`. Same proxy pattern with zbus, but the interface is
-KDE-specific and the registration is silent (no user dialog). Treat the fallback
-as a setting the user can toggle, not automatic — the portal dialog on first
-run is good UX, not a bug.
+Registration uses **xdg-desktop-portal** `GlobalShortcuts` only. Settings
+offers `shortcuts.mode = "portal"` (global hotkeys) or `"local"` (in-window
+keys only, no portal bind).
+
+**Do not** register shortcuts via direct D-Bus calls to
+`org.kde.KGlobalAccel` (`setForeignShortcutKeys`, `doRegister`, etc.). On
+Plasma 6 / Wayland, `kglobalacceld` runs inside `kwin_wayland`; malformed
+calls can crash the desktop session. Users assign global keys through the
+portal **Apply** flow and KDE System Settings. Operational details and test
+protocol: `docs/global-shortcuts.md`.
 
 ## PipeWire routing
 
@@ -326,7 +342,8 @@ path = "/home/user/Music/memes"
 name = "Memes"
 
 [shortcuts]
-mode = "portal"  # or "kglobalaccel"
+mode = "portal"  # "portal" = global via xdg-desktop-portal; "local" = in-window only
+ignore_numlock = false
 
 [ui]
 minimize_to_tray = true
@@ -541,8 +558,9 @@ soundboard/
 
 The implementation is done when all of these hold:
 
-1. `cargo build --release` produces a single binary in `target/release/`
-   under 15 MB stripped.
+1. `cargo build --release` produces a single stripped binary in
+   `target/release/` under 15 MB. `Cargo.toml` sets `[profile.release] strip =
+   true`. As of 2026-06, a typical build is ~7 MB on x86_64 Linux.
 2. Launching the app creates the two null sinks if absent, with correct
    descriptions visible in `pavucontrol`.
 3. Audio played through any sound button is audible on
@@ -560,8 +578,21 @@ The implementation is done when all of these hold:
     tray menu unloads the PipeWire modules and exits cleanly.
 11. The app survives `pipewire` being restarted: re-creates sinks on the next
     play attempt.
-12. Startup time from `exec` to first window paint is under 200ms on the
-    Thelio Mira.
+12. Startup time from process start to first main-window frame is under 200 ms
+    on the Thelio Mira (release build, launched via `gtk-launch sound-spring`).
+    Log line: `startup: first frame in N ms` at `sound_spring=info`.
+
+### Release build and startup check
+
+```bash
+source "$HOME/.cargo/env"
+QMAKE=/usr/bin/qmake6 cargo build --release
+ls -lh target/release/sound-spring    # expect < 15 MB, stripped
+
+# Launch outside IDE/Electron cgroups (see docs/global-shortcuts.md):
+RUST_LOG=sound_spring=info gtk-launch sound-spring
+# Read "startup: first frame in … ms" in the terminal or journal.
+```
 
 ## What to hand the model first
 

@@ -17,12 +17,15 @@ use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, Shor
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
 use std::ffi::CString;
 use std::os::raw::c_char;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+/// Set at the very start of `main` for startup timing logs.
+pub static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 extern "C" {
     fn sound_spring_init_qt_application(argc: i32, argv: *mut *mut c_char);
@@ -34,6 +37,8 @@ extern "C" {
 }
 
 fn main() -> Result<()> {
+    let _ = PROCESS_START.set(Instant::now());
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("sound_spring=info".parse()?))
         .init();
@@ -89,6 +94,12 @@ fn main() -> Result<()> {
         engine.load(&QUrl::from(
             "qrc:/qt/qml/com/benkahn/soundboard/qml/Main.qml",
         ));
+    }
+    if let Some(start) = PROCESS_START.get() {
+        info!(
+            "startup: QML engine loaded in {} ms",
+            start.elapsed().as_millis()
+        );
     }
 
     let _ = unsafe { sound_spring_exec_qt_application() };
