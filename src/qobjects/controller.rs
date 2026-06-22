@@ -286,6 +286,7 @@ pub enum BackendCommand {
     StartVoiceCapture,
     StopVoiceCapture,
     SetVoiceVerification { enabled: bool, threshold: f32 },
+    SetVoiceSuppression { enabled: bool },
 }
 
 #[derive(Debug, Clone)]

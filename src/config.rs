@@ -87,7 +87,7 @@ pub struct UiConfig {
 pub struct VoiceConfig {
     #[serde(default)]
     pub verification_enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub suppression_enabled: bool,
     #[serde(default = "default_suppression_model")]
     pub suppression_model: String,
@@ -166,7 +166,7 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             verification_enabled: false,
-            suppression_enabled: true,
+            suppression_enabled: false,
             suppression_model: default_suppression_model(),
             match_threshold: default_match_threshold(),
             vad_open_threshold: default_vad_open_threshold(),
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(parsed.audio.interruption_mode, "overlap");
         assert_eq!(parsed.voice.spectrum_fps, 30);
         assert_eq!(parsed.voice.suppression_model, "deepfilternet3");
-        assert!(parsed.voice.suppression_enabled);
+        assert!(!parsed.voice.suppression_enabled);
         assert!(!parsed.voice.verification_enabled);
     }
 

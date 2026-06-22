@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+use super::denoise::Denoiser;
 use super::embed_worker::EmbedJob;
 use super::resample::Resampler;
 use super::spectrum::SpectrumAnalyzer;
@@ -45,6 +46,7 @@ impl VoicePipeline {
         job_tx: Sender<EmbedJob>,
         busy: Arc<AtomicBool>,
         output: Option<Producer<f32>>,
+        suppression: bool,
     ) -> Result<Self> {
         let resampler = Resampler::new()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -61,6 +63,7 @@ impl VoicePipeline {
                     job_tx,
                     busy,
                     output,
+                    suppression,
                     thread_stop,
                 )
             })?;
@@ -90,11 +93,27 @@ fn run(
     job_tx: Sender<EmbedJob>,
     busy: Arc<AtomicBool>,
     mut output: Option<Producer<f32>>,
+    suppression: bool,
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
     // Current output-gate gain, ramped toward 0/1 to avoid clicks.
     let mut gate_gain: f32 = 0.0;
+    // DeepFilterNet3 denoiser for the routed output path. A load failure
+    // degrades to passthrough (gating still works, just without suppression).
+    let mut denoiser = if suppression && output.is_some() {
+        match Denoiser::new() {
+            Ok(d) => Some(d),
+            Err(err) => {
+                warn!("voice denoise disabled: {err:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Reused scratch for denoised (or passthrough) output samples.
+    let mut out_scratch: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
     // A VAD failure (e.g. ONNX runtime unavailable) degrades to spectrum-only;
     // verification then runs ungated.
     let mut vad = match Vad::new(vad_open, vad_close) {
@@ -207,12 +226,27 @@ fn run(
             };
             shared.set_passing(passing);
 
-            // Feed the gated mic into the output sink. The FFT_HOP samples about
-            // to leave `window` are the contiguous, write-once output stream;
-            // ramp toward the gate target so open/close transitions don't click.
+            // Feed the processed mic into the output sink. The FFT_HOP samples
+            // about to leave `window` are the contiguous, write-once stream:
+            // denoise first (so DeepFilterNet sees continuous audio and keeps a
+            // stable noise estimate), then apply the gate gain. The gate only
+            // closes under verification; suppression-only routing passes
+            // everything (just cleaned). Ramp the gain to avoid clicks.
             if let Some(out) = output.as_mut() {
-                let target = if passing { 1.0 } else { 0.0 };
-                for &sample in &window[..FFT_HOP] {
+                let gate_open = if verifying {
+                    voiced && shared.speaker_state().1
+                } else {
+                    true
+                };
+                let target = if gate_open { 1.0 } else { 0.0 };
+
+                out_scratch.clear();
+                match denoiser.as_mut() {
+                    Some(d) => d.process(&window[..FFT_HOP], &mut out_scratch),
+                    None => out_scratch.extend_from_slice(&window[..FFT_HOP]),
+                }
+
+                for &sample in &out_scratch {
                     if gate_gain < target {
                         gate_gain = (gate_gain + GATE_STEP).min(target);
                     } else if gate_gain > target {

@@ -14,6 +14,7 @@ pub mod qobject {
         #[qproperty(f32, enroll_progress)]
         #[qproperty(bool, verification_enabled)]
         #[qproperty(f32, match_threshold)]
+        #[qproperty(bool, suppression_enabled)]
         type VoiceController = super::VoiceControllerRust;
 
         #[qinvokable]
@@ -36,6 +37,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn set_threshold(self: Pin<&mut VoiceController>, threshold: f32);
+
+        #[qinvokable]
+        fn set_suppression(self: Pin<&mut VoiceController>, enabled: bool);
 
         #[qinvokable]
         fn start_enrollment(self: Pin<&mut VoiceController>);
@@ -76,6 +80,7 @@ pub struct VoiceControllerRust {
     enroll_progress: f32,
     verification_enabled: bool,
     match_threshold: f32,
+    suppression_enabled: bool,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
     last_enroll_done_seq: u32,
@@ -102,6 +107,7 @@ impl Default for VoiceControllerRust {
             enroll_progress: 0.0,
             verification_enabled: config.voice.verification_enabled,
             match_threshold: config.voice.match_threshold,
+            suppression_enabled: config.voice.suppression_enabled,
             shared,
             latest: vec![0.0; SPECTRUM_BINS],
             last_enroll_done_seq: shared_done_seq(),
@@ -219,6 +225,13 @@ impl qobject::VoiceController {
         self.rust().shared.set_match_threshold(threshold);
         self.as_mut().set_match_threshold(threshold);
         persist_verification(self.rust().verification_enabled, threshold);
+    }
+
+    pub fn set_suppression(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().set_suppression_enabled(enabled);
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::SetVoiceSuppression { enabled });
+        }
     }
 
     pub fn start_enrollment(self: Pin<&mut Self>) {

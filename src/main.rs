@@ -332,28 +332,30 @@ async fn apply_runtime_config(
 }
 
 /// Bring the voice session in line with the desired state derived from the
-/// Voice panel visibility and the verification setting.
+/// Voice panel visibility, the verification setting, and noise suppression.
 ///
-/// Two modes exist: visualization-only (panel showing, no gating) and gating
-/// (verification enabled + enrolled). Gating removes the Phase 1 raw mic
-/// loopback and feeds the gated mic into the virtmic instead; leaving gating
-/// restores the loopback so Phase 1 passthrough resumes.
+/// Two modes exist: visualization-only (panel showing, routing untouched) and
+/// routed (verification enabled + enrolled, and/or suppression on). Routed mode
+/// removes the Phase 1 raw mic loopback and feeds the processed mic into the
+/// virtmic instead; leaving it restores the loopback so Phase 1 passthrough
+/// resumes. Suppression denoises the routed path; verification gates it.
 async fn reconcile_voice(
     config: &Config,
     session: &mut Option<VoiceSession>,
-    current_gating: &mut bool,
+    current_routing: &mut bool,
     panel_visible: bool,
 ) {
-    let want_gating =
+    let want_verify =
         config.voice.verification_enabled && config::voiceprint_path(config).is_file();
-    let want_on = panel_visible || want_gating;
+    let want_routing = want_verify || config.voice.suppression_enabled;
+    let want_on = panel_visible || want_routing;
 
     // Tear down when no longer wanted, or when the mode must change.
-    if session.is_some() && (!want_on || *current_gating != want_gating) {
-        let was_gating = *current_gating;
+    if session.is_some() && (!want_on || *current_routing != want_routing) {
+        let was_routing = *current_routing;
         *session = None;
-        *current_gating = false;
-        if was_gating {
+        *current_routing = false;
+        if was_routing {
             if let Err(err) = PipewireManager::set_mic_passthrough(
                 true,
                 &config.audio.mic_source,
@@ -370,9 +372,9 @@ async fn reconcile_voice(
         return;
     }
 
-    // Starting fresh. For gating, drop the raw loopback first so only the
+    // Starting fresh. When routing, drop the raw loopback first so only the
     // processed feed reaches the virtmic.
-    if want_gating {
+    if want_routing {
         if let Err(err) = PipewireManager::set_mic_passthrough(
             false,
             &config.audio.mic_source,
@@ -380,7 +382,7 @@ async fn reconcile_voice(
         )
         .await
         {
-            warn!("failed to remove mic loopback for gating: {err:#}");
+            warn!("failed to remove mic loopback for routing: {err:#}");
         }
     }
 
@@ -391,21 +393,22 @@ async fn reconcile_voice(
         verification_enabled: config.voice.verification_enabled,
         match_threshold: config.voice.match_threshold,
         voiceprint_path: config::voiceprint_path(config),
-        gating: want_gating,
-        output_sink: if want_gating {
+        gating: want_routing,
+        output_sink: if want_routing {
             VIRTMIC_SINK.to_string()
         } else {
             String::new()
         },
+        suppression: config.voice.suppression_enabled,
     };
     match VoiceSession::start(params) {
         Ok(s) => {
             *session = Some(s);
-            *current_gating = want_gating;
+            *current_routing = want_routing;
         }
         Err(err) => {
             warn!("voice session start failed: {err:#}");
-            if want_gating {
+            if want_routing {
                 let _ = PipewireManager::set_mic_passthrough(
                     true,
                     &config.audio.mic_source,
@@ -461,12 +464,22 @@ fn run_backend(
         player.set_interruption_mode(&active_config.audio.interruption_mode);
 
         // Phase 2 voice session. Runs while the Voice panel is showing (for the
-        // spectrum/VAD display) or whenever verification gating is active. In
-        // gating mode it replaces the Phase 1 raw mic loopback with the gated
-        // feed; otherwise it is visualization-only and leaves routing untouched.
+        // spectrum/VAD display) or whenever routing is active (verification
+        // gating and/or noise suppression). In routed mode it replaces the
+        // Phase 1 raw mic loopback with the processed feed; otherwise it is
+        // visualization-only and leaves routing untouched.
         let mut voice_session: Option<VoiceSession> = None;
-        let mut voice_gating = false;
+        let mut voice_routing = false;
         let mut voice_panel_visible = false;
+        // Engage suppression/gating routing at startup if the config enables it,
+        // so the processed mic is active without first opening the Voice panel.
+        reconcile_voice(
+            &active_config,
+            &mut voice_session,
+            &mut voice_routing,
+            voice_panel_visible,
+        )
+        .await;
         loop {
             tokio::select! {
                 command = backend_cmd_rx.recv() => {
@@ -482,7 +495,7 @@ fn run_backend(
                                 || previous.audio.latency_ms != new_config.audio.latency_ms;
                             if routing_changed {
                                 voice_session = None;
-                                voice_gating = false;
+                                voice_routing = false;
                             }
                             apply_runtime_config(
                                 &new_config,
@@ -507,7 +520,7 @@ fn run_backend(
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
-                                &mut voice_gating,
+                                &mut voice_routing,
                                 voice_panel_visible,
                             )
                             .await;
@@ -536,7 +549,7 @@ fn run_backend(
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
-                                &mut voice_gating,
+                                &mut voice_routing,
                                 voice_panel_visible,
                             )
                             .await;
@@ -546,7 +559,7 @@ fn run_backend(
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
-                                &mut voice_gating,
+                                &mut voice_routing,
                                 voice_panel_visible,
                             )
                             .await;
@@ -560,7 +573,20 @@ fn run_backend(
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
-                                &mut voice_gating,
+                                &mut voice_routing,
+                                voice_panel_visible,
+                            )
+                            .await;
+                        }
+                        Some(BackendCommand::SetVoiceSuppression { enabled }) => {
+                            active_config.voice.suppression_enabled = enabled;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist noise suppression setting: {err:#}");
+                            }
+                            reconcile_voice(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_routing,
                                 voice_panel_visible,
                             )
                             .await;

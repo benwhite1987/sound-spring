@@ -241,6 +241,21 @@ Item {
             }
         }
 
+        // Noise suppression toggle (DeepFilterNet3).
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
+
+            Switch {
+                id: suppressionSwitch
+                text: "Noise suppression (DeepFilterNet3)"
+                checked: voiceController.suppressionEnabled
+                palette.windowText: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
+                onToggled: voiceController.setSuppression(checked)
+            }
+            Item { Layout.fillWidth: true }
+        }
+
         Label {
             Layout.fillWidth: true
             text: "Routing to: soundboard_virtmic"
@@ -260,8 +275,8 @@ Item {
             text: "The spectrum turns green while your voice passes the gate (speech " +
                   "detected and, when verification is on, matched to your enrolled " +
                   "voiceprint). With verification on, only matched speech is sent to " +
-                  "the virtual mic and the gate keeps running in the background. " +
-                  "Noise suppression arrives in a later milestone."
+                  "the virtual mic; noise suppression cleans whatever is sent. Both " +
+                  "keep running in the background once enabled."
         }
 
         Item { Layout.fillHeight: true }

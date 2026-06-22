@@ -36,6 +36,13 @@ voice_activity_detector = "0.2.1"
 # share a single ort-sys (which `links` the native onnxruntime); mismatched
 # pre-releases would collide on the native library.
 ort = "=2.0.0-rc.10"
+# DeepFilterNet3 noise suppression. The streaming `tract` runtime and the
+# bundled DFN3 model are only exposed by the repo's `libDF` (not the stale
+# crates.io 0.2.5), so we pin the git tag. It uses `tract`, not `ort`, so there
+# is no native onnxruntime conflict with the VAD/ECAPA stack above.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6", default-features = false, features = ["tract", "default-model"] }
+# Matches deep_filter's ndarray so the `DfTract::process` array views line up.
+ndarray = "0.15"
 
 [build-dependencies]
 cxx-qt-build = { version = "0.7", features = ["link_qt_object_files"] }

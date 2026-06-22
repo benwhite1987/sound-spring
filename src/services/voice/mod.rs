@@ -8,6 +8,7 @@
 //! denoise arrives later in the same chain.
 
 pub mod capture;
+pub mod denoise;
 pub mod embed_worker;
 pub mod embedding;
 pub mod output;
@@ -237,11 +238,13 @@ pub struct VoiceParams {
     pub match_threshold: f32,
     /// Absolute path of the enrolled voiceprint file.
     pub voiceprint_path: PathBuf,
-    /// When set, the session feeds gated audio into `output_sink` (replacing the
-    /// raw mic loopback) instead of running visualization-only.
+    /// When set, the session feeds processed audio into `output_sink` (replacing
+    /// the raw mic loopback) instead of running visualization-only.
     pub gating: bool,
-    /// Target sink for gated output (typically the virtmic). Empty = none.
+    /// Target sink for processed output (typically the virtmic). Empty = none.
     pub output_sink: String,
+    /// Apply DeepFilterNet3 noise suppression on the routed output path.
+    pub suppression: bool,
 }
 
 /// A running capture + processing session. Dropping it tears everything down:
@@ -286,6 +289,8 @@ impl VoiceSession {
             (None, None)
         };
 
+        // Denoise only matters on the routed output path.
+        let suppression = params.suppression && out_producer.is_some();
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
             consumer,
@@ -295,6 +300,7 @@ impl VoiceSession {
             job_tx,
             busy,
             out_producer,
+            suppression,
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer)?;
         shared.capturing.store(true, Ordering::Relaxed);
