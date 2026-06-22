@@ -42,11 +42,24 @@ impl Vad {
     /// Feed 16 kHz mono samples; runs inference on each full 512-sample window
     /// and updates the hysteresis gate. Returns the most recent
     /// (probability, speech_active).
+    pub fn set_thresholds(&mut self, open: f32, close: f32) {
+        self.open = open;
+        self.close = close;
+    }
+
     pub fn process(&mut self, samples: &[f32]) -> (f32, bool) {
         self.pending.extend_from_slice(samples);
         while self.pending.len() >= VAD_CHUNK {
             let chunk: Vec<f32> = self.pending.drain(..VAD_CHUNK).collect();
-            let prob = self.detector.predict(chunk);
+            let prob = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.detector.predict(chunk)
+            })) {
+                Ok(prob) => prob,
+                Err(_) => {
+                    tracing::warn!("Silero VAD inference panicked; treating as silence");
+                    0.0
+                }
+            };
             self.last_prob = prob;
             self.active = next_active(self.active, prob, self.open, self.close);
         }

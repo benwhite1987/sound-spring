@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("BACKEND_EVENT_RX already set"))?;
 
     let worker_config = config.clone();
-    thread::spawn(move || {
+    let backend_handle = thread::spawn(move || {
         if let Err(err) = run_backend(worker_config, backend_cmd_rx, backend_event_tx) {
             error!("backend thread exited: {err:#}");
         }
@@ -104,6 +104,13 @@ fn main() -> Result<()> {
     }
 
     let _ = unsafe { sound_spring_exec_qt_application() };
+
+    if let Some(tx) = BACKEND_TX.get() {
+        let _ = tx.blocking_send(BackendCommand::Shutdown);
+    }
+    if let Err(err) = backend_handle.join() {
+        error!("backend thread join failed: {err:?}");
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(restore_mic_after_playback(&config));
@@ -331,6 +338,37 @@ async fn apply_runtime_config(
     let _ = event_tx.send(BackendEvent::ConfigApplied);
 }
 
+/// Drop an active voice session and restore the Phase 1 raw mic loopback when
+/// routing had replaced it.
+async fn stop_voice_session(
+    config: &Config,
+    session: &mut Option<VoiceSession>,
+    voice_routing: &mut bool,
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+) {
+    if session.is_none() {
+        return;
+    }
+    let was_routing = *voice_routing;
+    *session = None;
+    *voice_routing = false;
+    let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
+        active: false,
+        error: String::new(),
+    });
+    if was_routing {
+        if let Err(err) = PipewireManager::set_mic_passthrough(
+            true,
+            &config.audio.mic_source,
+            config.audio.latency_ms,
+        )
+        .await
+        {
+            warn!("failed to restore mic loopback: {err:#}");
+        }
+    }
+}
+
 /// Bring the voice session in line with the desired state derived from the
 /// Voice panel visibility, the verification setting, and noise suppression.
 ///
@@ -344,6 +382,7 @@ async fn reconcile_voice(
     session: &mut Option<VoiceSession>,
     current_routing: &mut bool,
     panel_visible: bool,
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
 ) {
     let want_verify =
         config.voice.verification_enabled && config::voiceprint_path(config).is_file();
@@ -352,20 +391,7 @@ async fn reconcile_voice(
 
     // Tear down when no longer wanted, or when the mode must change.
     if session.is_some() && (!want_on || *current_routing != want_routing) {
-        let was_routing = *current_routing;
-        *session = None;
-        *current_routing = false;
-        if was_routing {
-            if let Err(err) = PipewireManager::set_mic_passthrough(
-                true,
-                &config.audio.mic_source,
-                config.audio.latency_ms,
-            )
-            .await
-            {
-                warn!("failed to restore mic loopback: {err:#}");
-            }
-        }
+        stop_voice_session(config, session, current_routing, event_tx).await;
     }
 
     if !want_on || session.is_some() {
@@ -405,9 +431,17 @@ async fn reconcile_voice(
         Ok(s) => {
             *session = Some(s);
             *current_routing = want_routing;
+            let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
+                active: true,
+                error: String::new(),
+            });
         }
         Err(err) => {
             warn!("voice session start failed: {err:#}");
+            let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
+                active: false,
+                error: format!("Voice capture failed: {err:#}"),
+            });
             if want_routing {
                 let _ = PipewireManager::set_mic_passthrough(
                     true,
@@ -478,6 +512,7 @@ fn run_backend(
             &mut voice_session,
             &mut voice_routing,
             voice_panel_visible,
+            &backend_event_tx,
         )
         .await;
         loop {
@@ -494,8 +529,13 @@ fn run_backend(
                                 != new_config.audio.mic_source
                                 || previous.audio.latency_ms != new_config.audio.latency_ms;
                             if routing_changed {
-                                voice_session = None;
-                                voice_routing = false;
+                                stop_voice_session(
+                                    &previous,
+                                    &mut voice_session,
+                                    &mut voice_routing,
+                                    &backend_event_tx,
+                                )
+                                .await;
                             }
                             apply_runtime_config(
                                 &new_config,
@@ -522,6 +562,7 @@ fn run_backend(
                                 &mut voice_session,
                                 &mut voice_routing,
                                 voice_panel_visible,
+                                &backend_event_tx,
                             )
                             .await;
                         }
@@ -551,6 +592,7 @@ fn run_backend(
                                 &mut voice_session,
                                 &mut voice_routing,
                                 voice_panel_visible,
+                                &backend_event_tx,
                             )
                             .await;
                         }
@@ -561,6 +603,7 @@ fn run_backend(
                                 &mut voice_session,
                                 &mut voice_routing,
                                 voice_panel_visible,
+                                &backend_event_tx,
                             )
                             .await;
                         }
@@ -575,6 +618,7 @@ fn run_backend(
                                 &mut voice_session,
                                 &mut voice_routing,
                                 voice_panel_visible,
+                                &backend_event_tx,
                             )
                             .await;
                         }
@@ -588,6 +632,7 @@ fn run_backend(
                                 &mut voice_session,
                                 &mut voice_routing,
                                 voice_panel_visible,
+                                &backend_event_tx,
                             )
                             .await;
                         }
@@ -620,6 +665,23 @@ fn run_backend(
                                 player.active_session_count().await,
                             )
                             .await;
+                        }
+                        Some(BackendCommand::Shutdown) => {
+                            stop_voice_session(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_routing,
+                                &backend_event_tx,
+                            )
+                            .await;
+                            if let Err(err) = player.handle_command(PlayerCommand::StopAll).await
+                            {
+                                warn!("failed to stop playback on shutdown: {err:#}");
+                            }
+                            if let Err(err) = PipewireManager::teardown(&modules).await {
+                                warn!("PipeWire teardown on shutdown failed: {err:#}");
+                            }
+                            break;
                         }
                         None => break,
                     }

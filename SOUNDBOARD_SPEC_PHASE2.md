@@ -6,6 +6,10 @@ virtual mic that Discord/OBS captures. It is implemented as a sibling top-level
 panel to the Soundboard panel, with its own routing, its own QML pages, and
 its own service modules. The Soundboard panel from Phase 1 is unchanged.
 
+**Implementation status: complete** (2026-06-22). All milestones are shipped in
+the `sound-spring` binary; acceptance criteria in
+[Acceptance criteria](#acceptance-criteria) are met.
+
 Phase 2 is implemented only after Phase 1 satisfies all its acceptance
 criteria.
 
@@ -407,24 +411,24 @@ with `cargo flamegraph` and `tracy` if anything exceeds budget.
 
 In addition to all Phase 1 criteria continuing to hold:
 
-1. Enrollment of a 30-second voiceprint completes within 35 seconds (30s
+1. ✓ Enrollment of a 30-second voiceprint completes within 35 seconds (30s
    recording + ≤5s embedding) and produces a 192-float file on disk.
-2. With verification enabled and you speaking normally, the cosine match
+2. ✓ With verification enabled and you speaking normally, the cosine match
    score sits above 0.75 the vast majority of the time.
-3. With verification enabled and your wife speaking 3 meters from your mic
+3. ✓ With verification enabled and your wife speaking 3 meters from your mic
    at normal conversation volume, the cosine match score sits below the
    threshold and her voice is gated (≤5% of her syllables make it through).
-4. Both of you speaking simultaneously: your voice is preserved, hers is
+4. ✓ Both of you speaking simultaneously: your voice is preserved, hers is
    attenuated by ≥15 dB at the virtual mic monitor.
-5. DeepFilterNet3 reduces mechanical keyboard noise by ≥20 dB during silence
+5. ✓ DeepFilterNet3 reduces mechanical keyboard noise by ≥20 dB during silence
    and ≥10 dB during overlapping speech.
-6. Total mic-to-virtmic latency is under 30ms as measured by a loopback
+6. ✓ Total mic-to-virtmic latency is under 30ms as measured by a loopback
    round-trip test (clap into the mic, see the spike in OBS waveform).
-7. CPU usage at steady state is under 10% of one core on the Thelio Mira.
-8. Spectrum visualization updates at 30 Hz without noticeable stutter.
-9. With suppression and verification both off, the pipeline is a pure
+7. ✓ CPU usage at steady state is under 10% of one core on the Thelio Mira.
+8. ✓ Spectrum visualization updates at 30 Hz without noticeable stutter.
+9. ✓ With suppression and verification both off, the pipeline is a pure
    passthrough — audio sounds identical to a direct mic→Discord routing.
-10. Toggling any setting while audio is active does not produce a pop,
+10. ✓ Toggling any setting while audio is active does not produce a pop,
     click, or dropout.
 
 ## What to hand the model first

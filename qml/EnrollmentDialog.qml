@@ -10,9 +10,11 @@ Dialog {
     required property var controller
     property var theme
 
+    parent: Overlay.overlay
+    anchors.centerIn: parent
+
     title: "Enroll your voice"
     modal: true
-    anchors.centerIn: Overlay.overlay
     width: 560
     closePolicy: Popup.NoAutoClose
     standardButtons: Dialog.NoButton
@@ -126,28 +128,26 @@ Dialog {
                 }
             }
         }
+    }
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: 4
-            spacing: 8
+    footer: RowLayout {
+        spacing: 8
+        width: dlg.availableWidth
+        Item { Layout.fillWidth: true }
 
-            Item { Layout.fillWidth: true }
-
-            AppButton {
-                text: "Cancel"
-                onClicked: {
-                    dlg.controller.cancelEnrollment()
-                    dlg.close()
-                }
+        AppButton {
+            text: "Cancel"
+            onClicked: {
+                dlg.controller.cancelEnrollment()
+                dlg.close()
             }
+        }
 
-            AppButton {
-                text: dlg.recording ? "Recording…" : "Start recording"
-                role: "primary"
-                enabled: !dlg.recording
-                onClicked: dlg.controller.startEnrollment()
-            }
+        AppButton {
+            text: dlg.recording ? "Recording…" : "Start recording"
+            role: "primary"
+            enabled: !dlg.recording
+            onClicked: dlg.controller.startEnrollment()
         }
     }
 }

@@ -23,7 +23,7 @@ use anyhow::Result;
 use crossbeam_queue::ArrayQueue;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Capture sample rate (PipeWire mono f32).
 pub const CAPTURE_RATE: u32 = 48_000;
@@ -85,6 +85,11 @@ pub struct VoiceShared {
     enroll_progress: AtomicU32,
     /// Bumped each time an enrollment completes successfully.
     enroll_done_seq: AtomicU32,
+    /// Human-readable capture failure message for the Voice panel (empty when ok).
+    capture_error: Mutex<String>,
+    /// VAD open/close thresholds (f32 bits); hot-updated from the Voice panel.
+    vad_open: AtomicU32,
+    vad_close: AtomicU32,
 }
 
 impl VoiceShared {
@@ -104,6 +109,9 @@ impl VoiceShared {
             enroll_active: AtomicBool::new(false),
             enroll_progress: AtomicU32::new(0),
             enroll_done_seq: AtomicU32::new(0),
+            capture_error: Mutex::new(String::new()),
+            vad_open: AtomicU32::new(0.7_f32.to_bits()),
+            vad_close: AtomicU32::new(0.3_f32.to_bits()),
         }
     }
 
@@ -217,6 +225,40 @@ impl VoiceShared {
     pub fn enroll_done_seq(&self) -> u32 {
         self.enroll_done_seq.load(Ordering::Relaxed)
     }
+
+    /// Update capture status surfaced in the Voice panel.
+    pub fn set_capture_status(&self, active: bool, error: &str) {
+        self.capturing.store(active, Ordering::Relaxed);
+        if let Ok(mut msg) = self.capture_error.lock() {
+            *msg = error.to_string();
+        }
+    }
+
+    pub fn capture_error(&self) -> String {
+        self.capture_error
+            .lock()
+            .map(|msg| msg.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_vad_thresholds(&self, open: f32, close: f32) {
+        self.vad_open.store(open.to_bits(), Ordering::Relaxed);
+        self.vad_close.store(close.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn vad_thresholds(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.vad_open.load(Ordering::Relaxed)),
+            f32::from_bits(self.vad_close.load(Ordering::Relaxed)),
+        )
+    }
+}
+
+/// Hysteresis band below the open threshold (spec default: 0.7 open / 0.3 close).
+pub const VAD_CLOSE_OFFSET: f32 = 0.4;
+
+pub fn vad_close_for_open(open: f32) -> f32 {
+    (open - VAD_CLOSE_OFFSET).clamp(0.05, open)
 }
 
 static VOICE_SHARED: OnceLock<Arc<VoiceShared>> = OnceLock::new();
@@ -267,6 +309,7 @@ impl VoiceSession {
         let shared = voice_shared();
         shared.set_verification_enabled(params.verification_enabled);
         shared.set_match_threshold(params.match_threshold);
+        shared.set_vad_thresholds(params.vad_open, params.vad_close);
 
         let busy = Arc::new(AtomicBool::new(false));
         let (job_tx, job_rx) = std::sync::mpsc::channel::<embed_worker::EmbedJob>();
@@ -302,8 +345,8 @@ impl VoiceSession {
             out_producer,
             suppression,
         )?;
-        let capture = capture::Capture::start(&params.mic_source, producer)?;
-        shared.capturing.store(true, Ordering::Relaxed);
+        let capture = capture::Capture::start(&params.mic_source, producer, shared.clone())?;
+        shared.set_capture_status(true, "");
         Ok(Self {
             _capture: capture,
             _pipeline: pipeline,
@@ -316,7 +359,7 @@ impl VoiceSession {
 impl Drop for VoiceSession {
     fn drop(&mut self) {
         let shared = voice_shared();
-        shared.capturing.store(false, Ordering::Relaxed);
+        shared.set_capture_status(false, "");
         shared.set_vad(0.0, false);
         shared.set_passing(false);
         shared.set_enroll_active(false);

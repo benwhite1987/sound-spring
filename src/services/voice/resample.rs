@@ -38,7 +38,8 @@ impl Resampler {
 
     /// Feed 48 kHz mono samples; appends any produced 16 kHz samples to `out`.
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<()> {
-        self.pending.extend_from_slice(input);
+        self.pending
+            .extend(input.iter().map(|&s| if s.is_finite() { s } else { 0.0 }));
         while self.pending.len() >= self.chunk_in {
             let n = self.chunk_in;
             let (_, written) =
@@ -69,6 +70,27 @@ mod tests {
             "expected ~{expected} samples, got {}",
             out.len()
         );
+    }
+
+    #[test]
+    fn sanitizes_non_finite_samples() {
+        let mut resampler = Resampler::new().expect("resampler");
+        let hop = super::super::FFT_HOP;
+        let mut out = Vec::new();
+        for i in 0..200 {
+            let input: Vec<f32> = (0..hop)
+                .map(|j| {
+                    if (i + j) % 17 == 0 {
+                        f32::NAN
+                    } else if (i + j) % 23 == 0 {
+                        f32::INFINITY
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            resampler.process(&input, &mut out).expect("process");
+        }
     }
 
     #[test]

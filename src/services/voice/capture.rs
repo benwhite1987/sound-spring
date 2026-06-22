@@ -5,12 +5,14 @@
 use anyhow::{Context, Result};
 use rtrb::Producer;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use super::{CAPTURE_CHANNELS, CAPTURE_RATE};
+use super::{VoiceShared, CAPTURE_CHANNELS, CAPTURE_RATE};
 
 /// A live capture session. Dropping it kills the `pw-cat` child and aborts the
 /// reader task.
@@ -20,10 +22,11 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn start(mic_source: &str, producer: Producer<f32>) -> Result<Self> {
+    pub fn start(mic_source: &str, producer: Producer<f32>, shared: Arc<VoiceShared>) -> Result<Self> {
         let mut command = Command::new("pw-cat");
         command
             .arg("--record")
+            .arg("--raw")
             .arg("--rate")
             .arg(CAPTURE_RATE.to_string())
             .arg("--channels")
@@ -44,6 +47,7 @@ impl Capture {
             .take()
             .context("pw-cat --record missing stdout")?;
 
+        let shared = shared.clone();
         let reader = tokio::spawn(async move {
             let mut producer = producer;
             let mut reader = BufReader::new(stdout);
@@ -55,11 +59,21 @@ impl Capture {
                     Ok(n) => push_samples(&buf[..n], &mut carry, &mut producer),
                     Err(err) => {
                         warn!("voice capture read error: {err:#}");
+                        shared.set_capture_status(
+                            false,
+                            &format!("Microphone read error: {err:#}"),
+                        );
                         break;
                     }
                 }
             }
             debug!("voice capture reader task ended");
+            if shared.capturing.load(Ordering::Relaxed) {
+                shared.set_capture_status(
+                    false,
+                    "Microphone capture ended unexpectedly (check mic source in Settings)",
+                );
+            }
         });
 
         Ok(Self { child, reader })
@@ -85,7 +99,7 @@ fn push_samples(bytes: &[u8], carry: &mut Vec<u8>, producer: &mut Producer<f32>)
         offset = take;
         if carry.len() == 4 {
             let sample = f32::from_le_bytes([carry[0], carry[1], carry[2], carry[3]]);
-            let _ = producer.push(sample);
+            let _ = producer.push(if sample.is_finite() { sample } else { 0.0 });
             carry.clear();
         }
     }
@@ -93,7 +107,7 @@ fn push_samples(bytes: &[u8], carry: &mut Vec<u8>, producer: &mut Producer<f32>)
     let full = rest.len() / 4 * 4;
     for chunk in rest[..full].chunks_exact(4) {
         let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        let _ = producer.push(sample);
+        let _ = producer.push(if sample.is_finite() { sample } else { 0.0 });
     }
     carry.extend_from_slice(&rest[full..]);
 }

@@ -184,6 +184,8 @@ fn run(
 
             let active = match vad.as_mut() {
                 Some(vad) => {
+                    let (open, close) = shared.vad_thresholds();
+                    vad.set_thresholds(open, close);
                     let (prob, active) = vad.process(&resampled);
                     shared.set_vad(prob, active);
                     active

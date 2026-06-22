@@ -227,6 +227,9 @@ pub mod qobject {
             height: i32,
         );
 
+        #[qinvokable]
+        fn shutdown_backend(self: Pin<&mut SoundboardController>);
+
         #[qsignal]
         fn tabs_changed(self: Pin<&mut SoundboardController>);
 
@@ -287,6 +290,7 @@ pub enum BackendCommand {
     StopVoiceCapture,
     SetVoiceVerification { enabled: bool, threshold: f32 },
     SetVoiceSuppression { enabled: bool },
+    Shutdown,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +302,7 @@ pub enum BackendEvent {
     TabsChanged,
     MicSourcesUpdated,
     AudioSinksUpdated,
+    VoiceCaptureStatus { active: bool, error: String },
 }
 
 pub static BACKEND_TX: OnceLock<TokioSender<BackendCommand>> = OnceLock::new();
@@ -1040,6 +1045,12 @@ impl qobject::SoundboardController {
         self.as_mut().rust_mut().persist_session_on_quit(geometry);
     }
 
+    pub fn shutdown_backend(self: Pin<&mut Self>) {
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::Shutdown);
+        }
+    }
+
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
         self.as_mut().rust_mut().play_slot_internal(slot);
         self.as_mut().playing_state_changed();
@@ -1266,6 +1277,10 @@ impl qobject::SoundboardController {
                 }
                 BackendEvent::GlobalShortcutStatusChanged => {
                     Self::refresh_global_shortcuts_status(self.as_mut());
+                }
+                BackendEvent::VoiceCaptureStatus { active, error } => {
+                    crate::services::voice::voice_shared()
+                        .set_capture_status(active, &error);
                 }
             }
         }

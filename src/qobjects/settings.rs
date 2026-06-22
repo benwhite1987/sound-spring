@@ -164,12 +164,56 @@ impl SettingsRust {
     }
 }
 
+mod properties {
+    use super::qobject::Settings;
+    use core::pin::Pin;
+    use cxx_qt::CxxQtType;
+
+    pub fn sync_settings_properties(mut settings: Pin<&mut Settings>) {
+        let mic_source = settings.as_ref().rust().mic_source.clone();
+        let monitor_sink = settings.as_ref().rust().monitor_sink.clone();
+        let latency_ms = settings.as_ref().rust().latency_ms;
+        let auto_teardown = settings.as_ref().rust().auto_teardown;
+        let interruption_mode = settings.as_ref().rust().interruption_mode.clone();
+        let mute_mic_during_playback = settings.as_ref().rust().mute_mic_during_playback;
+        let tabs_root = settings.as_ref().rust().tabs_root.clone();
+        let state_dir = settings.as_ref().rust().state_dir.clone();
+        let shortcut_mode = settings.as_ref().rust().shortcut_mode.clone();
+        let ignore_numlock = settings.as_ref().rust().ignore_numlock;
+        let minimize_to_tray = settings.as_ref().rust().minimize_to_tray;
+        let launch_at_login = settings.as_ref().rust().launch_at_login;
+        let custom_tab_count = settings.as_ref().rust().custom_tab_count;
+        let status_message = settings.as_ref().rust().status_message.clone();
+        let shortcut_count = settings.as_ref().rust().shortcut_count;
+        settings.as_mut().set_mic_source(mic_source);
+        settings.as_mut().set_monitor_sink(monitor_sink);
+        settings.as_mut().set_latency_ms(latency_ms);
+        settings.as_mut().set_auto_teardown(auto_teardown);
+        settings
+            .as_mut()
+            .set_interruption_mode(interruption_mode);
+        settings
+            .as_mut()
+            .set_mute_mic_during_playback(mute_mic_during_playback);
+        settings.as_mut().set_tabs_root(tabs_root);
+        settings.as_mut().set_state_dir(state_dir);
+        settings.as_mut().set_shortcut_mode(shortcut_mode);
+        settings.as_mut().set_ignore_numlock(ignore_numlock);
+        settings.as_mut().set_minimize_to_tray(minimize_to_tray);
+        settings.as_mut().set_launch_at_login(launch_at_login);
+        settings.as_mut().set_custom_tab_count(custom_tab_count);
+        settings.as_mut().set_status_message(status_message);
+        settings.as_mut().set_shortcut_count(shortcut_count);
+    }
+}
+
 impl qobject::Settings {
     pub fn load_from_config(mut self: Pin<&mut Self>) {
         let config = config::load_config().unwrap_or_default();
         self.as_mut().rust_mut().apply_config_to_fields(&config);
         SoundboardControllerRust::sync_shortcut_bindings(&self.rust().shortcuts);
         self.as_mut().rust_mut().set_status("Settings loaded.");
+        properties::sync_settings_properties(self.as_mut());
     }
 
     pub fn apply(mut self: Pin<&mut Self>) {
@@ -187,11 +231,15 @@ impl qobject::Settings {
                     let _ = tx.blocking_send(BackendCommand::ApplyConfig(config));
                 }
                 self.as_mut().rust_mut().set_status(&status);
+                properties::sync_settings_properties(self.as_mut());
             }
-            Err(err) => self
-                .as_mut()
-                .rust_mut()
-                .set_status(&format!("Failed to save settings: {err:#}")),
+            Err(err) => {
+                self
+                    .as_mut()
+                    .rust_mut()
+                    .set_status(&format!("Failed to save settings: {err:#}"));
+                properties::sync_settings_properties(self.as_mut());
+            }
         }
     }
 
@@ -322,5 +370,6 @@ impl Constructor<()> for qobject::Settings {
     fn initialize(mut self: Pin<&mut Self>, (): ()) {
         let config = config::load_config().unwrap_or_default();
         self.as_mut().rust_mut().apply_config_to_fields(&config);
+        properties::sync_settings_properties(self.as_mut());
     }
 }

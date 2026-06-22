@@ -1,5 +1,11 @@
 #[cxx_qt::bridge]
 pub mod qobject {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+    }
+
+    #[auto_cxx_name]
     extern "RustQt" {
         #[qobject]
         #[qml_element]
@@ -14,7 +20,9 @@ pub mod qobject {
         #[qproperty(f32, enroll_progress)]
         #[qproperty(bool, verification_enabled)]
         #[qproperty(f32, match_threshold)]
+        #[qproperty(f32, vad_open_threshold)]
         #[qproperty(bool, suppression_enabled)]
+        #[qproperty(QString, capture_error)]
         type VoiceController = super::VoiceControllerRust;
 
         #[qinvokable]
@@ -37,6 +45,9 @@ pub mod qobject {
 
         #[qinvokable]
         fn set_threshold(self: Pin<&mut VoiceController>, threshold: f32);
+
+        #[qinvokable]
+        fn set_vad_threshold(self: Pin<&mut VoiceController>, open: f32);
 
         #[qinvokable]
         fn set_suppression(self: Pin<&mut VoiceController>, enabled: bool);
@@ -62,11 +73,12 @@ pub mod qobject {
 
 use core::pin::Pin;
 use cxx_qt::{Constructor, CxxQtType};
+use cxx_qt_lib::QString;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::qobjects::controller::{BackendCommand, BACKEND_TX};
-use crate::services::voice::{voice_shared, VoiceShared, SPECTRUM_BINS};
+use crate::services::voice::{vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS};
 
 pub struct VoiceControllerRust {
     spectrum_version: i32,
@@ -80,7 +92,9 @@ pub struct VoiceControllerRust {
     enroll_progress: f32,
     verification_enabled: bool,
     match_threshold: f32,
+    vad_open_threshold: f32,
     suppression_enabled: bool,
+    capture_error: QString,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
     last_enroll_done_seq: u32,
@@ -95,6 +109,10 @@ impl Default for VoiceControllerRust {
         shared.set_enrolled(enrolled);
         shared.set_verification_enabled(config.voice.verification_enabled);
         shared.set_match_threshold(config.voice.match_threshold);
+        shared.set_vad_thresholds(
+            config.voice.vad_open_threshold,
+            config.voice.vad_close_threshold,
+        );
         Self {
             spectrum_version: 0,
             is_capturing: false,
@@ -107,7 +125,9 @@ impl Default for VoiceControllerRust {
             enroll_progress: 0.0,
             verification_enabled: config.voice.verification_enabled,
             match_threshold: config.voice.match_threshold,
+            vad_open_threshold: config.voice.vad_open_threshold,
             suppression_enabled: config.voice.suppression_enabled,
+            capture_error: QString::from(""),
             shared,
             latest: vec![0.0; SPECTRUM_BINS],
             last_enroll_done_seq: shared_done_seq(),
@@ -139,6 +159,12 @@ impl qobject::VoiceController {
         let capturing = self.rust().shared.capturing.load(Ordering::Relaxed);
         if capturing != self.rust().is_capturing {
             self.as_mut().set_is_capturing(capturing);
+        }
+
+        let error = self.rust().shared.capture_error();
+        let error_q = QString::from(error.as_str());
+        if error_q != self.rust().capture_error {
+            self.as_mut().set_capture_error(error_q);
         }
 
         let (probability, speaking) = self.rust().shared.vad_state();
@@ -227,6 +253,14 @@ impl qobject::VoiceController {
         persist_verification(self.rust().verification_enabled, threshold);
     }
 
+    pub fn set_vad_threshold(mut self: Pin<&mut Self>, open: f32) {
+        let open = open.clamp(0.05, 0.95);
+        let close = vad_close_for_open(open);
+        self.rust().shared.set_vad_thresholds(open, close);
+        self.as_mut().set_vad_open_threshold(open);
+        persist_vad_threshold(open, close);
+    }
+
     pub fn set_suppression(mut self: Pin<&mut Self>, enabled: bool) {
         self.as_mut().set_suppression_enabled(enabled);
         if let Some(tx) = BACKEND_TX.get() {
@@ -234,16 +268,22 @@ impl qobject::VoiceController {
         }
     }
 
-    pub fn start_enrollment(self: Pin<&mut Self>) {
+    pub fn start_enrollment(mut self: Pin<&mut Self>) {
         // Enrollment needs a live capture; ensure it is running.
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::StartVoiceCapture);
         }
         self.rust().shared.request_enroll_start();
+        self.as_mut().set_enroll_active(true);
+        self.as_mut().set_enroll_progress(0.0);
+        self.as_mut().rust_mut().last_progress_percent = 0;
     }
 
-    pub fn cancel_enrollment(self: Pin<&mut Self>) {
+    pub fn cancel_enrollment(mut self: Pin<&mut Self>) {
         self.rust().shared.request_enroll_cancel();
+        self.as_mut().set_enroll_active(false);
+        self.as_mut().set_enroll_progress(0.0);
+        self.as_mut().rust_mut().last_progress_percent = 0;
     }
 
     pub fn clear_enrollment(mut self: Pin<&mut Self>) {
@@ -263,8 +303,26 @@ impl qobject::VoiceController {
 }
 
 fn persist_verification(enabled: bool, threshold: f32) {
+    let mut config = crate::config::load_config().unwrap_or_default();
+    config.voice.verification_enabled = enabled;
+    config.voice.match_threshold = threshold;
+    if let Err(err) = crate::config::save_config(&config) {
+        tracing::warn!("failed to persist voice verification settings: {err:#}");
+    }
     if let Some(tx) = BACKEND_TX.get() {
-        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification { enabled, threshold });
+        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification {
+            enabled,
+            threshold,
+        });
+    }
+}
+
+fn persist_vad_threshold(open: f32, close: f32) {
+    let mut config = crate::config::load_config().unwrap_or_default();
+    config.voice.vad_open_threshold = open;
+    config.voice.vad_close_threshold = close;
+    if let Err(err) = crate::config::save_config(&config) {
+        tracing::warn!("failed to persist VAD threshold: {err:#}");
     }
 }
 

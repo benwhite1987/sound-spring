@@ -66,9 +66,22 @@ Item {
             Label {
                 text: {
                     voiceController.spectrumVersion
-                    return voiceController.isCapturing ? "Listening to microphone" : "Capture idle"
+                    var err = voiceController.captureError
+                    if (err && err.length > 0)
+                        return err
+                    return voiceController.isCapturing
+                           ? "Listening to microphone"
+                           : "Capture idle"
                 }
-                color: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
+                color: {
+                    voiceController.spectrumVersion
+                    var err = voiceController.captureError
+                    if (err && err.length > 0)
+                        return voicePanel.theme ? voicePanel.theme.danger : "#c62828"
+                    return voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
+                }
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
             Item { Layout.fillWidth: true }
         }
@@ -105,14 +118,29 @@ Item {
                            ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
                            : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
                 }
-                // Open-threshold marker (matches [voice] vad_open_threshold default 0.7).
+                // Open-threshold marker (follows the slider).
                 Rectangle {
                     width: 2
                     height: parent.height
-                    x: parent.width * 0.7
+                    x: parent.width * voiceController.vadOpenThreshold
                     color: voicePanel.theme ? voicePanel.theme.warningAccent : "#ffb74d"
                     opacity: 0.8
                 }
+            }
+
+            Label {
+                Layout.preferredWidth: 36
+                text: voiceController.vadOpenThreshold.toFixed(2)
+                color: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
+            }
+
+            Slider {
+                id: vadThresholdSlider
+                Layout.preferredWidth: 120
+                from: 0.05
+                to: 0.95
+                value: voiceController.vadOpenThreshold
+                onMoved: voiceController.setVadThreshold(value)
             }
 
             Label {

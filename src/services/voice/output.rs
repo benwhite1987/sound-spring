@@ -7,18 +7,17 @@
 use anyhow::{Context, Result};
 use rtrb::Consumer;
 use std::process::Stdio;
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 
 use super::{CAPTURE_CHANNELS, CAPTURE_RATE};
 
-/// A live playback session. Dropping it kills the `pw-cat` child and aborts the
-/// writer task.
+/// A live playback session. Dropping it aborts the writer task (and its `pw-cat`
+/// child).
 pub struct Output {
-    child: Child,
     writer: JoinHandle<()>,
 }
 
@@ -28,6 +27,7 @@ impl Output {
         let mut command = Command::new("pw-cat");
         command
             .arg("--playback")
+            .arg("--raw")
             .arg("--rate")
             .arg(CAPTURE_RATE.to_string())
             .arg("--channels")
@@ -41,19 +41,35 @@ impl Output {
             .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
 
         let mut child = command.spawn().context("spawn pw-cat --playback")?;
         let stdin = child
             .stdin
             .take()
             .context("pw-cat --playback missing stdin")?;
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.is_empty() {
+                        warn!("pw-cat playback: {line}");
+                    }
+                }
+            });
+        }
 
         let writer = tokio::spawn(async move {
+            let mut child = child;
             let mut consumer = consumer;
             let mut stdin = BufWriter::new(stdin);
             let mut bytes: Vec<u8> = Vec::with_capacity(4096);
             loop {
+                if let Ok(Some(status)) = child.try_wait() {
+                    warn!("pw-cat playback exited: {status}");
+                    break;
+                }
+
                 bytes.clear();
                 while let Ok(sample) = consumer.pop() {
                     bytes.extend_from_slice(&sample.to_le_bytes());
@@ -75,13 +91,12 @@ impl Output {
             debug!("voice output writer task ended");
         });
 
-        Ok(Self { child, writer })
+        Ok(Self { writer })
     }
 }
 
 impl Drop for Output {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
         self.writer.abort();
     }
 }

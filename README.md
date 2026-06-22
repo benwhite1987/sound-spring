@@ -135,7 +135,7 @@ Removes scripts, systemd service, PipeWire modules, and runtime state. Tab audio
 
 ## GUI application
 
-The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `state.json`). See [`SOUNDBOARD_SPEC.md`](SOUNDBOARD_SPEC.md) for the full specification — **implementation is complete** (all acceptance criteria met).
+The Rust/Qt GUI shares config and state with the bash layer (`config.toml`, `state.json`). See [`SOUNDBOARD_SPEC.md`](SOUNDBOARD_SPEC.md) for the soundboard specification — **Phase 1 implementation is complete** (all acceptance criteria met). The **Voice** enhancement panel ([`SOUNDBOARD_SPEC_PHASE2.md`](SOUNDBOARD_SPEC_PHASE2.md)) is also complete: live spectrum, Silero VAD, ECAPA speaker verification and enrollment, DeepFilterNet3 noise suppression, and routed output to the virtual mic.
 
 **Requirements:** Rust (rustup), Qt 6 (`qmake6`), PipeWire, `paplay`, and optionally `ffmpeg` for MP3.
 
@@ -210,9 +210,10 @@ respect.
 
 Open **Settings** (⚙ in the header) to change mic source, paths, custom tab folders, and shortcut bindings.
 
-See [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) for the full roadmap.
+See [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) for the soundboard specification and [SOUNDBOARD_SPEC_PHASE2.md](SOUNDBOARD_SPEC_PHASE2.md) for the Voice enhancement panel.
 
 ## See also
 
 - [PROJECT.md](PROJECT.md) — bash layer architecture and manual PipeWire commands
-- [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) — full application specification
+- [SOUNDBOARD_SPEC.md](SOUNDBOARD_SPEC.md) — soundboard application specification
+- [SOUNDBOARD_SPEC_PHASE2.md](SOUNDBOARD_SPEC_PHASE2.md) — Voice enhancement panel specification

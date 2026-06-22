@@ -80,6 +80,7 @@ ApplicationWindow {
     }
 
     function quitApplication() {
+        controller.shutdownBackend()
         controller.saveSessionOnQuit(root.x, root.y, root.width, root.height)
         if (SystemTray.available)
             SystemTray.visible = false
