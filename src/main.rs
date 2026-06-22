@@ -140,6 +140,10 @@ async fn sync_mic_mute_for_playback(config: &Config, active_sessions: usize) {
     }
 }
 
+fn sync_sfx_mix_for_playback(active_sessions: usize) {
+    voice_shared().set_sfx_mix_enabled(active_sessions > 0);
+}
+
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
@@ -721,6 +725,7 @@ fn run_backend(
                                 player.active_session_count().await,
                             )
                             .await;
+                            sync_sfx_mix_for_playback(player.active_session_count().await);
                         }
                         Some(BackendCommand::Shutdown) => {
                             stop_voice_session(
@@ -764,6 +769,7 @@ fn run_backend(
                             player.active_session_count().await,
                         )
                         .await;
+                        sync_sfx_mix_for_playback(player.active_session_count().await);
                     }
                 }
             }

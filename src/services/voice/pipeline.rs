@@ -46,7 +46,6 @@ impl VoicePipeline {
         job_tx: Sender<EmbedJob>,
         busy: Arc<AtomicBool>,
         output: Option<Producer<f32>>,
-        mix_mic: Option<Producer<f32>>,
         suppression: bool,
     ) -> Result<Self> {
         let resampler = Resampler::new()?;
@@ -64,7 +63,6 @@ impl VoicePipeline {
                     job_tx,
                     busy,
                     output,
-                    mix_mic,
                     suppression,
                     thread_stop,
                 )
@@ -95,7 +93,6 @@ fn run(
     job_tx: Sender<EmbedJob>,
     busy: Arc<AtomicBool>,
     mut output: Option<Producer<f32>>,
-    mut mix_mic: Option<Producer<f32>>,
     suppression: bool,
     stop: Arc<AtomicBool>,
 ) {
@@ -263,9 +260,6 @@ fn run(
                 if let Some(out) = output.as_mut() {
                     let _ = out.push(gated);
                 }
-                if let Some(mix) = mix_mic.as_mut() {
-                    let _ = mix.push(gated);
-                }
                 filtered_window.push(gated);
             }
 
@@ -273,7 +267,11 @@ fn run(
                 let magnitudes = filtered_analyzer
                     .analyze(&filtered_window[..FFT_SIZE])
                     .to_vec();
-                shared.spectrum_filtered.force_push(magnitudes);
+                shared.set_latest_filtered(&magnitudes);
+                shared.spectrum_filtered.force_push(magnitudes.clone());
+                if !shared.sfx_mix_enabled() {
+                    shared.spectrum_mixed.force_push(magnitudes);
+                }
                 filtered_window.drain(..FFT_HOP);
             }
 

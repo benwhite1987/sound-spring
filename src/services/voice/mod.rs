@@ -104,6 +104,10 @@ pub struct VoiceShared {
     vad_enabled: AtomicBool,
     /// Active spectrum display source (0=raw, 1=filtered, 2=mixed).
     spectrum_source: AtomicU8,
+    /// Latest filtered magnitude frame for magnitude-domain mixed spectrum.
+    latest_filtered: Mutex<Vec<f32>>,
+    /// When false, mixed spectrum mirrors filtered (no SFX monitor contribution).
+    sfx_mix_enabled: AtomicBool,
 }
 
 impl VoiceShared {
@@ -130,6 +134,8 @@ impl VoiceShared {
             vad_close: AtomicU32::new(0.3_f32.to_bits()),
             vad_enabled: AtomicBool::new(true),
             spectrum_source: AtomicU8::new(SPECTRUM_SOURCE_RAW),
+            latest_filtered: Mutex::new(vec![0.0; SPECTRUM_BINS]),
+            sfx_mix_enabled: AtomicBool::new(false),
         }
     }
 
@@ -287,6 +293,31 @@ impl VoiceShared {
     pub fn spectrum_source(&self) -> u8 {
         self.spectrum_source.load(Ordering::Relaxed)
     }
+
+    pub fn set_latest_filtered(&self, magnitudes: &[f32]) {
+        if let Ok(mut latest) = self.latest_filtered.lock() {
+            if latest.len() != magnitudes.len() {
+                *latest = magnitudes.to_vec();
+            } else {
+                latest.copy_from_slice(magnitudes);
+            }
+        }
+    }
+
+    pub fn latest_filtered_snapshot(&self) -> Vec<f32> {
+        self.latest_filtered
+            .lock()
+            .map(|latest| latest.clone())
+            .unwrap_or_else(|_| vec![0.0; SPECTRUM_BINS])
+    }
+
+    pub fn set_sfx_mix_enabled(&self, enabled: bool) {
+        self.sfx_mix_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn sfx_mix_enabled(&self) -> bool {
+        self.sfx_mix_enabled.load(Ordering::Relaxed)
+    }
 }
 
 /// Map a config/UI spectrum source string to [`SPECTRUM_SOURCE_*`].
@@ -385,7 +416,6 @@ impl VoiceSession {
 
         // Denoise runs whenever suppression is enabled (including visualization-only).
         let suppression = params.suppression;
-        let (mix_mic_producer, mix_mic_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
             consumer,
@@ -395,7 +425,6 @@ impl VoiceSession {
             job_tx,
             busy,
             out_producer,
-            Some(mix_mic_producer),
             suppression,
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer, Some(shared.clone()))?;
@@ -410,8 +439,7 @@ impl VoiceSession {
                     None
                 }
             };
-            let mix_spec =
-                mix_spectrum::MixSpectrum::spawn(mix_mic_consumer, Some(sfx_consumer), shared.clone())?;
+            let mix_spec = mix_spectrum::MixSpectrum::spawn(Some(sfx_consumer), shared.clone())?;
             (sfx_cap, Some(mix_spec))
         };
 
