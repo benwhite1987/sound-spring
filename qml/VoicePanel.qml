@@ -300,11 +300,10 @@ Item {
             wrapMode: Text.WordWrap
             font.pixelSize: 12
             color: voicePanel.theme ? voicePanel.theme.textMuted : "#888892"
-            text: "The spectrum turns green while your voice passes the gate (speech " +
-                  "detected and, when verification is on, matched to your enrolled " +
-                  "voiceprint). With verification on, only matched speech is sent to " +
-                  "the virtual mic; noise suppression cleans whatever is sent. Both " +
-                  "keep running in the background once enabled."
+            text: "Bar height shows level per frequency band; color runs green (quiet) " +
+                  "through yellow to red (loud). With verification on, only matched " +
+                  "speech is sent to the virtual mic; noise suppression cleans whatever " +
+                  "is sent. Both keep running in the background once enabled."
         }
 
         Item { Layout.fillHeight: true }
