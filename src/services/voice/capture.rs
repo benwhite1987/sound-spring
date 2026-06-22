@@ -22,7 +22,11 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn start(mic_source: &str, producer: Producer<f32>, shared: Arc<VoiceShared>) -> Result<Self> {
+    pub fn start(
+        mic_source: &str,
+        producer: Producer<f32>,
+        status: Option<Arc<VoiceShared>>,
+    ) -> Result<Self> {
         let mut command = Command::new("pw-cat");
         command
             .arg("--record")
@@ -47,7 +51,7 @@ impl Capture {
             .take()
             .context("pw-cat --record missing stdout")?;
 
-        let shared = shared.clone();
+        let status = status.clone();
         let reader = tokio::spawn(async move {
             let mut producer = producer;
             let mut reader = BufReader::new(stdout);
@@ -59,20 +63,24 @@ impl Capture {
                     Ok(n) => push_samples(&buf[..n], &mut carry, &mut producer),
                     Err(err) => {
                         warn!("voice capture read error: {err:#}");
-                        shared.set_capture_status(
-                            false,
-                            &format!("Microphone read error: {err:#}"),
-                        );
+                        if let Some(shared) = &status {
+                            shared.set_capture_status(
+                                false,
+                                &format!("Microphone read error: {err:#}"),
+                            );
+                        }
                         break;
                     }
                 }
             }
             debug!("voice capture reader task ended");
-            if shared.capturing.load(Ordering::Relaxed) {
-                shared.set_capture_status(
-                    false,
-                    "Microphone capture ended unexpectedly (check mic source in Settings)",
-                );
+            if let Some(shared) = &status {
+                if shared.capturing.load(Ordering::Relaxed) {
+                    shared.set_capture_status(
+                        false,
+                        "Microphone capture ended unexpectedly (check mic source in Settings)",
+                    );
+                }
             }
         });
 

@@ -22,6 +22,9 @@ pub mod qobject {
         #[qproperty(f32, match_threshold)]
         #[qproperty(f32, vad_open_threshold)]
         #[qproperty(bool, suppression_enabled)]
+        #[qproperty(bool, vad_enabled)]
+        #[qproperty(bool, mic_muted)]
+        #[qproperty(QString, spectrum_source)]
         #[qproperty(QString, capture_error)]
         type VoiceController = super::VoiceControllerRust;
 
@@ -53,6 +56,18 @@ pub mod qobject {
         fn set_suppression(self: Pin<&mut VoiceController>, enabled: bool);
 
         #[qinvokable]
+        fn persist_vad_enabled(self: Pin<&mut VoiceController>, enabled: bool);
+
+        #[qinvokable]
+        fn toggle_mic_mute(self: Pin<&mut VoiceController>);
+
+        #[qinvokable]
+        fn persist_mic_muted(self: Pin<&mut VoiceController>, muted: bool);
+
+        #[qinvokable]
+        fn persist_spectrum_source(self: Pin<&mut VoiceController>, source: QString);
+
+        #[qinvokable]
         fn start_enrollment(self: Pin<&mut VoiceController>);
 
         #[qinvokable]
@@ -78,7 +93,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::qobjects::controller::{BackendCommand, BACKEND_TX};
-use crate::services::voice::{vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS};
+use crate::services::voice::{
+    spectrum_source_from_str, vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS,
+};
 
 pub struct VoiceControllerRust {
     spectrum_version: i32,
@@ -94,6 +111,9 @@ pub struct VoiceControllerRust {
     match_threshold: f32,
     vad_open_threshold: f32,
     suppression_enabled: bool,
+    vad_enabled: bool,
+    mic_muted: bool,
+    spectrum_source: QString,
     capture_error: QString,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
@@ -113,6 +133,8 @@ impl Default for VoiceControllerRust {
             config.voice.vad_open_threshold,
             config.voice.vad_close_threshold,
         );
+        shared.set_vad_enabled(config.voice.vad_enabled);
+        shared.set_spectrum_source(spectrum_source_from_str(&config.voice.spectrum_source));
         Self {
             spectrum_version: 0,
             is_capturing: false,
@@ -127,6 +149,9 @@ impl Default for VoiceControllerRust {
             match_threshold: config.voice.match_threshold,
             vad_open_threshold: config.voice.vad_open_threshold,
             suppression_enabled: config.voice.suppression_enabled,
+            vad_enabled: config.voice.vad_enabled,
+            mic_muted: config.audio.mic_muted,
+            spectrum_source: QString::from(config.voice.spectrum_source.as_str()),
             capture_error: QString::from(""),
             shared,
             latest: vec![0.0; SPECTRUM_BINS],
@@ -210,7 +235,12 @@ impl qobject::VoiceController {
         }
 
         let mut newest: Option<Vec<f32>> = None;
-        while let Some(frame) = self.rust().shared.spectrum.pop() {
+        let queue = match self.rust().spectrum_source.to_string().as_str() {
+            "filtered" => &self.rust().shared.spectrum_filtered,
+            "mixed" => &self.rust().shared.spectrum_mixed,
+            _ => &self.rust().shared.spectrum,
+        };
+        while let Some(frame) = queue.pop() {
             newest = Some(frame);
         }
         if let Some(frame) = newest {
@@ -265,6 +295,39 @@ impl qobject::VoiceController {
         self.as_mut().set_suppression_enabled(enabled);
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::SetVoiceSuppression { enabled });
+        }
+    }
+
+    pub fn persist_vad_enabled(mut self: Pin<&mut Self>, enabled: bool) {
+        self.rust().shared.set_vad_enabled(enabled);
+        self.as_mut().set_vad_enabled(enabled);
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::SetVoiceVad { enabled });
+        }
+    }
+
+    pub fn toggle_mic_mute(mut self: Pin<&mut Self>) {
+        let muted = !self.rust().mic_muted;
+        self.as_mut().persist_mic_muted(muted);
+    }
+
+    pub fn persist_mic_muted(mut self: Pin<&mut Self>, muted: bool) {
+        self.as_mut().set_mic_muted(muted);
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::SetMicMute { muted });
+        }
+    }
+
+    pub fn persist_spectrum_source(mut self: Pin<&mut Self>, source: QString) {
+        let source_str = source.to_string();
+        self.rust()
+            .shared
+            .set_spectrum_source(spectrum_source_from_str(&source_str));
+        self.as_mut().set_spectrum_source(source);
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::SetSpectrumSource {
+                source: source_str,
+            });
         }
     }
 

@@ -50,6 +50,9 @@ pub struct AudioConfig {
     pub interruption_mode: String,
     #[serde(default)]
     pub mute_mic_during_playback: bool,
+    /// User-requested mute of the configured mic source (Voice panel).
+    #[serde(default)]
+    pub mic_muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +104,11 @@ pub struct VoiceConfig {
     pub enrollment_path: String,
     #[serde(default = "default_spectrum_fps")]
     pub spectrum_fps: u32,
+    #[serde(default = "default_true")]
+    pub vad_enabled: bool,
+    /// Spectrum display source: `raw`, `filtered`, or `mixed`.
+    #[serde(default = "default_spectrum_source")]
+    pub spectrum_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +137,7 @@ impl Default for AudioConfig {
             monitor_muted: false,
             interruption_mode: default_interruption_mode(),
             mute_mic_during_playback: false,
+            mic_muted: false,
         }
     }
 }
@@ -173,8 +182,14 @@ impl Default for VoiceConfig {
             vad_close_threshold: default_vad_close_threshold(),
             enrollment_path: default_enrollment_path(),
             spectrum_fps: default_spectrum_fps(),
+            vad_enabled: true,
+            spectrum_source: default_spectrum_source(),
         }
     }
+}
+
+fn default_spectrum_source() -> String {
+    "raw".into()
 }
 
 fn default_suppression_model() -> String {

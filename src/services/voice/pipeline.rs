@@ -101,7 +101,7 @@ fn run(
     let mut gate_gain: f32 = 0.0;
     // DeepFilterNet3 denoiser for the routed output path. A load failure
     // degrades to passthrough (gating still works, just without suppression).
-    let mut denoiser = if suppression && output.is_some() {
+    let mut denoiser = if suppression {
         match Denoiser::new() {
             Ok(d) => Some(d),
             Err(err) => {
@@ -114,6 +114,8 @@ fn run(
     };
     // Reused scratch for denoised (or passthrough) output samples.
     let mut out_scratch: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
+    let mut filtered_analyzer = SpectrumAnalyzer::new();
+    let mut filtered_window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
     // A VAD failure (e.g. ONNX runtime unavailable) degrades to spectrum-only;
     // verification then runs ungated.
     let mut vad = match Vad::new(vad_open, vad_close) {
@@ -182,18 +184,24 @@ fn run(
                 continue;
             }
 
-            let active = match vad.as_mut() {
-                Some(vad) => {
-                    let (open, close) = shared.vad_thresholds();
-                    vad.set_thresholds(open, close);
-                    let (prob, active) = vad.process(&resampled);
-                    shared.set_vad(prob, active);
-                    active
+            let vad_on = shared.vad_enabled();
+            let active = if vad_on {
+                match vad.as_mut() {
+                    Some(vad) => {
+                        let (open, close) = shared.vad_thresholds();
+                        vad.set_thresholds(open, close);
+                        let (prob, active) = vad.process(&resampled);
+                        shared.set_vad(prob, active);
+                        active
+                    }
+                    None => false,
                 }
-                None => false,
+            } else {
+                shared.set_vad(0.0, false);
+                false
             };
-            // When VAD is unavailable we can't gate, so treat audio as voiced.
-            let voiced = active || !vad_available;
+            // When VAD is unavailable or disabled we can't gate on speech.
+            let voiced = active || !vad_available || !vad_on;
 
             if enrolling {
                 enroll_buf.extend_from_slice(&resampled);
@@ -228,34 +236,39 @@ fn run(
             };
             shared.set_passing(passing);
 
-            // Feed the processed mic into the output sink. The FFT_HOP samples
-            // about to leave `window` are the contiguous, write-once stream:
-            // denoise first (so DeepFilterNet sees continuous audio and keeps a
-            // stable noise estimate), then apply the gate gain. The gate only
-            // closes under verification; suppression-only routing passes
-            // everything (just cleaned). Ramp the gain to avoid clicks.
-            if let Some(out) = output.as_mut() {
-                let gate_open = if verifying {
-                    voiced && shared.speaker_state().1
-                } else {
-                    true
-                };
-                let target = if gate_open { 1.0 } else { 0.0 };
+            // Denoise then gate — same path for virtmic output and filtered spectrum.
+            let gate_open = if verifying {
+                voiced && shared.speaker_state().1
+            } else {
+                true
+            };
+            let target = if gate_open { 1.0 } else { 0.0 };
 
-                out_scratch.clear();
-                match denoiser.as_mut() {
-                    Some(d) => d.process(&window[..FFT_HOP], &mut out_scratch),
-                    None => out_scratch.extend_from_slice(&window[..FFT_HOP]),
-                }
+            out_scratch.clear();
+            match denoiser.as_mut() {
+                Some(d) => d.process(&window[..FFT_HOP], &mut out_scratch),
+                None => out_scratch.extend_from_slice(&window[..FFT_HOP]),
+            }
 
-                for &sample in &out_scratch {
-                    if gate_gain < target {
-                        gate_gain = (gate_gain + GATE_STEP).min(target);
-                    } else if gate_gain > target {
-                        gate_gain = (gate_gain - GATE_STEP).max(target);
-                    }
-                    let _ = out.push(sample * gate_gain);
+            for &sample in &out_scratch {
+                if gate_gain < target {
+                    gate_gain = (gate_gain + GATE_STEP).min(target);
+                } else if gate_gain > target {
+                    gate_gain = (gate_gain - GATE_STEP).max(target);
                 }
+                let gated = sample * gate_gain;
+                if let Some(out) = output.as_mut() {
+                    let _ = out.push(gated);
+                }
+                filtered_window.push(gated);
+            }
+
+            while filtered_window.len() >= FFT_SIZE {
+                let magnitudes = filtered_analyzer
+                    .analyze(&filtered_window[..FFT_SIZE])
+                    .to_vec();
+                shared.spectrum_filtered.force_push(magnitudes);
+                filtered_window.drain(..FFT_HOP);
             }
 
             window.drain(..FFT_HOP);

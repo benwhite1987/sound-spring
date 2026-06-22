@@ -11,6 +11,7 @@ pub mod capture;
 pub mod denoise;
 pub mod embed_worker;
 pub mod embedding;
+pub mod mix_spectrum;
 pub mod output;
 pub mod pipeline;
 pub mod resample;
@@ -53,11 +54,20 @@ pub const ENROLL_CMD_START: u8 = 1;
 pub const ENROLL_CMD_CANCEL: u8 = 2;
 pub const ENROLL_CMD_CLEAR: u8 = 3;
 
+/// Spectrum display source codes for [`VoiceShared::spectrum_source`].
+pub const SPECTRUM_SOURCE_RAW: u8 = 0;
+pub const SPECTRUM_SOURCE_FILTERED: u8 = 1;
+pub const SPECTRUM_SOURCE_MIXED: u8 = 2;
+
 /// Shared, lock-light state bridging the audio thread, the embedding worker, and
 /// the Qt-side `VoiceController`.
 pub struct VoiceShared {
-    /// Latest spectrum frames (length [`SPECTRUM_BINS`]), newest wins.
+    /// Latest raw capture spectrum frames (length [`SPECTRUM_BINS`]), newest wins.
     pub spectrum: ArrayQueue<Vec<f32>>,
+    /// Post-denoise × gate spectrum frames for the filtered view.
+    pub spectrum_filtered: ArrayQueue<Vec<f32>>,
+    /// Virtmic monitor mix spectrum frames (mic + soundboard).
+    pub spectrum_mixed: ArrayQueue<Vec<f32>>,
     /// Whether a capture session is currently running.
     pub capturing: AtomicBool,
     /// Latest VAD speech probability (0..1) stored as `f32` bits.
@@ -90,12 +100,18 @@ pub struct VoiceShared {
     /// VAD open/close thresholds (f32 bits); hot-updated from the Voice panel.
     vad_open: AtomicU32,
     vad_close: AtomicU32,
+    /// When false, VAD inference is skipped and all audio is treated as voiced.
+    vad_enabled: AtomicBool,
+    /// Active spectrum display source (0=raw, 1=filtered, 2=mixed).
+    spectrum_source: AtomicU8,
 }
 
 impl VoiceShared {
     fn new() -> Self {
         Self {
             spectrum: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
+            spectrum_filtered: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
+            spectrum_mixed: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
             capturing: AtomicBool::new(false),
             vad_probability: AtomicU32::new(0),
             speech_active: AtomicBool::new(false),
@@ -112,6 +128,8 @@ impl VoiceShared {
             capture_error: Mutex::new(String::new()),
             vad_open: AtomicU32::new(0.7_f32.to_bits()),
             vad_close: AtomicU32::new(0.3_f32.to_bits()),
+            vad_enabled: AtomicBool::new(true),
+            spectrum_source: AtomicU8::new(SPECTRUM_SOURCE_RAW),
         }
     }
 
@@ -252,6 +270,32 @@ impl VoiceShared {
             f32::from_bits(self.vad_close.load(Ordering::Relaxed)),
         )
     }
+
+    pub fn set_vad_enabled(&self, enabled: bool) {
+        self.vad_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn vad_enabled(&self) -> bool {
+        self.vad_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_spectrum_source(&self, source: u8) {
+        self.spectrum_source
+            .store(source.min(2), Ordering::Relaxed);
+    }
+
+    pub fn spectrum_source(&self) -> u8 {
+        self.spectrum_source.load(Ordering::Relaxed)
+    }
+}
+
+/// Map a config/UI spectrum source string to [`SPECTRUM_SOURCE_*`].
+pub fn spectrum_source_from_str(s: &str) -> u8 {
+    match s {
+        "filtered" => SPECTRUM_SOURCE_FILTERED,
+        "mixed" => SPECTRUM_SOURCE_MIXED,
+        _ => SPECTRUM_SOURCE_RAW,
+    }
 }
 
 /// Hysteresis band below the open threshold (spec default: 0.7 open / 0.3 close).
@@ -287,7 +331,11 @@ pub struct VoiceParams {
     pub output_sink: String,
     /// Apply DeepFilterNet3 noise suppression on the routed output path.
     pub suppression: bool,
+    /// When false, VAD inference is skipped and all audio is treated as voiced.
+    pub vad_enabled: bool,
 }
+
+use crate::services::pipewire::VIRTMIC_SINK;
 
 /// A running capture + processing session. Dropping it tears everything down:
 /// the `pw-cat` child is killed, the reader task aborted, the audio thread
@@ -300,6 +348,8 @@ pub struct VoiceSession {
     _pipeline: pipeline::VoicePipeline,
     // Dropped after the pipeline so its producer is gone before the writer dies.
     _output: Option<output::Output>,
+    _mix_capture: Option<capture::Capture>,
+    _mix_spectrum: Option<mix_spectrum::MixSpectrum>,
     _embed: embed_worker::EmbedWorker,
 }
 
@@ -310,6 +360,7 @@ impl VoiceSession {
         shared.set_verification_enabled(params.verification_enabled);
         shared.set_match_threshold(params.match_threshold);
         shared.set_vad_thresholds(params.vad_open, params.vad_close);
+        shared.set_vad_enabled(params.vad_enabled);
 
         let busy = Arc::new(AtomicBool::new(false));
         let (job_tx, job_rx) = std::sync::mpsc::channel::<embed_worker::EmbedJob>();
@@ -332,8 +383,8 @@ impl VoiceSession {
             (None, None)
         };
 
-        // Denoise only matters on the routed output path.
-        let suppression = params.suppression && out_producer.is_some();
+        // Denoise runs whenever suppression is enabled (including visualization-only).
+        let suppression = params.suppression;
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
             consumer,
@@ -345,12 +396,30 @@ impl VoiceSession {
             out_producer,
             suppression,
         )?;
-        let capture = capture::Capture::start(&params.mic_source, producer, shared.clone())?;
+        let capture = capture::Capture::start(&params.mic_source, producer, Some(shared.clone()))?;
+
+        let (mix_capture, mix_spectrum) = {
+            let (mix_producer, mix_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            let monitor = format!("{VIRTMIC_SINK}.monitor");
+            match capture::Capture::start(&monitor, mix_producer, None) {
+                Ok(mix_cap) => {
+                    let mix_spec = mix_spectrum::MixSpectrum::spawn(mix_consumer, shared.clone())?;
+                    (Some(mix_cap), Some(mix_spec))
+                }
+                Err(err) => {
+                    tracing::debug!("virtmic monitor capture unavailable: {err:#}");
+                    (None, None)
+                }
+            }
+        };
+
         shared.set_capture_status(true, "");
         Ok(Self {
             _capture: capture,
             _pipeline: pipeline,
             _output: output,
+            _mix_capture: mix_capture,
+            _mix_spectrum: mix_spectrum,
             _embed: embed,
         })
     }

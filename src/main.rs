@@ -15,7 +15,7 @@ use services::pipewire::{Modules, PipewireManager, VIRTMIC_SINK};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
-use services::voice::VoiceSession;
+use services::voice::{spectrum_source_from_str, voice_shared, VoiceSession};
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::{Mutex, OnceLock};
@@ -320,6 +320,19 @@ async fn apply_runtime_config(
         }
     }
 
+    let mic_mute_changed = initial
+        || previous.is_some_and(|prev| {
+            prev.audio.mic_muted != config.audio.mic_muted
+                || prev.audio.mic_source != config.audio.mic_source
+        });
+    if mic_mute_changed && !config.audio.mic_source.is_empty() {
+        if let Err(err) =
+            PipewireManager::set_source_mute(&config.audio.mic_source, config.audio.mic_muted).await
+        {
+            warn!("failed to apply mic mute: {err:#}");
+        }
+    }
+
     if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
         // On startup, the main window is not visible yet, so don't bother fetching
         // a parent window handle. Subsequent re-binds (Apply, mode change) do use it
@@ -426,6 +439,7 @@ async fn reconcile_voice(
             String::new()
         },
         suppression: config.voice.suppression_enabled,
+        vad_enabled: config.voice.vad_enabled,
     };
     match VoiceSession::start(params) {
         Ok(s) => {
@@ -505,6 +519,11 @@ fn run_backend(
         let mut voice_session: Option<VoiceSession> = None;
         let mut voice_routing = false;
         let mut voice_panel_visible = false;
+        let voice = voice_shared();
+        voice.set_vad_enabled(active_config.voice.vad_enabled);
+        voice.set_spectrum_source(spectrum_source_from_str(
+            &active_config.voice.spectrum_source,
+        ));
         // Engage suppression/gating routing at startup if the config enables it,
         // so the processed mic is active without first opening the Voice panel.
         reconcile_voice(
@@ -635,6 +654,36 @@ fn run_backend(
                                 &backend_event_tx,
                             )
                             .await;
+                        }
+                        Some(BackendCommand::SetVoiceVad { enabled }) => {
+                            active_config.voice.vad_enabled = enabled;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist VAD enable setting: {err:#}");
+                            }
+                            voice_shared().set_vad_enabled(enabled);
+                        }
+                        Some(BackendCommand::SetMicMute { muted }) => {
+                            active_config.audio.mic_muted = muted;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist mic mute setting: {err:#}");
+                            }
+                            if !active_config.audio.mic_source.is_empty() {
+                                if let Err(err) = PipewireManager::set_source_mute(
+                                    &active_config.audio.mic_source,
+                                    muted,
+                                )
+                                .await
+                                {
+                                    warn!("failed to set mic mute: {err:#}");
+                                }
+                            }
+                        }
+                        Some(BackendCommand::SetSpectrumSource { source }) => {
+                            active_config.voice.spectrum_source = source.clone();
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist spectrum source: {err:#}");
+                            }
+                            voice_shared().set_spectrum_source(spectrum_source_from_str(&source));
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player

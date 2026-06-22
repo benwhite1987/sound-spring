@@ -290,6 +290,9 @@ pub enum BackendCommand {
     StopVoiceCapture,
     SetVoiceVerification { enabled: bool, threshold: f32 },
     SetVoiceSuppression { enabled: bool },
+    SetVoiceVad { enabled: bool },
+    SetMicMute { muted: bool },
+    SetSpectrumSource { source: String },
     Shutdown,
 }
 

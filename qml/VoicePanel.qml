@@ -39,10 +39,43 @@ Item {
         anchors.margins: 12
         spacing: 14
 
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
+
+            Label {
+                text: "Spectrum source"
+                color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
+            }
+
+            ButtonGroup { id: spectrumSourceGroup }
+
+            RadioButton {
+                text: "Raw mic"
+                ButtonGroup.group: spectrumSourceGroup
+                checked: voiceController.spectrumSource === "raw"
+                onClicked: voiceController.persistSpectrumSource("raw")
+            }
+            RadioButton {
+                text: "Filtered"
+                ButtonGroup.group: spectrumSourceGroup
+                checked: voiceController.spectrumSource === "filtered"
+                onClicked: voiceController.persistSpectrumSource("filtered")
+            }
+            RadioButton {
+                text: "Mixed"
+                ButtonGroup.group: spectrumSourceGroup
+                checked: voiceController.spectrumSource === "mixed"
+                onClicked: voiceController.persistSpectrumSource("mixed")
+            }
+
+            Item { Layout.fillWidth: true }
+        }
+
         Spectrum {
             id: spectrumView
             Layout.fillWidth: true
-            Layout.preferredHeight: 180
+            Layout.preferredHeight: 200
             controller: voiceController
             theme: voicePanel.theme
             active: voiceController.isPassing
@@ -84,12 +117,26 @@ Item {
                 Layout.fillWidth: true
             }
             Item { Layout.fillWidth: true }
+            AppButton {
+                text: voiceController.micMuted ? "Unmute mic" : "Mute mic"
+                role: voiceController.micMuted ? "danger" : "secondary"
+                onClicked: voiceController.toggleMicMute()
+            }
+        }
+
+        Switch {
+            text: "Voice activity detection"
+            checked: voiceController.vadEnabled
+            palette.windowText: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
+            onToggled: voiceController.persistVadEnabled(checked)
         }
 
         // Voice activity detection meter with the open-threshold marker.
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
+            opacity: voiceController.vadEnabled ? 1.0 : 0.4
+            enabled: voiceController.vadEnabled
 
             Label {
                 text: "Voice activity"
