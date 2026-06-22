@@ -8,6 +8,8 @@ ApplicationWindow {
     id: root
     width: controller.hasSavedWindowGeometry() ? controller.savedWindowWidth() : 800
     height: controller.hasSavedWindowGeometry() ? controller.savedWindowHeight() : 600
+    minimumWidth: 480
+    minimumHeight: 400
     visible: true
     title: "Sound Spring"
     color: appTheme.windowBg
@@ -204,205 +206,227 @@ ApplicationWindow {
         onTriggered: controller.processEvents()
     }
 
-    header: ToolBar {
-        padding: 8
-        spacing: 8
-        background: Rectangle {
-            color: appTheme.chromeBg
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: appTheme.border
-                opacity: 0.45
+    header: ColumnLayout {
+        spacing: 0
+
+        ToolBar {
+            id: appBar
+            Layout.fillWidth: true
+            padding: 8
+            spacing: 8
+            background: Rectangle {
+                color: appTheme.chromeBg
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: 1
+                    color: appTheme.border
+                    opacity: 0.45
+                }
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                spacing: 8
+
+                PanelButton {
+                    text: "Soundboard"
+                    panelIndex: 0
+                }
+                PanelButton {
+                    text: "Voice"
+                    panelIndex: 1
+                }
+
+                Item { Layout.fillWidth: true }
+
+                ChromeButton {
+                    text: "⚙"
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Settings"
+                    onClicked: settingsDialog.openSettings()
+                }
             }
         }
 
-        RowLayout {
-            anchors.fill: parent
+        ToolBar {
+            id: tabBarRow
+            visible: root.activePanel === 0
+            Layout.fillWidth: true
+            padding: 8
             spacing: 8
-
-            PanelButton {
-                text: "Soundboard"
-                panelIndex: 0
-            }
-            PanelButton {
-                text: "Voice"
-                panelIndex: 1
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: 24
-                color: appTheme.border
-                opacity: 0.5
-            }
-
-            ListView {
-                id: tabList
-                visible: root.activePanel === 0
-                Layout.fillWidth: true
-                Layout.preferredHeight: 36
-                orientation: ListView.Horizontal
-                spacing: 6
-                clip: true
-                property int tabStripTick: 0
-                model: {
-                    tabStripTick
-                    controller.uiVersion
-                    return controller.tabCount
+            background: Rectangle {
+                color: appTheme.chromeBg
+                Rectangle {
+                    anchors.top: parent.top
+                    width: parent.width
+                    height: 1
+                    color: appTheme.border
+                    opacity: 0.25
                 }
-
-                Connections {
-                    target: controller
-                    function onTabsChanged() {
-                        tabList.tabStripTick++
-                        tabList.forceLayout()
-                    }
-                    function onCurrentTabChanged() {
-                        tabList.tabStripTick++
-                    }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: 1
+                    color: appTheme.border
+                    opacity: 0.45
                 }
+            }
 
-                property int dragIndex: -1
+            RowLayout {
+                anchors.fill: parent
+                spacing: 8
 
-                delegate: Item {
-                    id: tabDelegate
-                    height: tabList.height
-                    readonly property bool isActive: {
+                ListView {
+                    id: tabList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+                    orientation: ListView.Horizontal
+                    spacing: 6
+                    clip: true
+                    property int tabStripTick: 0
+                    model: {
+                        tabStripTick
                         controller.uiVersion
-                        return controller.currentTabIndex === index
-                    }
-                    readonly property string tabLabel: {
-                        tabList.tabStripTick
-                        controller.uiVersion
-                        controller.tabVersion
-                        return controller.tabNameAt(index)
-                    }
-                    width: Math.max(tabLabelText.implicitWidth + 24, 52)
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 5
-                        color: tabDelegate.isActive ? appTheme.surfaceActive
-                              : (tabMouse.containsMouse ? appTheme.surfaceHover : "transparent")
-                        border.color: tabDelegate.isActive ? appTheme.borderAccent : appTheme.border
-                        border.width: tabDelegate.isActive ? 1 : 0
-                        opacity: tabDelegate.isActive ? 1.0 : (tabMouse.containsMouse ? 0.85 : 0.0)
+                        return controller.tabCount
                     }
 
-                    Text {
-                        id: tabLabelText
-                        anchors.centerIn: parent
-                        text: tabDelegate.tabLabel
-                        color: tabDelegate.isActive ? appTheme.textPrimary : appTheme.textSecondary
-                        font.pixelSize: 13
-                        font.weight: tabDelegate.isActive ? Font.DemiBold : Font.Normal
-                    }
-
-                    MouseArea {
-                        id: tabMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-
-                        property real pressX: 0
-                        property bool dragging: false
-
-                        onPressed: (mouse) => {
-                            if (mouse.button === Qt.RightButton) {
-                                tabContextMenu.tabIndex = index
-                                tabContextMenu.popup()
-                                mouse.accepted = true
-                                return
-                            }
-                            pressX = mouse.x
-                            dragging = false
-                            tabList.dragIndex = index
-                            mouse.accepted = true
+                    Connections {
+                        target: controller
+                        function onTabsChanged() {
+                            tabList.tabStripTick++
+                            tabList.forceLayout()
                         }
-
-                        onPositionChanged: (mouse) => {
-                            if (!pressed || mouse.buttons !== Qt.LeftButton)
-                                return
-                            if (!dragging && Math.abs(mouse.x - pressX) > 10) {
-                                dragging = true
-                                dragHandle.visible = true
-                            }
-                            if (dragging)
-                                dragHandle.x = Math.max(0, Math.min(
-                                    tabDelegate.width - dragHandle.width,
-                                    mouse.x - dragHandle.width / 2))
+                        function onCurrentTabChanged() {
+                            tabList.tabStripTick++
                         }
+                    }
 
-                        onReleased: (mouse) => {
-                            if (dragging) {
-                                var dropX = tabList.contentX + tabDelegate.x + dragHandle.x + dragHandle.width / 2
-                                var dropIdx = tabList.indexAt(dropX, tabDelegate.height / 2)
-                                if (dropIdx < 0)
-                                    dropIdx = tabList.dragIndex
-                                if (dropIdx !== tabList.dragIndex)
-                                    controller.moveTab(tabList.dragIndex, dropIdx)
-                            } else if (mouse.button === Qt.LeftButton) {
-                                controller.selectTab(index)
-                            }
-                            dragging = false
-                            dragHandle.visible = false
-                            dragHandle.x = 0
-                            tabList.dragIndex = -1
+                    property int dragIndex: -1
+
+                    delegate: Item {
+                        id: tabDelegate
+                        height: tabList.height
+                        readonly property bool isActive: {
+                            controller.uiVersion
+                            return controller.currentTabIndex === index
                         }
+                        readonly property string tabLabel: {
+                            tabList.tabStripTick
+                            controller.uiVersion
+                            controller.tabVersion
+                            return controller.tabNameAt(index)
+                        }
+                        width: Math.max(tabLabelText.implicitWidth + 24, 52)
 
                         Rectangle {
-                            id: dragHandle
-                            visible: false
-                            width: parent.width
-                            height: parent.height
+                            anchors.fill: parent
                             radius: 5
-                            color: appTheme.accent
-                            opacity: 0.35
-                            z: -1
+                            color: tabDelegate.isActive ? appTheme.surfaceActive
+                                  : (tabMouse.containsMouse ? appTheme.surfaceHover : "transparent")
+                            border.color: tabDelegate.isActive ? appTheme.borderAccent : appTheme.border
+                            border.width: tabDelegate.isActive ? 1 : 0
+                            opacity: tabDelegate.isActive ? 1.0 : (tabMouse.containsMouse ? 0.85 : 0.0)
+                        }
+
+                        Text {
+                            id: tabLabelText
+                            anchors.centerIn: parent
+                            text: tabDelegate.tabLabel
+                            color: tabDelegate.isActive ? appTheme.textPrimary : appTheme.textSecondary
+                            font.pixelSize: 13
+                            font.weight: tabDelegate.isActive ? Font.DemiBold : Font.Normal
+                        }
+
+                        MouseArea {
+                            id: tabMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                            property real pressX: 0
+                            property bool dragging: false
+
+                            onPressed: (mouse) => {
+                                if (mouse.button === Qt.RightButton) {
+                                    tabContextMenu.tabIndex = index
+                                    tabContextMenu.popup()
+                                    mouse.accepted = true
+                                    return
+                                }
+                                pressX = mouse.x
+                                dragging = false
+                                tabList.dragIndex = index
+                                mouse.accepted = true
+                            }
+
+                            onPositionChanged: (mouse) => {
+                                if (!pressed || mouse.buttons !== Qt.LeftButton)
+                                    return
+                                if (!dragging && Math.abs(mouse.x - pressX) > 10) {
+                                    dragging = true
+                                    dragHandle.visible = true
+                                }
+                                if (dragging)
+                                    dragHandle.x = Math.max(0, Math.min(
+                                        tabDelegate.width - dragHandle.width,
+                                        mouse.x - dragHandle.width / 2))
+                            }
+
+                            onReleased: (mouse) => {
+                                if (dragging) {
+                                    var dropX = tabList.contentX + tabDelegate.x + dragHandle.x + dragHandle.width / 2
+                                    var dropIdx = tabList.indexAt(dropX, tabDelegate.height / 2)
+                                    if (dropIdx < 0)
+                                        dropIdx = tabList.dragIndex
+                                    if (dropIdx !== tabList.dragIndex)
+                                        controller.moveTab(tabList.dragIndex, dropIdx)
+                                } else if (mouse.button === Qt.LeftButton) {
+                                    controller.selectTab(index)
+                                }
+                                dragging = false
+                                dragHandle.visible = false
+                                dragHandle.x = 0
+                                tabList.dragIndex = -1
+                            }
+
+                            Rectangle {
+                                id: dragHandle
+                                visible: false
+                                width: parent.width
+                                height: parent.height
+                                radius: 5
+                                color: appTheme.accent
+                                opacity: 0.35
+                                z: -1
+                            }
                         }
                     }
                 }
-            }
 
-            ChromeButton {
-                visible: root.activePanel === 0
-                text: "+"
-                ToolTip.visible: hovered
-                ToolTip.text: "Add tab"
-                onClicked: {
-                    addTabNameField.text = ""
-                    addTabDialog.existingPath = ""
-                    addTabDialog.open()
+                ChromeButton {
+                    text: "+"
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Add tab"
+                    onClicked: {
+                        addTabNameField.text = ""
+                        addTabDialog.existingPath = ""
+                        addTabDialog.open()
+                    }
                 }
-            }
 
-            ChromeButton {
-                visible: root.activePanel === 0
-                text: "◀"
-                ToolTip.visible: hovered
-                ToolTip.text: "Previous tab"
-                onClicked: controller.prevTab()
-            }
-            ChromeButton {
-                visible: root.activePanel === 0
-                text: "▶"
-                ToolTip.visible: hovered
-                ToolTip.text: "Next tab"
-                onClicked: controller.nextTab()
-            }
-
-            Item {
-                visible: root.activePanel === 1
-                Layout.fillWidth: true
-            }
-
-            ChromeButton {
-                text: "⚙"
-                ToolTip.visible: hovered
-                ToolTip.text: "Settings"
-                onClicked: settingsDialog.openSettings()
+                ChromeButton {
+                    text: "◀"
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Previous tab"
+                    onClicked: controller.prevTab()
+                }
+                ChromeButton {
+                    text: "▶"
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Next tab"
+                    onClicked: controller.nextTab()
+                }
             }
         }
     }

@@ -8,6 +8,16 @@ Item {
 
     property var theme
 
+    readonly property color textPrimary: theme ? theme.textPrimary : "#ececec"
+    readonly property color textSecondary: theme ? theme.textSecondary : "#b3b3bc"
+    readonly property color textMuted: theme ? theme.textMuted : "#888892"
+    readonly property color accent: theme ? theme.accent : "#6abf69"
+    readonly property color danger: theme ? theme.danger : "#c62828"
+    readonly property color surface: theme ? theme.surface : "#333338"
+    readonly property color border: theme ? theme.border : "#5a5a62"
+    readonly property color warningAccent: theme ? theme.warningAccent : "#ffb74d"
+    readonly property int meterLabelWidth: 108
+
     VoiceController {
         id: voiceController
     }
@@ -16,8 +26,6 @@ Item {
                                            && voiceController.verificationEnabled
                                            && voiceController.speakerMatchScore >= voiceController.matchThreshold
 
-    // Capture only runs while this panel is the active page; switching away
-    // tears the pw-cat session down.
     onVisibleChanged: voiceController.setVisualizationActive(visible)
     Component.onCompleted: if (visible) voiceController.setVisualizationActive(true)
 
@@ -34,325 +42,323 @@ Item {
         theme: voicePanel.theme
     }
 
-    ColumnLayout {
+    ScrollView {
+        id: voiceScroll
         anchors.fill: parent
         anchors.margins: 12
-        spacing: 14
+        clip: true
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        contentWidth: availableWidth
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
+        Item {
+            width: voiceScroll.availableWidth
+            implicitHeight: contentColumn.implicitHeight + 16
 
-            Label {
-                text: "Spectrum source"
-                color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
-            }
+            ColumnLayout {
+                id: contentColumn
+                width: Math.min(parent.width, 720)
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 4
 
-            ButtonGroup { id: spectrumSourceGroup }
+                SettingsSection {
+                    title: "Visualization"
+                    description: "Live frequency spectrum from the selected audio tap."
 
-            RadioButton {
-                text: "Raw mic"
-                ButtonGroup.group: spectrumSourceGroup
-                checked: voiceController.spectrumSource === "raw"
-                onClicked: voiceController.persistSpectrumSource("raw")
-            }
-            RadioButton {
-                text: "Filtered"
-                ButtonGroup.group: spectrumSourceGroup
-                checked: voiceController.spectrumSource === "filtered"
-                onClicked: voiceController.persistSpectrumSource("filtered")
-            }
-            RadioButton {
-                text: "Mixed"
-                ButtonGroup.group: spectrumSourceGroup
-                checked: voiceController.spectrumSource === "mixed"
-                onClicked: voiceController.persistSpectrumSource("mixed")
-            }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Spectrum source"
+                        color: voicePanel.textSecondary
+                    }
 
-            Item { Layout.fillWidth: true }
-        }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
 
-        Spectrum {
-            id: spectrumView
-            Layout.fillWidth: true
-            Layout.preferredHeight: 200
-            controller: voiceController
-            theme: voicePanel.theme
-            active: voiceController.isPassing
-        }
+                        ButtonGroup { id: spectrumSourceGroup }
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
+                        RadioButton {
+                            text: "Raw mic"
+                            ButtonGroup.group: spectrumSourceGroup
+                            checked: voiceController.spectrumSource === "raw"
+                            onClicked: voiceController.persistSpectrumSource("raw")
+                        }
+                        RadioButton {
+                            text: "Filtered"
+                            ButtonGroup.group: spectrumSourceGroup
+                            checked: voiceController.spectrumSource === "filtered"
+                            onClicked: voiceController.persistSpectrumSource("filtered")
+                        }
+                        RadioButton {
+                            text: "Mixed"
+                            ButtonGroup.group: spectrumSourceGroup
+                            checked: voiceController.spectrumSource === "mixed"
+                            onClicked: voiceController.persistSpectrumSource("mixed")
+                        }
+                    }
 
-            Rectangle {
-                width: 10
-                height: 10
-                radius: 5
-                color: {
-                    voiceController.spectrumVersion
-                    return voiceController.isCapturing
-                           ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
-                           : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
+                    Spectrum {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 200
+                        controller: voiceController
+                        theme: voicePanel.theme
+                        active: voiceController.isPassing
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Rectangle {
+                            width: 10
+                            height: 10
+                            radius: 5
+                            color: {
+                                voiceController.spectrumVersion
+                                return voiceController.isCapturing ? voicePanel.accent : voicePanel.textMuted
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: {
+                                voiceController.spectrumVersion
+                                var err = voiceController.captureError
+                                if (err && err.length > 0)
+                                    return err
+                                return voiceController.isCapturing
+                                       ? "Listening to microphone"
+                                       : "Capture idle"
+                            }
+                            color: {
+                                voiceController.spectrumVersion
+                                var err = voiceController.captureError
+                                if (err && err.length > 0)
+                                    return voicePanel.danger
+                                return voicePanel.textPrimary
+                            }
+                        }
+                        AppButton {
+                            text: voiceController.micMuted ? "Unmute mic" : "Mute mic"
+                            role: voiceController.micMuted ? "danger" : "secondary"
+                            onClicked: voiceController.toggleMicMute()
+                        }
+                    }
+                }
+
+                SettingsSection {
+                    title: "Voice activity"
+                    description: "Silero VAD gates enrollment and verification when enabled."
+
+                    Switch {
+                        Layout.fillWidth: true
+                        text: "Voice activity detection"
+                        checked: voiceController.vadEnabled
+                        palette.windowText: voicePanel.textPrimary
+                        onToggled: voiceController.persistVadEnabled(checked)
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        opacity: voiceController.vadEnabled ? 1.0 : 0.4
+                        enabled: voiceController.vadEnabled
+
+                        Label {
+                            text: "Voice activity"
+                            Layout.preferredWidth: voicePanel.meterLabelWidth
+                            color: voicePanel.textSecondary
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 16
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 4
+                                color: voicePanel.surface
+                                border.color: voicePanel.border
+                                border.width: 1
+                            }
+                            Rectangle {
+                                height: parent.height - 4
+                                y: 2
+                                x: 2
+                                width: Math.max(0, (parent.width - 4) * voiceController.vadProbability)
+                                radius: 3
+                                color: voiceController.isSpeaking ? voicePanel.accent : voicePanel.textMuted
+                            }
+                            Rectangle {
+                                width: 2
+                                height: parent.height
+                                x: parent.width * voiceController.vadOpenThreshold
+                                color: voicePanel.warningAccent
+                                opacity: 0.8
+                            }
+                        }
+
+                        Label {
+                            Layout.preferredWidth: 36
+                            text: voiceController.vadOpenThreshold.toFixed(2)
+                            color: voicePanel.textPrimary
+                        }
+
+                        Slider {
+                            Layout.preferredWidth: 120
+                            from: 0.05
+                            to: 0.95
+                            value: voiceController.vadOpenThreshold
+                            onMoved: voiceController.setVadThreshold(value)
+                        }
+
+                        Label {
+                            Layout.preferredWidth: 70
+                            text: voiceController.isSpeaking ? "Speaking" : "Silent"
+                            color: voiceController.isSpeaking ? voicePanel.accent : voicePanel.textMuted
+                        }
+                    }
+                }
+
+                SettingsSection {
+                    title: "Speaker identity"
+                    description: "Enroll your voiceprint, then optionally gate the virtual mic to matched speech only."
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            text: "Speaker match"
+                            Layout.preferredWidth: voicePanel.meterLabelWidth
+                            color: voicePanel.textSecondary
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 16
+
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 4
+                                color: voicePanel.surface
+                                border.color: voicePanel.border
+                                border.width: 1
+                            }
+                            Rectangle {
+                                height: parent.height - 4
+                                y: 2
+                                x: 2
+                                width: Math.max(0, (parent.width - 4) * Math.max(0, voiceController.speakerMatchScore))
+                                radius: 3
+                                color: voicePanel.speakerMatched ? voicePanel.accent : voicePanel.textMuted
+                            }
+                            Rectangle {
+                                width: 2
+                                height: parent.height
+                                x: parent.width * voiceController.matchThreshold
+                                color: voicePanel.warningAccent
+                                opacity: 0.8
+                            }
+                        }
+
+                        Label {
+                            Layout.preferredWidth: 70
+                            text: (!voiceController.isEnrolled || !voiceController.verificationEnabled)
+                                  ? "Unknown"
+                                  : (voicePanel.speakerMatched ? "You" : "Not you")
+                            color: voicePanel.speakerMatched ? voicePanel.accent : voicePanel.textMuted
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: voiceController.isEnrolled
+                                  ? "Enrolled voiceprint: yes"
+                                  : "Enrolled voiceprint: none"
+                            color: voicePanel.textPrimary
+                        }
+                        AppButton {
+                            text: voiceController.isEnrolled ? "Re-enroll" : "Enroll"
+                            role: "primary"
+                            onClicked: enrollmentDialog.open()
+                        }
+                        AppButton {
+                            text: "Clear"
+                            role: "danger"
+                            enabled: voiceController.isEnrolled
+                            onClicked: voiceController.clearEnrollment()
+                        }
+                    }
+
+                    Switch {
+                        Layout.fillWidth: true
+                        text: "Speaker verification"
+                        enabled: voiceController.isEnrolled
+                        checked: voiceController.verificationEnabled
+                        palette.windowText: voicePanel.textPrimary
+                        onToggled: voiceController.setVerification(checked)
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        enabled: voiceController.isEnrolled
+                        opacity: voiceController.isEnrolled ? 1.0 : 0.4
+
+                        Label {
+                            text: "Match threshold"
+                            Layout.preferredWidth: voicePanel.meterLabelWidth
+                            color: voicePanel.textSecondary
+                        }
+
+                        Slider {
+                            Layout.fillWidth: true
+                            from: 0.0
+                            to: 1.0
+                            value: voiceController.matchThreshold
+                            onMoved: voiceController.setThreshold(value)
+                        }
+
+                        Label {
+                            Layout.preferredWidth: 36
+                            text: voiceController.matchThreshold.toFixed(2)
+                            color: voicePanel.textPrimary
+                        }
+                    }
+                }
+
+                SettingsSection {
+                    title: "Routing & output"
+                    description: "Bar color runs green through yellow to red by level. Verification and suppression keep running in the background once enabled."
+
+                    Switch {
+                        Layout.fillWidth: true
+                        text: "Noise suppression (DeepFilterNet3)"
+                        checked: voiceController.suppressionEnabled
+                        palette.windowText: voicePanel.textPrimary
+                        onToggled: voiceController.setSuppression(checked)
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: "Routing to: soundboard_virtmic"
+                            color: voicePanel.textSecondary
+                        }
+                        AppButton {
+                            text: "Open in pavucontrol"
+                            onClicked: voiceController.openPavucontrol()
+                        }
+                    }
                 }
             }
-            Label {
-                text: {
-                    voiceController.spectrumVersion
-                    var err = voiceController.captureError
-                    if (err && err.length > 0)
-                        return err
-                    return voiceController.isCapturing
-                           ? "Listening to microphone"
-                           : "Capture idle"
-                }
-                color: {
-                    voiceController.spectrumVersion
-                    var err = voiceController.captureError
-                    if (err && err.length > 0)
-                        return voicePanel.theme ? voicePanel.theme.danger : "#c62828"
-                    return voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-                }
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-            Item { Layout.fillWidth: true }
-            AppButton {
-                text: voiceController.micMuted ? "Unmute mic" : "Mute mic"
-                role: voiceController.micMuted ? "danger" : "secondary"
-                onClicked: voiceController.toggleMicMute()
-            }
         }
-
-        Switch {
-            text: "Voice activity detection"
-            checked: voiceController.vadEnabled
-            palette.windowText: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-            onToggled: voiceController.persistVadEnabled(checked)
-        }
-
-        // Voice activity detection meter with the open-threshold marker.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-            opacity: voiceController.vadEnabled ? 1.0 : 0.4
-            enabled: voiceController.vadEnabled
-
-            Label {
-                text: "Voice activity"
-                Layout.preferredWidth: 100
-                color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
-            }
-
-            Item {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 16
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 4
-                    color: voicePanel.theme ? voicePanel.theme.surface : "#333338"
-                    border.color: voicePanel.theme ? voicePanel.theme.border : "#5a5a62"
-                    border.width: 1
-                }
-                Rectangle {
-                    height: parent.height - 4
-                    y: 2
-                    x: 2
-                    width: Math.max(0, (parent.width - 4) * voiceController.vadProbability)
-                    radius: 3
-                    color: voiceController.isSpeaking
-                           ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
-                           : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
-                }
-                // Open-threshold marker (follows the slider).
-                Rectangle {
-                    width: 2
-                    height: parent.height
-                    x: parent.width * voiceController.vadOpenThreshold
-                    color: voicePanel.theme ? voicePanel.theme.warningAccent : "#ffb74d"
-                    opacity: 0.8
-                }
-            }
-
-            Label {
-                Layout.preferredWidth: 36
-                text: voiceController.vadOpenThreshold.toFixed(2)
-                color: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-            }
-
-            Slider {
-                id: vadThresholdSlider
-                Layout.preferredWidth: 120
-                from: 0.05
-                to: 0.95
-                value: voiceController.vadOpenThreshold
-                onMoved: voiceController.setVadThreshold(value)
-            }
-
-            Label {
-                Layout.preferredWidth: 70
-                text: voiceController.isSpeaking ? "Speaking" : "Silent"
-                color: voiceController.isSpeaking
-                       ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
-                       : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
-            }
-        }
-
-        // Speaker-match meter (cosine similarity) with the match-threshold marker.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            Label {
-                text: "Speaker match"
-                Layout.preferredWidth: 100
-                color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
-            }
-
-            Item {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 16
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 4
-                    color: voicePanel.theme ? voicePanel.theme.surface : "#333338"
-                    border.color: voicePanel.theme ? voicePanel.theme.border : "#5a5a62"
-                    border.width: 1
-                }
-                Rectangle {
-                    height: parent.height - 4
-                    y: 2
-                    x: 2
-                    width: Math.max(0, (parent.width - 4) * Math.max(0, voiceController.speakerMatchScore))
-                    radius: 3
-                    color: voicePanel.speakerMatched
-                           ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
-                           : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
-                }
-                // Match-threshold marker (follows the slider).
-                Rectangle {
-                    width: 2
-                    height: parent.height
-                    x: parent.width * voiceController.matchThreshold
-                    color: voicePanel.theme ? voicePanel.theme.warningAccent : "#ffb74d"
-                    opacity: 0.8
-                }
-            }
-
-            Label {
-                Layout.preferredWidth: 70
-                text: (!voiceController.isEnrolled || !voiceController.verificationEnabled)
-                      ? "Unknown"
-                      : (voicePanel.speakerMatched ? "You" : "Not you")
-                color: voicePanel.speakerMatched
-                       ? (voicePanel.theme ? voicePanel.theme.accent : "#6abf69")
-                       : (voicePanel.theme ? voicePanel.theme.textMuted : "#888892")
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.topMargin: 2
-            height: 1
-            color: voicePanel.theme ? voicePanel.theme.border : "#5a5a62"
-            opacity: 0.5
-        }
-
-        // Enrollment status + actions.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            Label {
-                text: voiceController.isEnrolled ? "Enrolled voiceprint: yes" : "Enrolled voiceprint: none"
-                color: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-            }
-            Item { Layout.fillWidth: true }
-            AppButton {
-                text: voiceController.isEnrolled ? "Re-enroll" : "Enroll"
-                role: "primary"
-                onClicked: enrollmentDialog.open()
-            }
-            AppButton {
-                text: "Clear"
-                role: "danger"
-                enabled: voiceController.isEnrolled
-                onClicked: voiceController.clearEnrollment()
-            }
-        }
-
-        // Verification toggle + match threshold.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            Switch {
-                id: verificationSwitch
-                text: "Speaker verification"
-                enabled: voiceController.isEnrolled
-                checked: voiceController.verificationEnabled
-                palette.windowText: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-                onToggled: voiceController.setVerification(checked)
-            }
-            Item { Layout.fillWidth: true }
-            Label {
-                text: "Match threshold"
-                color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
-            }
-            Slider {
-                id: thresholdSlider
-                Layout.preferredWidth: 160
-                from: 0.0
-                to: 1.0
-                value: voiceController.matchThreshold
-                onMoved: voiceController.setThreshold(value)
-            }
-            Label {
-                Layout.preferredWidth: 36
-                text: voiceController.matchThreshold.toFixed(2)
-                color: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-            }
-        }
-
-        // Noise suppression toggle (DeepFilterNet3).
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            Switch {
-                id: suppressionSwitch
-                text: "Noise suppression (DeepFilterNet3)"
-                checked: voiceController.suppressionEnabled
-                palette.windowText: voicePanel.theme ? voicePanel.theme.textPrimary : "#ececec"
-                onToggled: voiceController.setSuppression(checked)
-            }
-            Item { Layout.fillWidth: true }
-        }
-
-        Label {
-            Layout.fillWidth: true
-            text: "Routing to: soundboard_virtmic"
-            color: voicePanel.theme ? voicePanel.theme.textSecondary : "#b3b3bc"
-        }
-
-        AppButton {
-            text: "Open in pavucontrol"
-            onClicked: voiceController.openPavucontrol()
-        }
-
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
-            font.pixelSize: 12
-            color: voicePanel.theme ? voicePanel.theme.textMuted : "#888892"
-            text: "Bar height shows level per frequency band; color runs green (quiet) " +
-                  "through yellow to red (loud). With verification on, only matched " +
-                  "speech is sent to the virtual mic; noise suppression cleans whatever " +
-                  "is sent. Both keep running in the background once enabled."
-        }
-
-        Item { Layout.fillHeight: true }
     }
 }
