@@ -1,4 +1,4 @@
-# Sound Spring
+# ![Sound Spring](./logo.png)
 
 A PipeWire-routed soundboard with tab-cycling hotkeys, designed for KDE Plasma on Wayland (CachyOS and similar distros).
 
@@ -70,21 +70,21 @@ In-window numpad keys work immediately. Global shortcuts use **xdg-desktop-porta
 
 Default bindings (configurable in Settings):
 
-| Action | Default |
-|--------|---------|
-| Play slots 1–10 | Numpad 1–9, 0 |
-| Next / previous tab | Numpad + / − |
-| Stop all | Escape |
+| Action              | Default       |
+| ------------------- | ------------- |
+| Play slots 1–10     | Numpad 1–9, 0 |
+| Next / previous tab | Numpad + / −  |
+| Stop all            | Escape        |
 
 ## PipeWire routing
 
 The app creates virtual sinks, loopbacks, and a remapped virtual microphone on launch (and when audio settings change):
 
-| Device name | Type | Purpose |
-|-------------|------|---------|
-| **Sound-Spring-Virtual-Microphone** | Microphone (input) | Select this in Discord/OBS |
-| **Sound-Spring-Effects** | Speaker (output) | Internal playback sink |
-| **Sound-Spring-Mix** | Speaker (output) | Internal mix bus — do not use as mic |
+| Device name                         | Type               | Purpose                              |
+| ----------------------------------- | ------------------ | ------------------------------------ |
+| **Sound-Spring-Virtual-Microphone** | Microphone (input) | Select this in Discord/OBS           |
+| **Sound-Spring-Effects**            | Speaker (output)   | Internal playback sink               |
+| **Sound-Spring-Mix**                | Speaker (output)   | Internal mix bus — do not use as mic |
 
 Enable **Launch at login** in Settings to re-apply routing after reboot. If PipeWire is restarted while the app is running, playback automatically re-creates missing sinks.
 
