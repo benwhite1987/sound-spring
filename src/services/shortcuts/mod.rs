@@ -14,10 +14,8 @@ pub use status::{
     format_global_shortcut_status, global_shortcut_status, set_global_shortcut_status,
     GlobalShortcutStatus,
 };
-#[allow(unused_imports)]
 pub use trigger::{
-    numlock_off_alt, play_slot_from_qt_key, qt_shortcut_sequence, trigger_display,
-    trigger_from_portal, trigger_from_qt,
+    play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt,
 };
 
 #[derive(Debug, Clone)]

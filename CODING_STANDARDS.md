@@ -4,7 +4,7 @@
 
 ## Sound Spring adoption
 
-This repository **explicitly adopts** the standards below, enforced via CI (`cargo fmt`, `cargo clippy`, `cargo test`, and `scripts/test-chrome-bindings.sh`).
+This repository **explicitly adopts** the standards below, enforced via CI (`cargo fmt`, `cargo clippy`, `cargo test`, and `ci/test-chrome-bindings.sh`).
 
 **Project-specific exceptions:**
 

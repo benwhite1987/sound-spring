@@ -37,9 +37,9 @@ logs/
 *.swo
 *~
 
-# Large ML model assets — loaded at runtime, not committed (≈80 MB ECAPA ONNX).
+# Build-fetched ONNX weights (see build.rs); not committed to git.
 # The small fbank matrix IS committed (bundled via include_bytes!).
-assets/models/*.onnx
+assets/models/ecapa-speaker-v1.onnx
 
 # OS junk
 .DS_Store

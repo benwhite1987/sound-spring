@@ -3,7 +3,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_LATENCY_MS: u32 = 20;
 pub const SFX_SINK: &str = "soundboard_sfx";
@@ -330,6 +330,19 @@ pub fn ensure_default_layout(config: &mut Config) -> Result<()> {
         .with_context(|| format!("create tabs root {}", config.paths.tabs_root.display()))?;
     fs::create_dir_all(&config.paths.state_dir)
         .with_context(|| format!("create state dir {}", config.paths.state_dir.display()))?;
+
+    if config.tabs.is_empty() {
+        seed_default_tab_dirs(&config.paths.tabs_root)?;
+    }
+
+    Ok(())
+}
+
+fn seed_default_tab_dirs(tabs_root: &Path) -> Result<()> {
+    for name in ["01-memes", "02-music", "03-effects"] {
+        fs::create_dir_all(tabs_root.join(name))
+            .with_context(|| format!("create default tab dir {name}"))?;
+    }
     Ok(())
 }
 
@@ -370,5 +383,22 @@ name = "Custom"
         let parsed: Config = toml::from_str(text).unwrap();
         assert_eq!(parsed.tabs.len(), 1);
         assert_eq!(parsed.tabs[0].path, Path::new("/tmp/custom"));
+    }
+
+    #[test]
+    fn ensure_default_layout_seeds_tab_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "sound-spring-tabs-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let mut config = Config::default();
+        config.paths.tabs_root = dir.clone();
+        config.paths.state_dir = dir.join("state");
+        ensure_default_layout(&mut config).unwrap();
+        for name in ["01-memes", "02-music", "03-effects"] {
+            assert!(dir.join(name).is_dir(), "missing {name}");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

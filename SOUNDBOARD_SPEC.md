@@ -564,8 +564,8 @@ sound-spring/
 All criteria are **met** by the release build as of 2026-06-21.
 
 1. ✓ `cargo build --release` produces a single stripped binary in
-   `target/release/sound-spring` under 15 MB. `Cargo.toml` sets
-   `[profile.release] strip = true`. Typical build: ~7 MB on x86_64 Linux.
+   `target/release/sound-spring`. `Cargo.toml` sets `[profile.release] strip = true`.
+   Typical x86_64 Linux build: ~55–60 MB (includes embedded ECAPA ONNX weights).
 2. ✓ Launching the app creates the two null sinks if absent, with correct
    descriptions visible in `pavucontrol`.
 3. ✓ Audio played through any sound button is audible on
@@ -592,7 +592,7 @@ All criteria are **met** by the release build as of 2026-06-21.
 ```bash
 source "$HOME/.cargo/env"
 QMAKE=/usr/bin/qmake6 cargo build --release
-ls -lh target/release/sound-spring    # expect < 15 MB, stripped
+ls -lh target/release/sound-spring    # ~55–60 MB stripped (embedded ECAPA)
 
 # Launch outside IDE/Electron cgroups (see docs/global-shortcuts.md):
 RUST_LOG=sound_spring=info gtk-launch sound-spring
@@ -601,7 +601,6 @@ RUST_LOG=sound_spring=info gtk-launch sound-spring
 
 ## References
 
-- Bash scripts (`sb-play`, `sb-tab`, `sb-stop`) — semantic reference for routing/playback.
 - [cxx-qt book](https://kdab.github.io/cxx-qt/book/getting-started/index.html) — bridge syntax for 0.7+.
 - [zbus client guide](https://dbus2.github.io/zbus/client.html) — portal proxies.
 - `docs/global-shortcuts.md` — portal testing, NumLock keysyms, cgroup pitfalls.

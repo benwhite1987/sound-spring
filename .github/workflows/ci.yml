@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache ECAPA model
+        uses: actions/cache@v4
+        with:
+          path: assets/models/ecapa-speaker-v1.onnx
+          key: ecapa-v1-${{ hashFiles('build.rs') }}
+
       - name: Install Qt 6 and tools
         run: |
           sudo apt-get update
@@ -33,4 +39,4 @@ jobs:
         run: cargo test
 
       - name: chrome bindings smoke test
-        run: scripts/test-chrome-bindings.sh
+        run: ci/test-chrome-bindings.sh

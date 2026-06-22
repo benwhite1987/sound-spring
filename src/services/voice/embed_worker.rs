@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 
 use tracing::{info, warn};
 
-use super::embedding::{ecapa_model_path, Embedder, MIN_EMBED_SAMPLES};
+use super::embedding::{Embedder, MIN_EMBED_SAMPLES};
 use super::verifier::Verifier;
 use super::voiceprint::{l2_normalize, Voiceprint};
 use super::{VoiceShared, TARGET_RATE};
@@ -84,21 +84,13 @@ fn run(
         }
     }
 
-    // Lazily create the embedder; verification/enrollment degrade to no-ops if
-    // the model can't be loaded.
-    let mut embedder: Option<Embedder> = match ecapa_model_path() {
-        Some(path) => match Embedder::new(&path) {
-            Ok(e) => {
-                info!("loaded ECAPA embedder from {}", path.display());
-                Some(e)
-            }
-            Err(err) => {
-                warn!("speaker embedding disabled: {err:#}");
-                None
-            }
-        },
-        None => {
-            warn!("speaker embedding disabled: ECAPA model not found (set SOUND_SPRING_ECAPA_MODEL or place it under <config>/models/)");
+    let mut embedder: Option<Embedder> = match Embedder::new() {
+        Ok(e) => {
+            info!("loaded ECAPA embedder (embedded)");
+            Some(e)
+        }
+        Err(err) => {
+            warn!("speaker embedding disabled: {err:#}");
             None
         }
     };

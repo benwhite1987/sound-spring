@@ -17,10 +17,9 @@
 //!
 //! The 192-float output is L2-normalized downstream by the verifier/voiceprint.
 //!
-//! The ~80 MB ONNX file is loaded from disk at runtime (resolved by
-//! [`ecapa_model_path`]); only the tiny fbank matrix is compiled in.
+//! The ECAPA ONNX weights are compiled into the binary at build time (fetched by
+//! `build.rs` when missing locally). The fbank matrix is also embedded.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -57,7 +56,8 @@ pub const MIN_EMBED_SAMPLES: usize = TARGET_RATE as usize / 2;
 /// The frozen SpeechBrain mel filterbank, row-major `[N_MELS][N_STFT]`.
 static FBANK_BYTES: &[u8] = include_bytes!("../../../assets/models/fbank-80x201-f32.bin");
 
-const ECAPA_MODEL_FILE: &str = "ecapa-speaker-v1.onnx";
+/// ECAPA-TDNN ONNX weights (`vedk00/ecapa-voxceleb-speaker-embedding-onnx`).
+static ECAPA_BYTES: &[u8] = include_bytes!("../../../assets/models/ecapa-speaker-v1.onnx");
 
 /// How the model expects the `feature_lens` input expressed.
 #[derive(Clone, Copy)]
@@ -82,12 +82,12 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    pub fn new(model_path: &std::path::Path) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let fbank = parse_fbank()?;
         let session = Session::builder()
             .context("ort session builder")?
-            .commit_from_file(model_path)
-            .with_context(|| format!("load ECAPA model {}", model_path.display()))?;
+            .commit_from_memory(ECAPA_BYTES)
+            .context("load embedded ECAPA model")?;
 
         let len_kind = resolve_len_kind(&session)?;
 
@@ -215,29 +215,6 @@ impl Embedder {
     }
 }
 
-/// Resolve where the ECAPA ONNX lives: `$SOUND_SPRING_ECAPA_MODEL`, then a
-/// `models/` dir under the config dir, then the in-repo `assets/models` dev
-/// copy. Returns the first that exists.
-pub fn ecapa_model_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("SOUND_SPRING_ECAPA_MODEL") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let configured = crate::config::config_dir().join("models").join(ECAPA_MODEL_FILE);
-    if configured.is_file() {
-        return Some(configured);
-    }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("assets/models")
-        .join(ECAPA_MODEL_FILE);
-    if dev.is_file() {
-        return Some(dev);
-    }
-    None
-}
-
 fn parse_fbank() -> Result<Vec<f32>> {
     let expected = N_MELS * N_STFT;
     if FBANK_BYTES.len() != expected * 4 {
@@ -305,17 +282,10 @@ mod tests {
         dot / (na * nb)
     }
 
-    // Exercises the real ONNX model: run with
-    //   cargo test ecapa_model -- --ignored --nocapture
-    // Skips cleanly if the ~80 MB model isn't present.
     #[test]
     #[ignore]
     fn ecapa_model_io_contract_holds() {
-        let Some(path) = ecapa_model_path() else {
-            eprintln!("ECAPA model not found; skipping");
-            return;
-        };
-        let mut emb = Embedder::new(&path).expect("load embedder");
+        let mut emb = Embedder::new().expect("load embedder");
 
         let a = tone(180.0, 2.0);
         let e1 = emb.embed(&a).expect("embed a #1");

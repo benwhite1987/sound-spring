@@ -358,7 +358,7 @@ impl PipewireManager {
     }
 
     /// Re-applies routing when the effects sink disappeared (e.g. PipeWire
-    /// restarted). Mirrors `sb-play`'s `sink_exists` check before playback.
+    /// restarted).
     pub async fn ensure_routing_for_playback(
         mic_source: &str,
         latency_ms: u32,

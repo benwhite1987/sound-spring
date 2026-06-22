@@ -8,7 +8,7 @@ echo "== cargo test =="
 
 echo "== QML binding pattern =="
 if command -v qml6 >/dev/null; then
-  QT_QPA_PLATFORM=offscreen qml6 "$ROOT/scripts/test-chrome-bindings.qml"
+  QT_QPA_PLATFORM=offscreen qml6 "$ROOT/ci/test-chrome-bindings.qml"
 else
   echo "skip: qml6 not found"
 fi

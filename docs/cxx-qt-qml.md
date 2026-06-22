@@ -38,5 +38,5 @@ checked: {
 
 ## Tests
 
-- `scripts/test-chrome-bindings.qml` — binding refresh pattern
-- `scripts/test-chrome-bindings.sh` — runs QML test and offscreen launch smoke check
+- `ci/test-chrome-bindings.qml` — binding refresh pattern
+- `ci/test-chrome-bindings.sh` — runs QML test and offscreen launch smoke check

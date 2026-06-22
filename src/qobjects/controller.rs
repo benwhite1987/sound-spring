@@ -488,7 +488,7 @@ impl SoundboardControllerRust {
     fn rescan_tabs(&mut self, config: &Config, current_path: Option<&str>) {
         match TabsRepository::scan(config) {
             Ok(tabs) => {
-                tracing::info!("rescanned {} tab(s)", tabs.len());
+                tracing::debug!("rescanned {} tab(s)", tabs.len());
                 self.replace_tabs(tabs, current_path);
             }
             Err(err) => tracing::warn!("tab rescan failed: {err:#}"),

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Mutex, OnceLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zbus::{proxy, Connection};
 
@@ -138,7 +138,7 @@ fn parse_bound_shortcuts(results: &HashMap<String, OwnedValue>) -> Vec<BoundShor
 fn log_bound_shortcuts(requested: &[ShortcutDef], bound: &[BoundShortcut]) {
     for def in requested {
         let preferred = portal_trigger(&def.trigger);
-        info!(
+        debug!(
             "portal bind request: id={} preferred_trigger={preferred}",
             def.id
         );
@@ -175,7 +175,7 @@ fn log_bound_shortcuts(requested: &[ShortcutDef], bound: &[BoundShortcut]) {
         } else {
             let internal = trigger_from_portal(&shortcut.trigger_description)
                 .unwrap_or_else(|| shortcut.trigger_description.clone());
-            info!(
+            debug!(
                 "portal shortcut bound: id={} trigger={} internal={internal}",
                 shortcut.id, shortcut.trigger_description
             );
@@ -289,6 +289,11 @@ pub async fn bind_with_options(
         .iter()
         .filter(|s| !s.trigger_description.is_empty())
         .count();
+    info!(
+        "portal bound {}/{} shortcuts ({assigned_count} with keys)",
+        bound_shortcuts.len(),
+        requested_count
+    );
     // A sub-100 ms bind with zero assigned keys is the classic
     // "portal-kde silently dismissed the dialog" signature (typically caused
     // by a stale parent-cgroup app_id — see docs/global-shortcuts.md). A fast
@@ -333,7 +338,7 @@ pub async fn bind_with_options(
                 continue;
             }
             let id = args.shortcut_id().to_string();
-            info!(
+            debug!(
                 "portal shortcut activated: id={id} session={} timestamp={}",
                 session_path_for_task.as_str(),
                 args.timestamp()

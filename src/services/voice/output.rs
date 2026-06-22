@@ -53,7 +53,7 @@ impl Output {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if !line.is_empty() {
-                        warn!("pw-cat playback: {line}");
+                        debug!("pw-cat playback: {line}");
                     }
                 }
             });
