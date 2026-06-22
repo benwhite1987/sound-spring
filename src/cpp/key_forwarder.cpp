@@ -48,7 +48,7 @@ static QObject* key_forwarder_provider(QQmlEngine*, QJSEngine*)
 extern "C" void sound_spring_register_key_forwarder()
 {
     qmlRegisterSingletonType<KeyForwarder>(
-        "com.benkahn.soundboard",
+        "io.github.benwhite1987.soundspring",
         1,
         0,
         "KeyForwarder",

@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import com.benkahn.soundboard
+import io.github.benwhite1987.soundspring
 
 Button {
     id: root

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
-import com.benkahn.soundboard
+import io.github.benwhite1987.soundspring
 
 ApplicationWindow {
     id: root

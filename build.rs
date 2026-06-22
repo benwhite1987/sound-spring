@@ -32,7 +32,7 @@ fn main() {
         .qt_module("QuickDialogs2")
         .qt_module("Widgets")
         .qml_module(QmlModule {
-            uri: "com.benkahn.soundboard",
+            uri: "io.github.benwhite1987.soundspring",
             rust_files: &[
                 "src/qobjects/controller.rs",
                 "src/qobjects/settings.rs",

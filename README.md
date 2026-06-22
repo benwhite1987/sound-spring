@@ -108,7 +108,7 @@ See [docs/global-shortcuts.md](docs/global-shortcuts.md) for the full diagnostic
 ## Packaging
 
 - **Distro packages:** `make install DESTDIR=... PREFIX=/usr`
-- **Flatpak:** see [`packaging/flatpak/com.benkahn.SoundSpring.yml`](packaging/flatpak/com.benkahn.SoundSpring.yml)
+- **Flatpak:** see [`packaging/flatpak/io.github.benwhite1987.SoundSpring.yml`](packaging/flatpak/io.github.benwhite1987.SoundSpring.yml)
 - **AppImage:** install into an AppDir with the same `make install PREFIX=/usr` pattern
 
 Host dependencies (PipeWire, `paplay`, optional `ffmpeg`) are not bundled in the binary.

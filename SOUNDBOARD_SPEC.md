@@ -479,7 +479,7 @@ fn main() {
         .qt_module("Quick")
         .qt_module("QuickControls2")
         .qml_module(QmlModule {
-            uri: "com.benkahn.soundboard",
+            uri: "io.github.benwhite1987.soundspring",
             rust_files: &[
                 "src/qobjects/controller.rs",
                 "src/qobjects/settings.rs",

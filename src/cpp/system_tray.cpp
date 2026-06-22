@@ -124,7 +124,7 @@ static QObject* system_tray_provider(QQmlEngine*, QJSEngine*)
 extern "C" void sound_spring_register_system_tray()
 {
     qmlRegisterSingletonType<SystemTray>(
-        "com.benkahn.soundboard",
+        "io.github.benwhite1987.soundspring",
         1,
         0,
         "SystemTray",

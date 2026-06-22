@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import com.benkahn.soundboard
+import io.github.benwhite1987.soundspring
 
 ColumnLayout {
     id: root

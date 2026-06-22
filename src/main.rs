@@ -93,7 +93,7 @@ fn main() -> Result<()> {
 
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from(
-            "qrc:/qt/qml/com/benkahn/soundboard/qml/Main.qml",
+            "qrc:/qt/qml/io/github/benwhite1987/soundspring/qml/Main.qml",
         ));
     }
     if let Some(start) = PROCESS_START.get() {

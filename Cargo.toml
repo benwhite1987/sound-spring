@@ -2,6 +2,7 @@
 name = "sound-spring"
 version = "0.1.0"
 edition = "2021"
+authors = ["Ben White"]
 description = "Sound Spring — PipeWire soundboard for KDE Plasma"
 license = "MIT OR Apache-2.0"
 
