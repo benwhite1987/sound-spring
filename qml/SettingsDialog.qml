@@ -341,6 +341,53 @@ Window {
                             text: "Temporarily mutes your physical microphone while a sound is playing."
                         }
                     }
+
+                    SettingsSection {
+                        title: "Gate timing"
+                        description: "Fine-tune voice gating when speaker verification or noise suppression is routing your mic. Leave defaults unless speech feels clipped."
+
+                        Label { text: "Tail hold (ms)" }
+                        SpinBox {
+                            from: 0
+                            to: 400
+                            stepSize: 10
+                            value: settings ? settings.gateHangoverMs : 200
+                            onValueChanged: if (settings) settings.gateHangoverMs = value
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: appTheme.textMuted
+                            text: "Keeps the gate open briefly after VAD drops, preserving word endings."
+                        }
+
+                        Label { text: "Fade-out (ms)" }
+                        SpinBox {
+                            from: 20
+                            to: 200
+                            stepSize: 5
+                            value: settings ? settings.gateReleaseMs : 100
+                            onValueChanged: if (settings) settings.gateReleaseMs = value
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: appTheme.textMuted
+                            text: "How long the output gate takes to close after speech ends."
+                        }
+
+                        CheckBox {
+                            text: "Verification warm-up (pass audio until first failed check)"
+                            checked: settings ? settings.verificationWarmup : true
+                            onCheckedChanged: if (settings) settings.verificationWarmup = checked
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: appTheme.textMuted
+                            text: "Avoids silencing the first syllable while the speaker model warms up. Disable for stricter gating from the first sample."
+                        }
+                    }
                 }
             }
 

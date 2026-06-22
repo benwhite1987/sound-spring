@@ -111,6 +111,15 @@ pub struct VoiceConfig {
     /// Spectrum display source: `raw`, `filtered`, or `mixed`.
     #[serde(default = "default_spectrum_source")]
     pub spectrum_source: String,
+    /// Hold the output gate open this long after VAD drops (ms).
+    #[serde(default = "default_gate_hangover_ms")]
+    pub gate_hangover_ms: u32,
+    /// Output gate fade-out time when closing (ms).
+    #[serde(default = "default_gate_release_ms")]
+    pub gate_release_ms: u32,
+    /// Pass audio through until the first failed speaker check.
+    #[serde(default = "default_true")]
+    pub verification_warmup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +196,9 @@ impl Default for VoiceConfig {
             spectrum_fps: default_spectrum_fps(),
             vad_enabled: true,
             spectrum_source: default_spectrum_source(),
+            gate_hangover_ms: default_gate_hangover_ms(),
+            gate_release_ms: default_gate_release_ms(),
+            verification_warmup: true,
         }
     }
 }
@@ -204,11 +216,19 @@ fn default_match_threshold() -> f32 {
 }
 
 fn default_vad_open_threshold() -> f32 {
-    0.7
+    0.45
 }
 
 fn default_vad_close_threshold() -> f32 {
-    0.3
+    0.20
+}
+
+fn default_gate_hangover_ms() -> u32 {
+    200
+}
+
+fn default_gate_release_ms() -> u32 {
+    100
 }
 
 fn default_enrollment_path() -> String {

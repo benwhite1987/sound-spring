@@ -20,16 +20,28 @@ use super::resample::Resampler;
 use super::spectrum::SpectrumAnalyzer;
 use super::vad::Vad;
 use super::{
-    VoiceShared, ENROLL_CMD_CANCEL, ENROLL_CMD_CLEAR, ENROLL_CMD_START, ENROLL_SAMPLES, FFT_HOP,
-    FFT_SIZE, TARGET_RATE,
+    VoiceShared, CAPTURE_RATE, ENROLL_CMD_CANCEL, ENROLL_CMD_CLEAR, ENROLL_CMD_START,
+    ENROLL_SAMPLES, FFT_HOP, FFT_SIZE, TARGET_RATE,
 };
 
-/// Voiced 16 kHz samples accumulated before running one verification embedding (~1.5 s).
-const VERIFY_WINDOW: usize = TARGET_RATE as usize * 3 / 2;
+/// Voiced 16 kHz samples accumulated before running one verification embedding (~0.75 s).
+const VERIFY_WINDOW: usize = TARGET_RATE as usize * 3 / 4;
 
-/// Per-sample gain step for the output gate (~10 ms attack/release at 48 kHz),
-/// keeping open/close transitions click-free.
-const GATE_STEP: f32 = 1.0 / 480.0;
+/// Output gate attack (~3 ms at 48 kHz).
+const GATE_ATTACK_MS: f32 = 3.0;
+
+fn gate_ramp_steps(release_ms: u32) -> (f32, f32) {
+    let attack_samples = CAPTURE_RATE as f32 * GATE_ATTACK_MS / 1000.0;
+    let release_samples = CAPTURE_RATE as f32 * release_ms as f32 / 1000.0;
+    (
+        1.0 / attack_samples.max(1.0),
+        1.0 / release_samples.max(1.0),
+    )
+}
+
+fn hangover_samples(hangover_ms: u32) -> usize {
+    (CAPTURE_RATE as u64 * hangover_ms as u64 / 1000) as usize
+}
 
 pub struct VoicePipeline {
     stop: Arc<AtomicBool>,
@@ -97,10 +109,7 @@ fn run(
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
-    // Current output-gate gain, ramped toward 0/1 to avoid clicks.
     let mut gate_gain: f32 = 0.0;
-    // DeepFilterNet3 denoiser for the routed output path. A load failure
-    // degrades to passthrough (gating still works, just without suppression).
     let mut denoiser = if suppression {
         match Denoiser::new() {
             Ok(d) => Some(d),
@@ -112,12 +121,9 @@ fn run(
     } else {
         None
     };
-    // Reused scratch for denoised (or passthrough) output samples.
     let mut out_scratch: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
     let mut filtered_analyzer = SpectrumAnalyzer::new();
     let mut filtered_window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
-    // A VAD failure (e.g. ONNX runtime unavailable) degrades to spectrum-only;
-    // verification then runs ungated.
     let mut vad = match Vad::new(vad_open, vad_close) {
         Ok(vad) => Some(vad),
         Err(err) => {
@@ -128,12 +134,12 @@ fn run(
     let vad_available = vad.is_some();
 
     let mut window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
-    // 16 kHz stream feeding the VAD; contiguous across iterations.
     let mut resampled = Vec::with_capacity(FFT_SIZE);
 
     let mut enrolling = false;
     let mut enroll_buf: Vec<f32> = Vec::new();
     let mut verify_buf: Vec<f32> = Vec::with_capacity(VERIFY_WINDOW + FFT_SIZE);
+    let mut hangover_remaining: usize = 0;
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -172,9 +178,10 @@ fn run(
             continue;
         }
 
+        let (attack_step, release_step) = gate_ramp_steps(shared.gate_release_ms());
+
         while window.len() >= FFT_SIZE {
             let magnitudes = analyzer.analyze(&window[..FFT_SIZE]).to_vec();
-            // Newest frame wins; the UI only renders the latest.
             shared.spectrum.force_push(magnitudes);
 
             resampled.clear();
@@ -185,7 +192,7 @@ fn run(
             }
 
             let vad_on = shared.vad_enabled();
-            let active = if vad_on {
+            let vad_active = if vad_on {
                 match vad.as_mut() {
                     Some(vad) => {
                         let (open, close) = shared.vad_thresholds();
@@ -200,8 +207,26 @@ fn run(
                 shared.set_vad(0.0, false);
                 false
             };
-            // When VAD is unavailable or disabled we can't gate on speech.
-            let voiced = active || !vad_available || !vad_on;
+            let voiced = vad_active || !vad_available || !vad_on;
+
+            let effective_voiced = if !vad_on || !vad_available {
+                true
+            } else if vad_active {
+                hangover_remaining = hangover_samples(shared.gate_hangover_ms());
+                true
+            } else if hangover_remaining > 0 {
+                hangover_remaining = hangover_remaining.saturating_sub(FFT_HOP);
+                true
+            } else {
+                false
+            };
+
+            if !effective_voiced
+                && shared.verification_warmup_enabled()
+                && !shared.speaker_state().1
+            {
+                shared.set_verify_warmup(true);
+            }
 
             if enrolling {
                 enroll_buf.extend_from_slice(&resampled);
@@ -226,19 +251,21 @@ fn run(
                 verify_buf.clear();
             }
 
-            // Gate state for the UI: speech present and (verification off or the
-            // enrolled speaker matched).
             let verifying = shared.verification_enabled() && shared.is_enrolled();
+            let matched = shared.speaker_state().1;
             let passing = if verifying {
-                voiced && shared.speaker_state().1
+                effective_voiced && (matched || shared.verify_warmup())
             } else {
-                voiced
+                effective_voiced
             };
             shared.set_passing(passing);
 
-            // Denoise then gate — same path for virtmic output and filtered spectrum.
             let gate_open = if verifying {
-                voiced && shared.speaker_state().1
+                if !shared.verification_warmup_enabled() {
+                    effective_voiced && matched
+                } else {
+                    effective_voiced && (matched || shared.verify_warmup())
+                }
             } else {
                 true
             };
@@ -252,9 +279,9 @@ fn run(
 
             for &sample in &out_scratch {
                 if gate_gain < target {
-                    gate_gain = (gate_gain + GATE_STEP).min(target);
+                    gate_gain = (gate_gain + attack_step).min(target);
                 } else if gate_gain > target {
-                    gate_gain = (gate_gain - GATE_STEP).max(target);
+                    gate_gain = (gate_gain - release_step).max(target);
                 }
                 let gated = sample * gate_gain;
                 if let Some(out) = output.as_mut() {

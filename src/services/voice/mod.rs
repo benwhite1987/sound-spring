@@ -108,6 +108,14 @@ pub struct VoiceShared {
     latest_filtered: Mutex<Vec<f32>>,
     /// When false, mixed spectrum mirrors filtered (no SFX monitor contribution).
     sfx_mix_enabled: AtomicBool,
+    /// Config: hold gate open after VAD drops (milliseconds).
+    gate_hangover_ms: AtomicU32,
+    /// Config: output gate release ramp (milliseconds).
+    gate_release_ms: AtomicU32,
+    /// Config: allow passthrough until first failed speaker check.
+    verification_warmup_enabled: AtomicBool,
+    /// Runtime: warm-up gate active until first confident non-match.
+    verify_warmup: AtomicBool,
 }
 
 impl VoiceShared {
@@ -130,12 +138,16 @@ impl VoiceShared {
             enroll_progress: AtomicU32::new(0),
             enroll_done_seq: AtomicU32::new(0),
             capture_error: Mutex::new(String::new()),
-            vad_open: AtomicU32::new(0.7_f32.to_bits()),
-            vad_close: AtomicU32::new(0.3_f32.to_bits()),
+            vad_open: AtomicU32::new(0.45_f32.to_bits()),
+            vad_close: AtomicU32::new(0.20_f32.to_bits()),
             vad_enabled: AtomicBool::new(true),
             spectrum_source: AtomicU8::new(SPECTRUM_SOURCE_RAW),
             latest_filtered: Mutex::new(vec![0.0; SPECTRUM_BINS]),
             sfx_mix_enabled: AtomicBool::new(false),
+            gate_hangover_ms: AtomicU32::new(200),
+            gate_release_ms: AtomicU32::new(100),
+            verification_warmup_enabled: AtomicBool::new(true),
+            verify_warmup: AtomicBool::new(false),
         }
     }
 
@@ -318,6 +330,40 @@ impl VoiceShared {
     pub fn sfx_mix_enabled(&self) -> bool {
         self.sfx_mix_enabled.load(Ordering::Relaxed)
     }
+
+    pub fn set_gate_hangover_ms(&self, ms: u32) {
+        self.gate_hangover_ms.store(ms, Ordering::Relaxed);
+    }
+
+    pub fn gate_hangover_ms(&self) -> u32 {
+        self.gate_hangover_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn set_gate_release_ms(&self, ms: u32) {
+        self.gate_release_ms
+            .store(ms.clamp(20, 200), Ordering::Relaxed);
+    }
+
+    pub fn gate_release_ms(&self) -> u32 {
+        self.gate_release_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn set_verification_warmup_enabled(&self, enabled: bool) {
+        self.verification_warmup_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn verification_warmup_enabled(&self) -> bool {
+        self.verification_warmup_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_verify_warmup(&self, active: bool) {
+        self.verify_warmup.store(active, Ordering::Relaxed);
+    }
+
+    pub fn verify_warmup(&self) -> bool {
+        self.verify_warmup.load(Ordering::Relaxed)
+    }
 }
 
 /// Map a config/UI spectrum source string to [`SPECTRUM_SOURCE_*`].
@@ -329,11 +375,30 @@ pub fn spectrum_source_from_str(s: &str) -> u8 {
     }
 }
 
-/// Hysteresis band below the open threshold (spec default: 0.7 open / 0.3 close).
-pub const VAD_CLOSE_OFFSET: f32 = 0.4;
-
+/// Derive a VAD close threshold from the open threshold (minimum 0.12 hysteresis).
 pub fn vad_close_for_open(open: f32) -> f32 {
-    (open - VAD_CLOSE_OFFSET).clamp(0.05, open)
+    let close = (open - 0.12).max(open * 0.5);
+    close.clamp(0.08, open - 0.02)
+}
+
+#[cfg(test)]
+mod vad_threshold_tests {
+    use super::vad_close_for_open;
+
+    #[test]
+    fn close_stays_below_open_with_hysteresis() {
+        for &open in &[0.45_f32, 0.30, 0.15, 0.95] {
+            let close = vad_close_for_open(open);
+            assert!(close < open, "open={open} close={close}");
+            assert!(open - close >= 0.02, "open={open} close={close}");
+        }
+    }
+
+    #[test]
+    fn default_open_maps_to_sane_close() {
+        let close = vad_close_for_open(0.45);
+        assert!((close - 0.22).abs() < 0.02 || close >= 0.20);
+    }
 }
 
 static VOICE_SHARED: OnceLock<Arc<VoiceShared>> = OnceLock::new();
@@ -364,6 +429,9 @@ pub struct VoiceParams {
     pub suppression: bool,
     /// When false, VAD inference is skipped and all audio is treated as voiced.
     pub vad_enabled: bool,
+    pub gate_hangover_ms: u32,
+    pub gate_release_ms: u32,
+    pub verification_warmup: bool,
 }
 
 use crate::services::pipewire::SFX_SINK;
@@ -392,6 +460,10 @@ impl VoiceSession {
         shared.set_match_threshold(params.match_threshold);
         shared.set_vad_thresholds(params.vad_open, params.vad_close);
         shared.set_vad_enabled(params.vad_enabled);
+        shared.set_gate_hangover_ms(params.gate_hangover_ms);
+        shared.set_gate_release_ms(params.gate_release_ms);
+        shared.set_verification_warmup_enabled(params.verification_warmup);
+        shared.set_verify_warmup(params.verification_warmup && params.verification_enabled);
 
         let busy = Arc::new(AtomicBool::new(false));
         let (job_tx, job_rx) = std::sync::mpsc::channel::<embed_worker::EmbedJob>();

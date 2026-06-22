@@ -76,6 +76,9 @@ fn run(
                 info!("loaded voiceprint ({} dims)", vp.dim());
                 verifier.set_voiceprint(Some(vp));
                 shared.set_enrolled(true);
+                if shared.verification_warmup_enabled() && shared.verification_enabled() {
+                    shared.set_verify_warmup(true);
+                }
             }
             Err(err) => warn!("failed to load voiceprint: {err:#}"),
         }
@@ -110,6 +113,9 @@ fn run(
                         Ok(emb) => {
                             let (score, matched) = verifier.verify(&emb);
                             shared.set_speaker(score, matched);
+                            if shared.verification_warmup_enabled() && !matched {
+                                shared.set_verify_warmup(false);
+                            }
                         }
                         Err(err) => warn!("verify embedding failed: {err:#}"),
                     }
@@ -126,6 +132,9 @@ fn run(
                             }
                             verifier.set_voiceprint(Some(vp));
                             shared.set_enrolled(true);
+                            if shared.verification_warmup_enabled() && shared.verification_enabled() {
+                                shared.set_verify_warmup(true);
+                            }
                             shared.bump_enroll_done();
                         }
                         Err(err) => warn!("enrollment failed: {err:#}"),
@@ -139,6 +148,7 @@ fn run(
                 verifier.set_voiceprint(None);
                 shared.set_enrolled(false);
                 shared.set_speaker(0.0, false);
+                shared.set_verify_warmup(false);
             }
         }
         busy.store(false, Ordering::Relaxed);

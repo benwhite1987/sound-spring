@@ -215,7 +215,7 @@ Item {
                             enabled: voiceController.vadEnabled
 
                             Label {
-                                text: "Level"
+                                text: "VAD sensitivity"
                                 Layout.preferredWidth: voicePanel.meterLabelWidth
                                 color: voicePanel.textSecondary
                                 font.pixelSize: 12
@@ -270,6 +270,14 @@ Item {
                                 text: voiceController.isSpeaking ? "Speaking" : "Silent"
                                 color: voiceController.isSpeaking ? voicePanel.accent : voicePanel.textMuted
                             }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: voicePanel.textMuted
+                            text: "Controls speech detection. Speaker verification adds a separate identity gate."
                         }
                     }
 

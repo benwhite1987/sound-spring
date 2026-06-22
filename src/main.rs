@@ -144,6 +144,13 @@ fn sync_sfx_mix_for_playback(active_sessions: usize) {
     voice_shared().set_sfx_mix_enabled(active_sessions > 0);
 }
 
+fn sync_voice_gate_config(config: &Config) {
+    let shared = voice_shared();
+    shared.set_gate_hangover_ms(config.voice.gate_hangover_ms);
+    shared.set_gate_release_ms(config.voice.gate_release_ms);
+    shared.set_verification_warmup_enabled(config.voice.verification_warmup);
+}
+
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
@@ -449,6 +456,9 @@ async fn reconcile_voice(
         },
         suppression: config.voice.suppression_enabled,
         vad_enabled: config.voice.vad_enabled,
+        gate_hangover_ms: config.voice.gate_hangover_ms,
+        gate_release_ms: config.voice.gate_release_ms,
+        verification_warmup: config.voice.verification_warmup,
     };
     match VoiceSession::start(params) {
         Ok(s) => {
@@ -533,6 +543,7 @@ fn run_backend(
         voice.set_spectrum_source(spectrum_source_from_str(
             &active_config.voice.spectrum_source,
         ));
+        sync_voice_gate_config(&active_config);
         // Engage suppression/gating routing at startup if the config enables it,
         // so the processed mic is active without first opening the Voice panel.
         reconcile_voice(
@@ -585,6 +596,7 @@ fn run_backend(
                                 tab_watch.restart(new_watch_paths, tab_watch_tx.clone());
                             }
                             active_config = new_config;
+                            sync_voice_gate_config(&active_config);
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,

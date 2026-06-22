@@ -24,6 +24,9 @@ pub mod qobject {
         #[qproperty(i32, custom_tab_count)]
         #[qproperty(QString, status_message)]
         #[qproperty(i32, shortcut_count)]
+        #[qproperty(i32, gate_hangover_ms)]
+        #[qproperty(i32, gate_release_ms)]
+        #[qproperty(bool, verification_warmup)]
         type Settings = super::SettingsRust;
 
         #[qinvokable]
@@ -99,6 +102,9 @@ pub struct SettingsRust {
     custom_tab_count: i32,
     status_message: QString,
     shortcut_count: i32,
+    gate_hangover_ms: i32,
+    gate_release_ms: i32,
+    verification_warmup: bool,
     custom_tabs: Vec<TabEntry>,
     shortcuts: Vec<ShortcutDef>,
 }
@@ -139,6 +145,9 @@ impl SettingsRust {
         config.ui.launch_at_login = self.launch_at_login;
         config.paths.tabs_root = PathBuf::from(String::from(self.tabs_root.clone()));
         config.paths.state_dir = PathBuf::from(String::from(self.state_dir.clone()));
+        config.voice.gate_hangover_ms = self.gate_hangover_ms.clamp(0, 400) as u32;
+        config.voice.gate_release_ms = self.gate_release_ms.clamp(20, 200) as u32;
+        config.voice.verification_warmup = self.verification_warmup;
         config.tabs = self.custom_tabs.clone();
         config::normalize_shortcuts_config(&mut config);
         config
@@ -157,6 +166,9 @@ impl SettingsRust {
         self.ignore_numlock = config.shortcuts.ignore_numlock;
         self.minimize_to_tray = config.ui.minimize_to_tray;
         self.launch_at_login = config.ui.launch_at_login;
+        self.gate_hangover_ms = config.voice.gate_hangover_ms as i32;
+        self.gate_release_ms = config.voice.gate_release_ms as i32;
+        self.verification_warmup = config.voice.verification_warmup;
         self.custom_tabs = config.tabs.clone();
         self.custom_tab_count = self.custom_tabs.len() as i32;
         self.shortcuts = ShortcutsManager::resolve_bindings(&config.shortcuts);
@@ -185,6 +197,9 @@ mod properties {
         let custom_tab_count = settings.as_ref().rust().custom_tab_count;
         let status_message = settings.as_ref().rust().status_message.clone();
         let shortcut_count = settings.as_ref().rust().shortcut_count;
+        let gate_hangover_ms = settings.as_ref().rust().gate_hangover_ms;
+        let gate_release_ms = settings.as_ref().rust().gate_release_ms;
+        let verification_warmup = settings.as_ref().rust().verification_warmup;
         settings.as_mut().set_mic_source(mic_source);
         settings.as_mut().set_monitor_sink(monitor_sink);
         settings.as_mut().set_latency_ms(latency_ms);
@@ -204,6 +219,9 @@ mod properties {
         settings.as_mut().set_custom_tab_count(custom_tab_count);
         settings.as_mut().set_status_message(status_message);
         settings.as_mut().set_shortcut_count(shortcut_count);
+        settings.as_mut().set_gate_hangover_ms(gate_hangover_ms);
+        settings.as_mut().set_gate_release_ms(gate_release_ms);
+        settings.as_mut().set_verification_warmup(verification_warmup);
     }
 }
 
