@@ -403,20 +403,16 @@ impl VoiceSession {
         let (mix_capture, mix_spectrum) = {
             let (sfx_producer, sfx_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
             let sfx_monitor = format!("{SFX_SINK}.monitor");
-            match capture::Capture::start(&sfx_monitor, sfx_producer, None) {
-                Ok(sfx_cap) => {
-                    let mix_spec = mix_spectrum::MixSpectrum::spawn(
-                        mix_mic_consumer,
-                        sfx_consumer,
-                        shared.clone(),
-                    )?;
-                    (Some(sfx_cap), Some(mix_spec))
-                }
+            let sfx_cap = match capture::Capture::start(&sfx_monitor, sfx_producer, None) {
+                Ok(cap) => Some(cap),
                 Err(err) => {
-                    tracing::debug!("sfx monitor capture unavailable: {err:#}");
-                    (None, None)
+                    tracing::warn!("sfx monitor capture unavailable: {err:#}");
+                    None
                 }
-            }
+            };
+            let mix_spec =
+                mix_spectrum::MixSpectrum::spawn(mix_mic_consumer, Some(sfx_consumer), shared.clone())?;
+            (sfx_cap, Some(mix_spec))
         };
 
         shared.set_capture_status(true, "");

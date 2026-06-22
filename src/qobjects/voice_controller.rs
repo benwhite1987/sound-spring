@@ -313,8 +313,12 @@ impl qobject::VoiceController {
 
     pub fn persist_mic_muted(mut self: Pin<&mut Self>, muted: bool) {
         self.as_mut().set_mic_muted(muted);
+        let config = crate::config::load_config().unwrap_or_default();
         if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetMicMute { muted });
+            let _ = tx.blocking_send(BackendCommand::SetMicVolume {
+                percent: config.audio.mic_volume,
+                muted,
+            });
         }
     }
 
@@ -324,6 +328,9 @@ impl qobject::VoiceController {
             .shared
             .set_spectrum_source(spectrum_source_from_str(&source_str));
         self.as_mut().set_spectrum_source(source);
+        self.as_mut().rust_mut().latest = vec![0.0; SPECTRUM_BINS];
+        let next = self.rust().spectrum_version.wrapping_add(1);
+        self.as_mut().set_spectrum_version(next);
         if let Some(tx) = BACKEND_TX.get() {
             let _ = tx.blocking_send(BackendCommand::SetSpectrumSource {
                 source: source_str,

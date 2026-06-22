@@ -8,7 +8,7 @@ ApplicationWindow {
     id: root
     width: controller.hasSavedWindowGeometry() ? controller.savedWindowWidth() : 800
     height: controller.hasSavedWindowGeometry() ? controller.savedWindowHeight() : 600
-    minimumWidth: 480
+    minimumWidth: Math.max(520, volumeFooter.layoutMinimumWidth)
     minimumHeight: 400
     visible: true
     title: "Sound Spring"
@@ -243,17 +243,25 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 0
 
-                    PanelButton {
-                        text: "Soundboard"
-                        panelIndex: 0
+                    Item {
                         Layout.fillWidth: true
+                        Layout.preferredWidth: 0
                         Layout.preferredHeight: 36
+                        PanelButton {
+                            anchors.fill: parent
+                            text: "Soundboard"
+                            panelIndex: 0
+                        }
                     }
-                    PanelButton {
-                        text: "Voice"
-                        panelIndex: 1
+                    Item {
                         Layout.fillWidth: true
+                        Layout.preferredWidth: 0
                         Layout.preferredHeight: 36
+                        PanelButton {
+                            anchors.fill: parent
+                            text: "Voice"
+                            panelIndex: 1
+                        }
                     }
                 }
 
@@ -461,197 +469,15 @@ ApplicationWindow {
         }
 
         VoicePanel {
+            controller: controller
             theme: appTheme
         }
     }
 
-    footer: ToolBar {
-        visible: root.activePanel === 0
-        padding: 8
-        spacing: 8
-        background: Rectangle {
-            color: appTheme.chromeBg
-            Rectangle {
-                anchors.top: parent.top
-                width: parent.width
-                height: 1
-                color: appTheme.border
-                opacity: 0.45
-            }
-        }
-
-        RowLayout {
-            anchors.fill: parent
-            spacing: 12
-
-            Label {
-                text: "Remote Output"
-                color: appTheme.textSecondary
-                Layout.rightMargin: 2
-            }
-            ToolButton {
-                id: outMuteButton
-                focusPolicy: Qt.NoFocus
-                display: AbstractButton.TextBesideIcon
-                padding: 6
-                palette.buttonText: appTheme.textPrimary
-                icon.width: 20
-                icon.height: 20
-                icon.name: {
-                    controller.uiVersion
-                    return controller.outputMuted ? "audio-volume-muted" : "audio-volume-high"
-                }
-                text: {
-                    controller.uiVersion
-                    return controller.outputMuted ? "Muted" : ""
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.outputMuted ? 0.45 : 1.0
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: parent.hovered ? appTheme.surfaceHover : "transparent"
-                }
-                ToolTip.visible: hovered
-                ToolTip.text: {
-                    controller.uiVersion
-                    return controller.outputMuted
-                           ? "Output muted — click to unmute"
-                           : "Output unmuted — click to mute"
-                }
-                onClicked: controller.toggleOutputMute()
-            }
-            Slider {
-                id: outVolumeSlider
-                focusPolicy: Qt.NoFocus
-                Layout.preferredWidth: 110
-                Layout.leftMargin: 4
-                from: 0
-                to: 100
-                value: controller.outputVolume
-                live: true
-                enabled: {
-                    controller.uiVersion
-                    return !controller.outputMuted
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.outputMuted ? 0.4 : 1.0
-                }
-                onMoved: controller.updateOutputVolume(Math.round(value))
-                onPressedChanged: if (!pressed)
-                    controller.updateOutputVolume(Math.round(value))
-            }
-            Label {
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-                text: Math.round(outVolumeSlider.value) + "%"
-                color: {
-                    controller.uiVersion
-                    return controller.outputMuted ? appTheme.textMuted : appTheme.textSecondary
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.outputMuted ? 0.4 : 1.0
-                }
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 1
-                Layout.preferredHeight: 28
-                Layout.leftMargin: 8
-                Layout.rightMargin: 8
-                color: appTheme.border
-                opacity: 0.5
-            }
-
-            Label {
-                text: "Local Monitor"
-                color: appTheme.textSecondary
-                Layout.rightMargin: 2
-            }
-            ToolButton {
-                id: monMuteButton
-                focusPolicy: Qt.NoFocus
-                display: AbstractButton.TextBesideIcon
-                padding: 6
-                palette.buttonText: appTheme.textPrimary
-                icon.width: 20
-                icon.height: 20
-                icon.name: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? "audio-volume-muted" : "audio-headphones"
-                }
-                text: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? "Muted" : ""
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? 0.45 : 1.0
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: parent.hovered ? appTheme.surfaceHover : "transparent"
-                }
-                ToolTip.visible: hovered
-                ToolTip.text: {
-                    controller.uiVersion
-                    return controller.monitorMuted
-                           ? "Monitor muted — click to unmute"
-                           : "Monitor unmuted — click to mute"
-                }
-                onClicked: controller.toggleMonitorMute()
-            }
-            Slider {
-                id: monVolumeSlider
-                focusPolicy: Qt.NoFocus
-                Layout.preferredWidth: 110
-                Layout.leftMargin: 4
-                from: 0
-                to: 100
-                value: controller.monitorVolume
-                live: true
-                enabled: {
-                    controller.uiVersion
-                    return !controller.monitorMuted
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? 0.4 : 1.0
-                }
-                onMoved: controller.updateMonitorVolume(Math.round(value))
-                onPressedChanged: if (!pressed)
-                    controller.updateMonitorVolume(Math.round(value))
-            }
-            Label {
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-                text: Math.round(monVolumeSlider.value) + "%"
-                color: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? appTheme.textMuted : appTheme.textSecondary
-                }
-                opacity: {
-                    controller.uiVersion
-                    return controller.monitorMuted ? 0.4 : 1.0
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-
-            AppButton {
-                focusPolicy: Qt.NoFocus
-                text: {
-                    controller.shortcutVersion
-                    var seq = controller.shortcutSequence("stop_all")
-                    return seq.length > 0 ? ("Stop All (" + seq + ")") : "Stop All"
-                }
-                role: "danger"
-                onClicked: controller.stopAll()
-            }
-        }
+    footer: VolumeBar {
+        id: volumeFooter
+        controller: controller
+        theme: appTheme
     }
 
     SettingsDialog {

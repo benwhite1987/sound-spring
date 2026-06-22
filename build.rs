@@ -34,6 +34,7 @@ fn main() {
                 "qml/SoundSpringTheme.qml",
                 "qml/AppButton.qml",
                 "qml/SettingsSection.qml",
+                "qml/VolumeBar.qml",
                 "qml/VoicePanel.qml",
                 "qml/Spectrum.qml",
                 "qml/EnrollmentDialog.qml",

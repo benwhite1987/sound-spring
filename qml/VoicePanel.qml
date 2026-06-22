@@ -6,6 +6,7 @@ import com.benkahn.soundboard
 Item {
     id: voicePanel
 
+    required property SoundboardController controller
     property var theme
 
     readonly property color textPrimary: theme ? theme.textPrimary : "#ececec"
@@ -13,11 +14,54 @@ Item {
     readonly property color textMuted: theme ? theme.textMuted : "#888892"
     readonly property color accent: theme ? theme.accent : "#6abf69"
     readonly property color danger: theme ? theme.danger : "#c62828"
+    readonly property color infoAccent: theme ? theme.infoAccent : "#5b9bd5"
     readonly property color surface: theme ? theme.surface : "#333338"
     readonly property color border: theme ? theme.border : "#5a5a62"
     readonly property color warningAccent: theme ? theme.warningAccent : "#ffb74d"
     readonly property int meterLabelWidth: 96
     readonly property int contentMaxWidth: 720
+
+    function activeFilterNames() {
+        var names = []
+        if (voiceController.vadEnabled)
+            names.push("VAD")
+        if (voiceController.verificationEnabled && voiceController.isEnrolled)
+            names.push("voiceprint")
+        if (voiceController.suppressionEnabled)
+            names.push("denoiser")
+        return names
+    }
+
+    function captureStatusColor() {
+        voiceController.spectrumVersion
+        voicePanel.controller.uiVersion
+        var err = voiceController.captureError
+        if (err && err.length > 0)
+            return voicePanel.danger
+        if (voicePanel.controller.micMuted)
+            return voicePanel.danger
+        if (!voiceController.isCapturing)
+            return voicePanel.textMuted
+        if (activeFilterNames().length > 0)
+            return voicePanel.infoAccent
+        return voicePanel.accent
+    }
+
+    function captureStatusText() {
+        voiceController.spectrumVersion
+        voicePanel.controller.uiVersion
+        var err = voiceController.captureError
+        if (err && err.length > 0)
+            return err
+        if (voicePanel.controller.micMuted)
+            return "Microphone muted"
+        if (!voiceController.isCapturing)
+            return "Capture idle"
+        var filters = activeFilterNames()
+        if (filters.length > 0)
+            return "Listening to microphone / Filtering with " + filters.join(", ")
+        return "Listening to microphone"
+    }
 
     VoiceController {
         id: voiceController
@@ -130,26 +174,16 @@ Item {
                             width: 8
                             height: 8
                             radius: 4
-                            color: {
-                                voiceController.spectrumVersion
-                                return voiceController.isCapturing ? voicePanel.accent : voicePanel.textMuted
-                            }
+                            color: voicePanel.captureStatusColor()
                         }
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             font.pixelSize: 12
-                            text: {
-                                voiceController.spectrumVersion
-                                var err = voiceController.captureError
-                                if (err && err.length > 0)
-                                    return err
-                                return voiceController.isCapturing
-                                       ? "Listening to microphone"
-                                       : "Capture idle"
-                            }
+                            text: voicePanel.captureStatusText()
                             color: {
                                 voiceController.spectrumVersion
+                                voicePanel.controller.uiVersion
                                 var err = voiceController.captureError
                                 if (err && err.length > 0)
                                     return voicePanel.danger
@@ -157,9 +191,9 @@ Item {
                             }
                         }
                         AppButton {
-                            text: voiceController.micMuted ? "Unmute mic" : "Mute mic"
-                            role: voiceController.micMuted ? "danger" : "secondary"
-                            onClicked: voiceController.toggleMicMute()
+                            text: voicePanel.controller.micMuted ? "Unmute mic" : "Mute mic"
+                            role: voicePanel.controller.micMuted ? "danger" : "secondary"
+                            onClicked: voicePanel.controller.toggleMicMute()
                         }
                     }
 

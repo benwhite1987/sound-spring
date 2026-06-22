@@ -19,7 +19,7 @@ pub struct MixSpectrum {
 impl MixSpectrum {
     pub fn spawn(
         mic: Consumer<f32>,
-        sfx: Consumer<f32>,
+        sfx: Option<Consumer<f32>>,
         shared: Arc<VoiceShared>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
@@ -45,7 +45,7 @@ impl Drop for MixSpectrum {
 
 fn run(
     mut mic: Consumer<f32>,
-    mut sfx: Consumer<f32>,
+    mut sfx: Option<Consumer<f32>>,
     shared: Arc<VoiceShared>,
     stop: Arc<AtomicBool>,
 ) {
@@ -56,18 +56,23 @@ fn run(
         let mut got_any = false;
 
         while let Ok(mic_sample) = mic.pop() {
-            let sfx_sample = sfx.pop().unwrap_or(0.0);
+            let sfx_sample = sfx
+                .as_mut()
+                .and_then(|s| s.pop().ok())
+                .unwrap_or(0.0);
             window.push(mic_sample + sfx_sample);
             got_any = true;
             if window.len() >= FFT_SIZE * 2 {
                 break;
             }
         }
-        while let Ok(sfx_sample) = sfx.pop() {
-            window.push(sfx_sample);
-            got_any = true;
-            if window.len() >= FFT_SIZE * 2 {
-                break;
+        if let Some(sfx) = sfx.as_mut() {
+            while let Ok(sfx_sample) = sfx.pop() {
+                window.push(sfx_sample);
+                got_any = true;
+                if window.len() >= FFT_SIZE * 2 {
+                    break;
+                }
             }
         }
 

@@ -40,6 +40,8 @@ pub struct AudioConfig {
     pub output_volume: u8,
     #[serde(default = "default_volume")]
     pub monitor_volume: u8,
+    #[serde(default = "default_volume")]
+    pub mic_volume: u8,
     #[serde(default)]
     pub output_muted: bool,
     #[serde(default)]
@@ -133,6 +135,7 @@ impl Default for AudioConfig {
             auto_teardown: true,
             output_volume: default_volume(),
             monitor_volume: default_volume(),
+            mic_volume: default_volume(),
             output_muted: false,
             monitor_muted: false,
             interruption_mode: default_interruption_mode(),

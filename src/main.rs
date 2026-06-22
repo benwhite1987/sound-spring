@@ -323,13 +323,18 @@ async fn apply_runtime_config(
     let mic_mute_changed = initial
         || previous.is_some_and(|prev| {
             prev.audio.mic_muted != config.audio.mic_muted
+                || prev.audio.mic_volume != config.audio.mic_volume
                 || prev.audio.mic_source != config.audio.mic_source
         });
     if mic_mute_changed && !config.audio.mic_source.is_empty() {
-        if let Err(err) =
-            PipewireManager::set_source_mute(&config.audio.mic_source, config.audio.mic_muted).await
+        if let Err(err) = PipewireManager::set_source_volume(
+            &config.audio.mic_source,
+            config.audio.mic_volume,
+            config.audio.mic_muted,
+        )
+        .await
         {
-            warn!("failed to apply mic mute: {err:#}");
+            warn!("failed to apply mic volume: {err:#}");
         }
     }
 
@@ -662,19 +667,21 @@ fn run_backend(
                             }
                             voice_shared().set_vad_enabled(enabled);
                         }
-                        Some(BackendCommand::SetMicMute { muted }) => {
+                        Some(BackendCommand::SetMicVolume { percent, muted }) => {
                             active_config.audio.mic_muted = muted;
+                            active_config.audio.mic_volume = percent;
                             if let Err(err) = config::save_config(&active_config) {
-                                warn!("failed to persist mic mute setting: {err:#}");
+                                warn!("failed to persist mic volume setting: {err:#}");
                             }
                             if !active_config.audio.mic_source.is_empty() {
-                                if let Err(err) = PipewireManager::set_source_mute(
+                                if let Err(err) = PipewireManager::set_source_volume(
                                     &active_config.audio.mic_source,
+                                    percent,
                                     muted,
                                 )
                                 .await
                                 {
-                                    warn!("failed to set mic mute: {err:#}");
+                                    warn!("failed to set mic volume: {err:#}");
                                 }
                             }
                         }

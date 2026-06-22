@@ -289,6 +289,39 @@ impl PipewireManager {
         Ok(())
     }
 
+    pub async fn set_source_volume(source: &str, percent: u8, muted: bool) -> Result<()> {
+        if source.is_empty() {
+            return Ok(());
+        }
+        let mute_arg = if muted { "1" } else { "0" };
+        let output = Command::new("pactl")
+            .args(["set-source-mute", source, mute_arg])
+            .output()
+            .await
+            .context("pactl set-source-mute")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl set-source-mute failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        if !muted {
+            let volume = (65535 * percent as u32 / 100).to_string();
+            let output = Command::new("pactl")
+                .args(["set-source-volume", source, &volume])
+                .output()
+                .await
+                .context("pactl set-source-volume")?;
+            if !output.status.success() {
+                return Err(anyhow!(
+                    "pactl set-source-volume failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn unload_module(id: u32) {
         let _ = Command::new("pactl")
             .args(["unload-module", &id.to_string()])

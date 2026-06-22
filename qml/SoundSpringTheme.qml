@@ -22,4 +22,5 @@ QtObject {
     readonly property color warningTextMuted: "#e6cf94"
     readonly property color warningDetail: "#a89567"
     readonly property color warningAccent: "#ffb74d"
+    readonly property color infoAccent: "#5b9bd5"
 }

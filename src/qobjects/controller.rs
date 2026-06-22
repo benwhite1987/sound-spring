@@ -23,8 +23,10 @@ pub mod qobject {
         #[qproperty(i32, ui_version)]
         #[qproperty(i32, output_volume)]
         #[qproperty(i32, monitor_volume)]
+        #[qproperty(i32, mic_volume)]
         #[qproperty(bool, output_muted)]
         #[qproperty(bool, monitor_muted)]
+        #[qproperty(bool, mic_muted)]
         #[qproperty(QString, global_shortcuts_status)]
         #[qproperty(QString, tab_warning)]
         type SoundboardController = super::SoundboardControllerRust;
@@ -66,6 +68,12 @@ pub mod qobject {
 
         #[qinvokable]
         fn toggle_monitor_mute(self: Pin<&mut SoundboardController>);
+
+        #[qinvokable]
+        fn update_mic_volume(self: Pin<&mut SoundboardController>, volume: i32);
+
+        #[qinvokable]
+        fn toggle_mic_mute(self: Pin<&mut SoundboardController>);
 
         #[qinvokable]
         fn set_playback_keys_enabled(self: Pin<&mut SoundboardController>, enabled: bool);
@@ -291,7 +299,7 @@ pub enum BackendCommand {
     SetVoiceVerification { enabled: bool, threshold: f32 },
     SetVoiceSuppression { enabled: bool },
     SetVoiceVad { enabled: bool },
-    SetMicMute { muted: bool },
+    SetMicVolume { percent: u8, muted: bool },
     SetSpectrumSource { source: String },
     Shutdown,
 }
@@ -356,8 +364,10 @@ pub struct SoundboardControllerRust {
     ui_version: i32,
     output_volume: i32,
     monitor_volume: i32,
+    mic_volume: i32,
     output_muted: bool,
     monitor_muted: bool,
+    mic_muted: bool,
     global_shortcuts_status: QString,
     tab_warning: QString,
     tabs: Vec<Tab>,
@@ -428,16 +438,29 @@ impl SoundboardControllerRust {
     fn persist_volumes(&self) {
         let output_volume = self.output_volume.clamp(0, 100) as u8;
         let monitor_volume = self.monitor_volume.clamp(0, 100) as u8;
+        let mic_volume = self.mic_volume.clamp(0, 100) as u8;
         let output_muted = self.output_muted;
         let monitor_muted = self.monitor_muted;
+        let mic_muted = self.mic_muted;
         std::thread::spawn(move || {
             let mut config = crate::config::load_config().unwrap_or_default();
             config.audio.output_volume = output_volume;
             config.audio.monitor_volume = monitor_volume;
+            config.audio.mic_volume = mic_volume;
             config.audio.output_muted = output_muted;
             config.audio.monitor_muted = monitor_muted;
+            config.audio.mic_muted = mic_muted;
             let _ = crate::config::save_config(&config);
         });
+    }
+
+    fn push_mic_volume(&self) {
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::SetMicVolume {
+                percent: self.mic_volume.clamp(0, 100) as u8,
+                muted: self.mic_muted,
+            });
+        }
     }
 
     pub fn replace_tabs(&mut self, tabs: Vec<Tab>, current_path: Option<&str>) {
@@ -670,6 +693,12 @@ impl SoundboardControllerRust {
         self.monitor_muted = !self.monitor_muted;
         self.persist_volumes();
         self.push_volumes();
+    }
+
+    fn toggle_mic_mute_internal(&mut self) {
+        self.mic_muted = !self.mic_muted;
+        self.persist_volumes();
+        self.push_mic_volume();
     }
 
     fn handle_key_event_internal(
@@ -1195,6 +1224,25 @@ impl qobject::SoundboardController {
         properties::sync_volume_properties(self.as_mut());
     }
 
+    pub fn update_mic_volume(mut self: Pin<&mut Self>, volume: i32) {
+        let volume = volume.clamp(0, 100);
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.mic_volume = volume;
+            if volume > 0 {
+                rust.mic_muted = false;
+            }
+            rust.persist_volumes();
+            rust.push_mic_volume();
+        }
+        properties::sync_volume_properties(self.as_mut());
+    }
+
+    pub fn toggle_mic_mute(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().toggle_mic_mute_internal();
+        properties::sync_volume_properties(self.as_mut());
+    }
+
     pub fn note_first_paint(self: Pin<&mut Self>) {
         if let Some(start) = crate::PROCESS_START.get() {
             tracing::info!(
@@ -1256,6 +1304,14 @@ impl qobject::SoundboardController {
                     rust.tabs_root = config.paths.tabs_root.clone();
                     rust.state_path = state_path;
                     rust.window_geometry = saved.window_geometry;
+                    rust.apply_volume_state(VolumeState {
+                        output_percent: config.audio.output_volume,
+                        monitor_percent: config.audio.monitor_volume,
+                        output_muted: config.audio.output_muted,
+                        monitor_muted: config.audio.monitor_muted,
+                    });
+                    rust.mic_volume = config.audio.mic_volume as i32;
+                    rust.mic_muted = config.audio.mic_muted;
                     let tabs = TabsRepository::scan(&config).unwrap_or_default();
                     rust.replace_tabs(tabs, Some(&saved.current_tab));
                     rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
@@ -1263,6 +1319,7 @@ impl qobject::SoundboardController {
                     rust.refresh_audio_sink_count();
                     SoundboardControllerRust::reload_shortcut_bindings();
                     self.as_mut().rust_mut().bump_shortcut_version();
+                    properties::sync_volume_properties(self.as_mut());
                     playback_changed = true;
                     tab_changed = true;
                 }
@@ -1839,7 +1896,10 @@ impl Constructor<()> for qobject::SoundboardController {
             output_muted: config.audio.output_muted,
             monitor_muted: config.audio.monitor_muted,
         });
+        rust.mic_volume = config.audio.mic_volume as i32;
+        rust.mic_muted = config.audio.mic_muted;
         rust.push_volumes();
+        rust.push_mic_volume();
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
@@ -1901,12 +1961,16 @@ pub(crate) mod properties {
     pub fn sync_volume_properties(mut controller: Pin<&mut SoundboardController>) {
         let output_volume = controller.as_ref().rust().output_volume;
         let monitor_volume = controller.as_ref().rust().monitor_volume;
+        let mic_volume = controller.as_ref().rust().mic_volume;
         let output_muted = controller.as_ref().rust().output_muted;
         let monitor_muted = controller.as_ref().rust().monitor_muted;
+        let mic_muted = controller.as_ref().rust().mic_muted;
         controller.as_mut().set_output_volume(output_volume);
         controller.as_mut().set_monitor_volume(monitor_volume);
+        controller.as_mut().set_mic_volume(mic_volume);
         controller.as_mut().set_output_muted(output_muted);
         controller.as_mut().set_monitor_muted(monitor_muted);
+        controller.as_mut().set_mic_muted(mic_muted);
         bump_ui_version(controller);
     }
 }
