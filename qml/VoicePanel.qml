@@ -259,7 +259,9 @@ Item {
             color: voicePanel.theme ? voicePanel.theme.textMuted : "#888892"
             text: "The spectrum turns green while your voice passes the gate (speech " +
                   "detected and, when verification is on, matched to your enrolled " +
-                  "voiceprint). Noise suppression arrives in a later milestone."
+                  "voiceprint). With verification on, only matched speech is sent to " +
+                  "the virtual mic and the gate keeps running in the background. " +
+                  "Noise suppression arrives in a later milestone."
         }
 
         Item { Layout.fillHeight: true }

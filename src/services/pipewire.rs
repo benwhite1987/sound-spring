@@ -190,6 +190,56 @@ impl PipewireManager {
         Ok(())
     }
 
+    /// Add or remove the raw `mic_source -> virtmic` loopback. The voice gate
+    /// removes it (so the gated, processed feed is the only mic path into the
+    /// virtmic) and restores it when gating stops, returning Phase 1 behavior.
+    pub async fn set_mic_passthrough(
+        present: bool,
+        mic_source: &str,
+        latency_ms: u32,
+    ) -> Result<()> {
+        if mic_source.is_empty() {
+            return Ok(());
+        }
+        let ids = Self::find_mic_loopback_ids(mic_source).await?;
+        if present {
+            if ids.is_empty() && Self::sink_exists(VIRTMIC_SINK).await {
+                Self::load_loopback(mic_source, VIRTMIC_SINK, latency_ms)
+                    .await
+                    .with_context(|| format!("restore mic loopback {mic_source}"))?;
+                info!("restored raw mic loopback for {mic_source}");
+            }
+        } else if !ids.is_empty() {
+            for id in ids {
+                Self::unload_module(id).await;
+            }
+            info!("removed raw mic loopback for gated routing");
+        }
+        Ok(())
+    }
+
+    async fn find_mic_loopback_ids(mic_source: &str) -> Result<Vec<u32>> {
+        let lines = Self::list_short("modules").await?;
+        let mut ids = Vec::new();
+        for line in lines {
+            let mut parts = line.split_whitespace();
+            let Some(id_str) = parts.next() else {
+                continue;
+            };
+            let Ok(id) = id_str.parse::<u32>() else {
+                continue;
+            };
+            let rest = parts.collect::<Vec<_>>().join(" ");
+            if rest.contains("module-loopback")
+                && rest.contains(&format!("source={mic_source}"))
+                && rest.contains(&format!("sink={VIRTMIC_SINK}"))
+            {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
     pub async fn set_sink_volume(sink: &str, percent: u8, muted: bool) -> Result<()> {
         let mute_arg = if muted { "1" } else { "0" };
         let output = Command::new("pactl")

@@ -6,7 +6,7 @@
 //! its own `std::thread`, not Tokio.
 
 use anyhow::Result;
-use rtrb::Consumer;
+use rtrb::{Consumer, Producer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -26,6 +26,10 @@ use super::{
 /// Voiced 16 kHz samples accumulated before running one verification embedding (~1.5 s).
 const VERIFY_WINDOW: usize = TARGET_RATE as usize * 3 / 2;
 
+/// Per-sample gain step for the output gate (~10 ms attack/release at 48 kHz),
+/// keeping open/close transitions click-free.
+const GATE_STEP: f32 = 1.0 / 480.0;
+
 pub struct VoicePipeline {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -40,6 +44,7 @@ impl VoicePipeline {
         vad_close: f32,
         job_tx: Sender<EmbedJob>,
         busy: Arc<AtomicBool>,
+        output: Option<Producer<f32>>,
     ) -> Result<Self> {
         let resampler = Resampler::new()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -55,6 +60,7 @@ impl VoicePipeline {
                     vad_close,
                     job_tx,
                     busy,
+                    output,
                     thread_stop,
                 )
             })?;
@@ -83,9 +89,12 @@ fn run(
     vad_close: f32,
     job_tx: Sender<EmbedJob>,
     busy: Arc<AtomicBool>,
+    mut output: Option<Producer<f32>>,
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
+    // Current output-gate gain, ramped toward 0/1 to avoid clicks.
+    let mut gate_gain: f32 = 0.0;
     // A VAD failure (e.g. ONNX runtime unavailable) degrades to spectrum-only;
     // verification then runs ungated.
     let mut vad = match Vad::new(vad_open, vad_close) {
@@ -197,6 +206,21 @@ fn run(
                 voiced
             };
             shared.set_passing(passing);
+
+            // Feed the gated mic into the output sink. The FFT_HOP samples about
+            // to leave `window` are the contiguous, write-once output stream;
+            // ramp toward the gate target so open/close transitions don't click.
+            if let Some(out) = output.as_mut() {
+                let target = if passing { 1.0 } else { 0.0 };
+                for &sample in &window[..FFT_HOP] {
+                    if gate_gain < target {
+                        gate_gain = (gate_gain + GATE_STEP).min(target);
+                    } else if gate_gain > target {
+                        gate_gain = (gate_gain - GATE_STEP).max(target);
+                    }
+                    let _ = out.push(sample * gate_gain);
+                }
+            }
 
             window.drain(..FFT_HOP);
         }

@@ -11,7 +11,7 @@ use qobjects::controller::{
     BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
 use services::autostart;
-use services::pipewire::{Modules, PipewireManager};
+use services::pipewire::{Modules, PipewireManager, VIRTMIC_SINK};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
@@ -331,6 +331,92 @@ async fn apply_runtime_config(
     let _ = event_tx.send(BackendEvent::ConfigApplied);
 }
 
+/// Bring the voice session in line with the desired state derived from the
+/// Voice panel visibility and the verification setting.
+///
+/// Two modes exist: visualization-only (panel showing, no gating) and gating
+/// (verification enabled + enrolled). Gating removes the Phase 1 raw mic
+/// loopback and feeds the gated mic into the virtmic instead; leaving gating
+/// restores the loopback so Phase 1 passthrough resumes.
+async fn reconcile_voice(
+    config: &Config,
+    session: &mut Option<VoiceSession>,
+    current_gating: &mut bool,
+    panel_visible: bool,
+) {
+    let want_gating =
+        config.voice.verification_enabled && config::voiceprint_path(config).is_file();
+    let want_on = panel_visible || want_gating;
+
+    // Tear down when no longer wanted, or when the mode must change.
+    if session.is_some() && (!want_on || *current_gating != want_gating) {
+        let was_gating = *current_gating;
+        *session = None;
+        *current_gating = false;
+        if was_gating {
+            if let Err(err) = PipewireManager::set_mic_passthrough(
+                true,
+                &config.audio.mic_source,
+                config.audio.latency_ms,
+            )
+            .await
+            {
+                warn!("failed to restore mic loopback: {err:#}");
+            }
+        }
+    }
+
+    if !want_on || session.is_some() {
+        return;
+    }
+
+    // Starting fresh. For gating, drop the raw loopback first so only the
+    // processed feed reaches the virtmic.
+    if want_gating {
+        if let Err(err) = PipewireManager::set_mic_passthrough(
+            false,
+            &config.audio.mic_source,
+            config.audio.latency_ms,
+        )
+        .await
+        {
+            warn!("failed to remove mic loopback for gating: {err:#}");
+        }
+    }
+
+    let params = services::voice::VoiceParams {
+        mic_source: config.audio.mic_source.clone(),
+        vad_open: config.voice.vad_open_threshold,
+        vad_close: config.voice.vad_close_threshold,
+        verification_enabled: config.voice.verification_enabled,
+        match_threshold: config.voice.match_threshold,
+        voiceprint_path: config::voiceprint_path(config),
+        gating: want_gating,
+        output_sink: if want_gating {
+            VIRTMIC_SINK.to_string()
+        } else {
+            String::new()
+        },
+    };
+    match VoiceSession::start(params) {
+        Ok(s) => {
+            *session = Some(s);
+            *current_gating = want_gating;
+        }
+        Err(err) => {
+            warn!("voice session start failed: {err:#}");
+            if want_gating {
+                let _ = PipewireManager::set_mic_passthrough(
+                    true,
+                    &config.audio.mic_source,
+                    config.audio.latency_ms,
+                )
+                .await;
+            }
+        }
+    }
+}
+
 fn run_backend(
     config: config::Config,
     mut backend_cmd_rx: mpsc::Receiver<BackendCommand>,
@@ -374,16 +460,30 @@ fn run_backend(
         player.set_monitor_sink(&active_config.audio.monitor_sink);
         player.set_interruption_mode(&active_config.audio.interruption_mode);
 
-        // Phase 2 voice visualization capture. Runs only while the Voice panel
-        // is showing; it monitors the configured mic for the spectrum display
-        // and does not touch the Phase 1 mic-to-virtmic routing.
+        // Phase 2 voice session. Runs while the Voice panel is showing (for the
+        // spectrum/VAD display) or whenever verification gating is active. In
+        // gating mode it replaces the Phase 1 raw mic loopback with the gated
+        // feed; otherwise it is visualization-only and leaves routing untouched.
         let mut voice_session: Option<VoiceSession> = None;
+        let mut voice_gating = false;
+        let mut voice_panel_visible = false;
         loop {
             tokio::select! {
                 command = backend_cmd_rx.recv() => {
                     match command {
                         Some(BackendCommand::ApplyConfig(new_config)) => {
                             let previous = active_config.clone();
+                            // A routing change tears down and rebuilds all
+                            // modules (re-adding the raw mic loopback), so stop
+                            // any gating session first and let reconcile rebuild
+                            // it afterward against the fresh routing.
+                            let routing_changed = previous.audio.mic_source
+                                != new_config.audio.mic_source
+                                || previous.audio.latency_ms != new_config.audio.latency_ms;
+                            if routing_changed {
+                                voice_session = None;
+                                voice_gating = false;
+                            }
                             apply_runtime_config(
                                 &new_config,
                                 &backend_event_tx,
@@ -404,6 +504,13 @@ fn run_backend(
                                 tab_watch.restart(new_watch_paths, tab_watch_tx.clone());
                             }
                             active_config = new_config;
+                            reconcile_voice(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_gating,
+                                voice_panel_visible,
+                            )
+                            .await;
                         }
                         Some(BackendCommand::BindShortcuts) => {
                             bind_shortcuts(&active_config, true, &backend_event_tx).await;
@@ -425,23 +532,24 @@ fn run_backend(
                             tab_watch.restart(watch_paths(&config), tab_watch_tx.clone());
                         }
                         Some(BackendCommand::StartVoiceCapture) => {
-                            if voice_session.is_none() {
-                                let params = services::voice::VoiceParams {
-                                    mic_source: active_config.audio.mic_source.clone(),
-                                    vad_open: active_config.voice.vad_open_threshold,
-                                    vad_close: active_config.voice.vad_close_threshold,
-                                    verification_enabled: active_config.voice.verification_enabled,
-                                    match_threshold: active_config.voice.match_threshold,
-                                    voiceprint_path: config::voiceprint_path(&active_config),
-                                };
-                                match VoiceSession::start(params) {
-                                    Ok(session) => voice_session = Some(session),
-                                    Err(err) => warn!("voice capture start failed: {err:#}"),
-                                }
-                            }
+                            voice_panel_visible = true;
+                            reconcile_voice(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_gating,
+                                voice_panel_visible,
+                            )
+                            .await;
                         }
                         Some(BackendCommand::StopVoiceCapture) => {
-                            voice_session = None;
+                            voice_panel_visible = false;
+                            reconcile_voice(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_gating,
+                                voice_panel_visible,
+                            )
+                            .await;
                         }
                         Some(BackendCommand::SetVoiceVerification { enabled, threshold }) => {
                             active_config.voice.verification_enabled = enabled;
@@ -449,6 +557,13 @@ fn run_backend(
                             if let Err(err) = config::save_config(&active_config) {
                                 warn!("failed to persist voice verification settings: {err:#}");
                             }
+                            reconcile_voice(
+                                &active_config,
+                                &mut voice_session,
+                                &mut voice_gating,
+                                voice_panel_visible,
+                            )
+                            .await;
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player

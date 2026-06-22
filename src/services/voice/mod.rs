@@ -1,14 +1,16 @@
 //! Phase 2 voice-enhancement pipeline.
 //!
 //! Milestone 1 added the visualization slice (PipeWire capture -> FFT spectrum),
-//! Milestone 2 added Silero VAD. Milestone 3 adds ECAPA-TDNN speaker embedding,
-//! enrollment, and a cosine verification gate. DeepFilterNet denoise and the
-//! output-routing rewrite arrive later; the Phase 1 mic-to-virtmic loopback is
-//! still untouched here.
+//! Milestone 2 added Silero VAD. Milestone 3 added ECAPA-TDNN speaker embedding,
+//! enrollment, and a cosine verification gate. Milestone 4 routes the gated mic
+//! into the virtmic: when gating is active the session feeds processed audio to
+//! the output sink and the backend removes the raw mic loopback. DeepFilterNet
+//! denoise arrives later in the same chain.
 
 pub mod capture;
 pub mod embed_worker;
 pub mod embedding;
+pub mod output;
 pub mod pipeline;
 pub mod resample;
 pub mod spectrum;
@@ -235,6 +237,11 @@ pub struct VoiceParams {
     pub match_threshold: f32,
     /// Absolute path of the enrolled voiceprint file.
     pub voiceprint_path: PathBuf,
+    /// When set, the session feeds gated audio into `output_sink` (replacing the
+    /// raw mic loopback) instead of running visualization-only.
+    pub gating: bool,
+    /// Target sink for gated output (typically the virtmic). Empty = none.
+    pub output_sink: String,
 }
 
 /// A running capture + processing session. Dropping it tears everything down:
@@ -246,6 +253,8 @@ pub struct VoiceSession {
     // worker (its receiver disconnects and the thread exits).
     _capture: capture::Capture,
     _pipeline: pipeline::VoicePipeline,
+    // Dropped after the pipeline so its producer is gone before the writer dies.
+    _output: Option<output::Output>,
     _embed: embed_worker::EmbedWorker,
 }
 
@@ -267,6 +276,16 @@ impl VoiceSession {
             params.match_threshold,
         );
 
+        // When gating, the pipeline emits processed samples into a second ring
+        // that a `pw-cat --playback` writer feeds into the output sink.
+        let (out_producer, output) = if params.gating && !params.output_sink.is_empty() {
+            let (out_producer, out_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            let output = output::Output::start(&params.output_sink, out_consumer)?;
+            (Some(out_producer), Some(output))
+        } else {
+            (None, None)
+        };
+
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
             consumer,
@@ -275,12 +294,14 @@ impl VoiceSession {
             params.vad_close,
             job_tx,
             busy,
+            out_producer,
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer)?;
         shared.capturing.store(true, Ordering::Relaxed);
         Ok(Self {
             _capture: capture,
             _pipeline: pipeline,
+            _output: output,
             _embed: embed,
         })
     }
