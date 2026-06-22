@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <file>hicolor/48x48/apps/io.github.benwhite1987.SoundSpring.png</file>
+        <file>hicolor/256x256/apps/io.github.benwhite1987.SoundSpring.png</file>
+    </qresource>
+</RCC>

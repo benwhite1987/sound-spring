@@ -123,7 +123,6 @@ ApplicationWindow {
             return
         SystemTray.initialize()
         if (settings.minimizeToTray) {
-            SystemTray.setIconThemeName("audio-volume-high")
             SystemTray.setToolTip("Sound Spring")
             SystemTray.visible = true
         } else {

@@ -1,5 +1,7 @@
 #include "system_tray.h"
 
+#include "app_icons.h"
+
 #include <QAction>
 #include <QCoreApplication>
 #include <QIcon>
@@ -28,6 +30,7 @@ void SystemTray::initialize()
     }
 
     m_tray = new QSystemTrayIcon(this);
+    m_tray->setIcon(sound_spring_application_icon());
     m_menu = new QMenu();
 
     m_showAction = m_menu->addAction(QStringLiteral("Show"));
@@ -84,10 +87,12 @@ void SystemTray::setIconThemeName(const QString& name)
     if (!m_tray) {
         return;
     }
-    const QIcon icon = QIcon::fromTheme(name);
-    if (!icon.isNull()) {
-        m_tray->setIcon(icon);
+    const QIcon themed = QIcon::fromTheme(name);
+    if (!themed.isNull()) {
+        m_tray->setIcon(themed);
+        return;
     }
+    m_tray->setIcon(sound_spring_application_icon());
 }
 
 void SystemTray::setToolTip(const QString& tip)

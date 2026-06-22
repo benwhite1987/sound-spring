@@ -1,5 +1,7 @@
 #include "app_bootstrap.h"
 
+#include "app_icons.h"
+
 #include <QApplication>
 #include <QCoreApplication>
 #include <cstdlib>
@@ -42,6 +44,7 @@ extern "C" void sound_spring_init_qt_application(int argc, char** argv)
     s_argc = static_cast<int>(s_argv_storage.size()) - 1;
 
     s_app = new QApplication(s_argc, s_argv_storage.data());
+    QApplication::setWindowIcon(sound_spring_application_icon());
 }
 
 extern "C" int sound_spring_exec_qt_application()

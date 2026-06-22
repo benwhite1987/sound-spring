@@ -14,17 +14,25 @@ fn main() {
     println!("cargo:rerun-if-changed={ECAPA_MODEL_PATH}");
     println!("cargo:rerun-if-env-changed=SOUND_SPRING_SKIP_MODEL_DOWNLOAD");
 
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let icons_cpp = compile_icons_qrc(&manifest_dir);
+    println!("cargo:rerun-if-changed=resources/icons/icons.qrc");
+    println!("cargo:rerun-if-changed=resources/icons/source.png");
+    println!("cargo:rerun-if-changed=resources/icons/hicolor");
+
     CxxQtBuilder::new()
         .include_prefix("src/cpp")
         .qobject_header(QObjectHeaderOpts::from("src/cpp/key_forwarder.h"))
         .qobject_header(QObjectHeaderOpts::from("src/cpp/system_tray.h"))
-        .cc_builder(|builder| {
+        .cc_builder(move |builder| {
             builder
                 .include("src/cpp")
                 .file("src/cpp/key_forwarder.cpp")
                 .file("src/cpp/app_identity.cpp")
                 .file("src/cpp/system_tray.cpp")
-                .file("src/cpp/app_bootstrap.cpp");
+                .file("src/cpp/app_bootstrap.cpp")
+                .file(&icons_cpp);
         })
         .qt_module("Network")
         .qt_module("Quick")
@@ -55,6 +63,60 @@ fn main() {
             ..Default::default()
         })
         .build();
+}
+
+fn compile_icons_qrc(manifest_dir: &Path) -> PathBuf {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let qrc = manifest_dir.join("resources/icons/icons.qrc");
+    let cpp = out_dir.join("qrc_icons.cpp");
+    let rcc = find_qt_rcc();
+
+    let status = std::process::Command::new(&rcc)
+        .arg("-o")
+        .arg(&cpp)
+        .arg(&qrc)
+        .status()
+        .unwrap_or_else(|err| panic!("failed to run Qt rcc ({}): {err}", rcc.display()));
+
+    if !status.success() {
+        panic!("Qt rcc failed compiling {}", qrc.display());
+    }
+
+    cpp
+}
+
+fn find_qt_rcc() -> PathBuf {
+    let mut qmake_candidates = Vec::new();
+    if let Ok(qmake) = std::env::var("QMAKE") {
+        qmake_candidates.push(qmake);
+    }
+    qmake_candidates.push("qmake6".into());
+
+    for qmake in qmake_candidates {
+        if let Ok(output) = std::process::Command::new(&qmake)
+            .args(["-query", "QT_INSTALL_LIBS"])
+            .output()
+        {
+            if output.status.success() {
+                let libs = String::from_utf8_lossy(&output.stdout);
+                let rcc = PathBuf::from(libs.trim()).join("rcc");
+                if rcc.is_file() {
+                    return rcc;
+                }
+            }
+        }
+    }
+
+    for candidate in ["/usr/lib/qt6/rcc", "/usr/lib/qt6/bin/rcc"] {
+        let path = PathBuf::from(candidate);
+        if path.is_file() {
+            return path;
+        }
+    }
+
+    panic!(
+        "could not find Qt 6 rcc; install qt6-tools or set QMAKE to your Qt 6 qmake"
+    );
 }
 
 fn ensure_ecapa_model() {

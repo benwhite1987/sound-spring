@@ -37,7 +37,7 @@ fn render_autostart_desktop(exec: &str) -> String {
          GenericName=Soundboard\n\
          Comment=PipeWire soundboard\n\
          Exec={}\n\
-         Icon=audio-volume-high\n\
+         Icon=io.github.benwhite1987.SoundSpring\n\
          Terminal=false\n\
          StartupWMClass=sound-spring\n\
          Hidden=false\n\
@@ -70,6 +70,7 @@ mod tests {
     fn autostart_entry_contains_exec() {
         let text = render_autostart_desktop("/usr/bin/sound-spring");
         assert!(text.contains("Exec=/usr/bin/sound-spring\n"));
+        assert!(text.contains("Icon=io.github.benwhite1987.SoundSpring\n"));
         assert!(text.contains("StartupWMClass=sound-spring"));
     }
 }
