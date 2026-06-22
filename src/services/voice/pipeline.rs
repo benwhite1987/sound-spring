@@ -46,6 +46,7 @@ impl VoicePipeline {
         job_tx: Sender<EmbedJob>,
         busy: Arc<AtomicBool>,
         output: Option<Producer<f32>>,
+        mix_mic: Option<Producer<f32>>,
         suppression: bool,
     ) -> Result<Self> {
         let resampler = Resampler::new()?;
@@ -63,6 +64,7 @@ impl VoicePipeline {
                     job_tx,
                     busy,
                     output,
+                    mix_mic,
                     suppression,
                     thread_stop,
                 )
@@ -93,6 +95,7 @@ fn run(
     job_tx: Sender<EmbedJob>,
     busy: Arc<AtomicBool>,
     mut output: Option<Producer<f32>>,
+    mut mix_mic: Option<Producer<f32>>,
     suppression: bool,
     stop: Arc<AtomicBool>,
 ) {
@@ -259,6 +262,9 @@ fn run(
                 let gated = sample * gate_gain;
                 if let Some(out) = output.as_mut() {
                     let _ = out.push(gated);
+                }
+                if let Some(mix) = mix_mic.as_mut() {
+                    let _ = mix.push(gated);
                 }
                 filtered_window.push(gated);
             }

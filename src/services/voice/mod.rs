@@ -335,7 +335,7 @@ pub struct VoiceParams {
     pub vad_enabled: bool,
 }
 
-use crate::services::pipewire::VIRTMIC_SINK;
+use crate::services::pipewire::SFX_SINK;
 
 /// A running capture + processing session. Dropping it tears everything down:
 /// the `pw-cat` child is killed, the reader task aborted, the audio thread
@@ -385,6 +385,7 @@ impl VoiceSession {
 
         // Denoise runs whenever suppression is enabled (including visualization-only).
         let suppression = params.suppression;
+        let (mix_mic_producer, mix_mic_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
             consumer,
@@ -394,20 +395,25 @@ impl VoiceSession {
             job_tx,
             busy,
             out_producer,
+            Some(mix_mic_producer),
             suppression,
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer, Some(shared.clone()))?;
 
         let (mix_capture, mix_spectrum) = {
-            let (mix_producer, mix_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
-            let monitor = format!("{VIRTMIC_SINK}.monitor");
-            match capture::Capture::start(&monitor, mix_producer, None) {
-                Ok(mix_cap) => {
-                    let mix_spec = mix_spectrum::MixSpectrum::spawn(mix_consumer, shared.clone())?;
-                    (Some(mix_cap), Some(mix_spec))
+            let (sfx_producer, sfx_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            let sfx_monitor = format!("{SFX_SINK}.monitor");
+            match capture::Capture::start(&sfx_monitor, sfx_producer, None) {
+                Ok(sfx_cap) => {
+                    let mix_spec = mix_spectrum::MixSpectrum::spawn(
+                        mix_mic_consumer,
+                        sfx_consumer,
+                        shared.clone(),
+                    )?;
+                    (Some(sfx_cap), Some(mix_spec))
                 }
                 Err(err) => {
-                    tracing::debug!("virtmic monitor capture unavailable: {err:#}");
+                    tracing::debug!("sfx monitor capture unavailable: {err:#}");
                     (None, None)
                 }
             }

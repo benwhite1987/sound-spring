@@ -52,9 +52,19 @@ ApplicationWindow {
         readonly property bool isActive: root.activePanel === panelIndex
         focusPolicy: Qt.NoFocus
         padding: 8
+        display: AbstractButton.TextOnly
         palette.buttonText: appTheme.textPrimary
+        contentItem: Text {
+            text: parent.text
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            color: parent.palette.buttonText
+            font.pixelSize: 13
+            font.weight: parent.isActive ? Font.DemiBold : Font.Normal
+        }
         background: Rectangle {
-            implicitHeight: 32
+            anchors.fill: parent
+            implicitHeight: 36
             radius: 4
             color: parent.isActive ? appTheme.surfaceActive
                                     : (parent.hovered ? appTheme.surface : "transparent")
@@ -229,16 +239,23 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 8
 
-                PanelButton {
-                    text: "Soundboard"
-                    panelIndex: 0
-                }
-                PanelButton {
-                    text: "Voice"
-                    panelIndex: 1
-                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
 
-                Item { Layout.fillWidth: true }
+                    PanelButton {
+                        text: "Soundboard"
+                        panelIndex: 0
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                    }
+                    PanelButton {
+                        text: "Voice"
+                        panelIndex: 1
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                    }
+                }
 
                 ChromeButton {
                     text: "⚙"

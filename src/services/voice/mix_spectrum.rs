@@ -1,4 +1,4 @@
-//! FFT-only thread for the virtmic monitor mix spectrum (mic + soundboard).
+//! FFT-only thread for the mixed spectrum: filtered × gated mic + soundboard SFX.
 
 use anyhow::Result;
 use rtrb::Consumer;
@@ -17,12 +17,16 @@ pub struct MixSpectrum {
 }
 
 impl MixSpectrum {
-    pub fn spawn(consumer: Consumer<f32>, shared: Arc<VoiceShared>) -> Result<Self> {
+    pub fn spawn(
+        mic: Consumer<f32>,
+        sfx: Consumer<f32>,
+        shared: Arc<VoiceShared>,
+    ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("voice-mix-spectrum".into())
-            .spawn(move || run(consumer, shared, thread_stop))?;
+            .spawn(move || run(mic, sfx, shared, thread_stop))?;
         Ok(Self {
             stop,
             handle: Some(handle),
@@ -39,14 +43,28 @@ impl Drop for MixSpectrum {
     }
 }
 
-fn run(mut consumer: Consumer<f32>, shared: Arc<VoiceShared>, stop: Arc<AtomicBool>) {
+fn run(
+    mut mic: Consumer<f32>,
+    mut sfx: Consumer<f32>,
+    shared: Arc<VoiceShared>,
+    stop: Arc<AtomicBool>,
+) {
     let mut analyzer = SpectrumAnalyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
 
     while !stop.load(Ordering::Relaxed) {
         let mut got_any = false;
-        while let Ok(sample) = consumer.pop() {
-            window.push(sample);
+
+        while let Ok(mic_sample) = mic.pop() {
+            let sfx_sample = sfx.pop().unwrap_or(0.0);
+            window.push(mic_sample + sfx_sample);
+            got_any = true;
+            if window.len() >= FFT_SIZE * 2 {
+                break;
+            }
+        }
+        while let Ok(sfx_sample) = sfx.pop() {
+            window.push(sfx_sample);
             got_any = true;
             if window.len() >= FFT_SIZE * 2 {
                 break;
