@@ -426,11 +426,15 @@ fn run_backend(
                         }
                         Some(BackendCommand::StartVoiceCapture) => {
                             if voice_session.is_none() {
-                                match VoiceSession::start(
-                                    &active_config.audio.mic_source,
-                                    active_config.voice.vad_open_threshold,
-                                    active_config.voice.vad_close_threshold,
-                                ) {
+                                let params = services::voice::VoiceParams {
+                                    mic_source: active_config.audio.mic_source.clone(),
+                                    vad_open: active_config.voice.vad_open_threshold,
+                                    vad_close: active_config.voice.vad_close_threshold,
+                                    verification_enabled: active_config.voice.verification_enabled,
+                                    match_threshold: active_config.voice.match_threshold,
+                                    voiceprint_path: config::voiceprint_path(&active_config),
+                                };
+                                match VoiceSession::start(params) {
                                     Ok(session) => voice_session = Some(session),
                                     Err(err) => warn!("voice capture start failed: {err:#}"),
                                 }
@@ -438,6 +442,13 @@ fn run_backend(
                         }
                         Some(BackendCommand::StopVoiceCapture) => {
                             voice_session = None;
+                        }
+                        Some(BackendCommand::SetVoiceVerification { enabled, threshold }) => {
+                            active_config.voice.verification_enabled = enabled;
+                            active_config.voice.match_threshold = threshold;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist voice verification settings: {err:#}");
+                            }
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player

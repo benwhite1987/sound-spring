@@ -36,6 +36,7 @@ fn main() {
                 "qml/SettingsSection.qml",
                 "qml/VoicePanel.qml",
                 "qml/Spectrum.qml",
+                "qml/EnrollmentDialog.qml",
             ],
             ..Default::default()
         })

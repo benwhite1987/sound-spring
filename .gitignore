@@ -37,6 +37,10 @@ logs/
 *.swo
 *~
 
+# Large ML model assets — loaded at runtime, not committed (≈80 MB ECAPA ONNX).
+# The small fbank matrix IS committed (bundled via include_bytes!).
+assets/models/*.onnx
+
 # OS junk
 .DS_Store
 Thumbs.db

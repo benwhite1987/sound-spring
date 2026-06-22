@@ -7,6 +7,13 @@ pub mod qobject {
         #[qproperty(bool, is_capturing)]
         #[qproperty(f32, vad_probability)]
         #[qproperty(bool, is_speaking)]
+        #[qproperty(bool, is_passing)]
+        #[qproperty(f32, speaker_match_score)]
+        #[qproperty(bool, is_enrolled)]
+        #[qproperty(bool, enroll_active)]
+        #[qproperty(f32, enroll_progress)]
+        #[qproperty(bool, verification_enabled)]
+        #[qproperty(f32, match_threshold)]
         type VoiceController = super::VoiceControllerRust;
 
         #[qinvokable]
@@ -23,6 +30,27 @@ pub mod qobject {
 
         #[qinvokable]
         fn open_pavucontrol(self: Pin<&mut VoiceController>);
+
+        #[qinvokable]
+        fn set_verification(self: Pin<&mut VoiceController>, enabled: bool);
+
+        #[qinvokable]
+        fn set_threshold(self: Pin<&mut VoiceController>, threshold: f32);
+
+        #[qinvokable]
+        fn start_enrollment(self: Pin<&mut VoiceController>);
+
+        #[qinvokable]
+        fn cancel_enrollment(self: Pin<&mut VoiceController>);
+
+        #[qinvokable]
+        fn clear_enrollment(self: Pin<&mut VoiceController>);
+
+        #[qsignal]
+        fn enrollment_progress(self: Pin<&mut VoiceController>, percent: i32);
+
+        #[qsignal]
+        fn enrollment_complete(self: Pin<&mut VoiceController>);
     }
 
     impl cxx_qt::Constructor<()> for VoiceController {}
@@ -41,21 +69,49 @@ pub struct VoiceControllerRust {
     is_capturing: bool,
     vad_probability: f32,
     is_speaking: bool,
+    is_passing: bool,
+    speaker_match_score: f32,
+    is_enrolled: bool,
+    enroll_active: bool,
+    enroll_progress: f32,
+    verification_enabled: bool,
+    match_threshold: f32,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
+    last_enroll_done_seq: u32,
+    last_progress_percent: i32,
 }
 
 impl Default for VoiceControllerRust {
     fn default() -> Self {
+        let config = crate::config::load_config().unwrap_or_default();
+        let enrolled = crate::config::voiceprint_path(&config).is_file();
+        let shared = voice_shared();
+        shared.set_enrolled(enrolled);
+        shared.set_verification_enabled(config.voice.verification_enabled);
+        shared.set_match_threshold(config.voice.match_threshold);
         Self {
             spectrum_version: 0,
             is_capturing: false,
             vad_probability: 0.0,
             is_speaking: false,
-            shared: voice_shared(),
+            is_passing: false,
+            speaker_match_score: 0.0,
+            is_enrolled: enrolled,
+            enroll_active: false,
+            enroll_progress: 0.0,
+            verification_enabled: config.voice.verification_enabled,
+            match_threshold: config.voice.match_threshold,
+            shared,
             latest: vec![0.0; SPECTRUM_BINS],
+            last_enroll_done_seq: shared_done_seq(),
+            last_progress_percent: 0,
         }
     }
+}
+
+fn shared_done_seq() -> u32 {
+    voice_shared().enroll_done_seq()
 }
 
 impl qobject::VoiceController {
@@ -71,8 +127,8 @@ impl qobject::VoiceController {
     }
 
     /// Drain the shared spectrum queue (keeping only the newest frame) and bump
-    /// `spectrum_version` so QML re-reads `spectrum_value_at`. Driven by a QML
-    /// timer at the configured spectrum fps.
+    /// `spectrum_version` so QML re-reads `spectrum_value_at`. Also refreshes the
+    /// VAD and speaker-verification properties. Driven by a QML timer.
     pub fn process_spectrum(mut self: Pin<&mut Self>) {
         let capturing = self.rust().shared.capturing.load(Ordering::Relaxed);
         if capturing != self.rust().is_capturing {
@@ -85,6 +141,40 @@ impl qobject::VoiceController {
         }
         if (probability - self.rust().vad_probability).abs() > f32::EPSILON {
             self.as_mut().set_vad_probability(probability);
+        }
+
+        let (score, _matched) = self.rust().shared.speaker_state();
+        if (score - self.rust().speaker_match_score).abs() > f32::EPSILON {
+            self.as_mut().set_speaker_match_score(score);
+        }
+        let passing = self.rust().shared.is_passing();
+        if passing != self.rust().is_passing {
+            self.as_mut().set_is_passing(passing);
+        }
+        let enrolled = self.rust().shared.is_enrolled();
+        if enrolled != self.rust().is_enrolled {
+            self.as_mut().set_is_enrolled(enrolled);
+        }
+        let enroll_active = self.rust().shared.enroll_active();
+        if enroll_active != self.rust().enroll_active {
+            self.as_mut().set_enroll_active(enroll_active);
+        }
+
+        let progress = self.rust().shared.enroll_progress();
+        if (progress - self.rust().enroll_progress).abs() > f32::EPSILON {
+            self.as_mut().set_enroll_progress(progress);
+        }
+        let percent = (progress * 100.0).round() as i32;
+        if percent != self.rust().last_progress_percent {
+            self.as_mut().rust_mut().last_progress_percent = percent;
+            self.as_mut().enrollment_progress(percent);
+        }
+
+        let done_seq = self.rust().shared.enroll_done_seq();
+        if done_seq != self.rust().last_enroll_done_seq {
+            self.as_mut().rust_mut().last_enroll_done_seq = done_seq;
+            self.as_mut().set_is_enrolled(true);
+            self.as_mut().enrollment_complete();
         }
 
         let mut newest: Option<Vec<f32>> = None;
@@ -116,6 +206,52 @@ impl qobject::VoiceController {
                 tracing::warn!("failed to launch pavucontrol: {err:#}");
             }
         });
+    }
+
+    pub fn set_verification(mut self: Pin<&mut Self>, enabled: bool) {
+        self.rust().shared.set_verification_enabled(enabled);
+        self.as_mut().set_verification_enabled(enabled);
+        persist_verification(enabled, self.rust().match_threshold);
+    }
+
+    pub fn set_threshold(mut self: Pin<&mut Self>, threshold: f32) {
+        let threshold = threshold.clamp(0.0, 1.0);
+        self.rust().shared.set_match_threshold(threshold);
+        self.as_mut().set_match_threshold(threshold);
+        persist_verification(self.rust().verification_enabled, threshold);
+    }
+
+    pub fn start_enrollment(self: Pin<&mut Self>) {
+        // Enrollment needs a live capture; ensure it is running.
+        if let Some(tx) = BACKEND_TX.get() {
+            let _ = tx.blocking_send(BackendCommand::StartVoiceCapture);
+        }
+        self.rust().shared.request_enroll_start();
+    }
+
+    pub fn cancel_enrollment(self: Pin<&mut Self>) {
+        self.rust().shared.request_enroll_cancel();
+    }
+
+    pub fn clear_enrollment(mut self: Pin<&mut Self>) {
+        let config = crate::config::load_config().unwrap_or_default();
+        let path = crate::config::voiceprint_path(&config);
+        if path.exists() {
+            if let Err(err) = std::fs::remove_file(&path) {
+                tracing::warn!("failed to remove voiceprint {}: {err:#}", path.display());
+            }
+        }
+        self.rust().shared.set_enrolled(false);
+        self.rust().shared.set_speaker(0.0, false);
+        self.rust().shared.request_enroll_clear();
+        self.as_mut().set_is_enrolled(false);
+        self.as_mut().set_speaker_match_score(0.0);
+    }
+}
+
+fn persist_verification(enabled: bool, threshold: f32) {
+    if let Some(tx) = BACKEND_TX.get() {
+        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification { enabled, threshold });
     }
 }
 

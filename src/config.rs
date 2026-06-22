@@ -233,6 +233,25 @@ pub fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".config/soundboard/config.toml"))
 }
 
+/// Config directory, falling back to `.config/soundboard` if the platform dirs
+/// can't be resolved.
+pub fn config_dir() -> PathBuf {
+    project_dirs()
+        .map(|d| d.config_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".config/soundboard"))
+}
+
+/// Absolute path of the enrolled voiceprint, resolving `voice.enrollment_path`
+/// (relative entries are taken under the config dir).
+pub fn voiceprint_path(config: &Config) -> PathBuf {
+    let raw = PathBuf::from(&config.voice.enrollment_path);
+    if raw.is_absolute() {
+        raw
+    } else {
+        config_dir().join(raw)
+    }
+}
+
 pub fn load_config() -> Result<Config> {
     let path = config_path();
     if !path.exists() {
