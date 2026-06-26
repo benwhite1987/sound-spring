@@ -651,9 +651,7 @@ Sink #12
         if !PipewireManager::sink_exists(SFX_SINK).await {
             return;
         }
-        let mut modules = Modules {
-            ids: vec![42],
-        };
+        let mut modules = Modules { ids: vec![42] };
         PipewireManager::ensure_routing_for_playback("", 20, &mut modules)
             .await
             .expect("ensure routing");

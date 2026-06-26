@@ -43,13 +43,13 @@ development ergonomics.
 ~/.config/soundboard/
 ├── config.toml                  # mic source, latency, theme
 └── tabs/
-    ├── 01-memes/
+    ├── 01-Memes/
     │   ├── 01-airhorn.ogg
     │   ├── 02-bruh.ogg
     │   └── ...
-    ├── 02-music/
+    ├── 02-Music/
     │   └── ...
-    └── 03-effects/
+    └── 03-Effects/
         └── ...
 
 ~/.cache/soundboard/

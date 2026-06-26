@@ -93,30 +93,42 @@ fn find_qt_rcc() -> PathBuf {
     qmake_candidates.push("qmake6".into());
 
     for qmake in qmake_candidates {
-        if let Ok(output) = std::process::Command::new(&qmake)
-            .args(["-query", "QT_INSTALL_LIBS"])
-            .output()
-        {
-            if output.status.success() {
-                let libs = String::from_utf8_lossy(&output.stdout);
-                let rcc = PathBuf::from(libs.trim()).join("rcc");
-                if rcc.is_file() {
-                    return rcc;
+        for var in [
+            "QT_HOST_LIBEXECS",
+            "QT_INSTALL_LIBEXECS",
+            "QT_INSTALL_BINS",
+            "QT_HOST_BINS",
+        ] {
+            if let Ok(output) = std::process::Command::new(&qmake)
+                .args(["-query", var])
+                .output()
+            {
+                if output.status.success() {
+                    let base = String::from_utf8_lossy(&output.stdout);
+                    let base = base.trim();
+                    if !base.is_empty() {
+                        let rcc = PathBuf::from(base).join("rcc");
+                        if rcc.is_file() {
+                            return rcc;
+                        }
+                    }
                 }
             }
         }
     }
 
-    for candidate in ["/usr/lib/qt6/rcc", "/usr/lib/qt6/bin/rcc"] {
+    for candidate in [
+        "/usr/lib/qt6/libexec/rcc",
+        "/usr/lib/qt6/rcc",
+        "/usr/lib/qt6/bin/rcc",
+    ] {
         let path = PathBuf::from(candidate);
         if path.is_file() {
             return path;
         }
     }
 
-    panic!(
-        "could not find Qt 6 rcc; install qt6-tools or set QMAKE to your Qt 6 qmake"
-    );
+    panic!("could not find Qt 6 rcc; install qt6-tools or set QMAKE to your Qt 6 qmake");
 }
 
 fn ensure_ecapa_model() {
@@ -128,13 +140,15 @@ fn ensure_ecapa_model() {
         if sha256_file(&dest).is_ok_and(|hash| hash == ECAPA_SHA256) {
             return;
         }
-        eprintln!(
-            "cargo:warning=existing {ECAPA_MODEL_PATH} failed SHA-256 check; re-downloading"
-        );
+        eprintln!("cargo:warning=existing {ECAPA_MODEL_PATH} failed SHA-256 check; re-downloading");
         let _ = fs::remove_file(&dest);
     }
 
-    if std::env::var("SOUND_SPRING_SKIP_MODEL_DOWNLOAD").ok().as_deref() == Some("1") {
+    if std::env::var("SOUND_SPRING_SKIP_MODEL_DOWNLOAD")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         panic!(
             "{ECAPA_MODEL_PATH} is missing and SOUND_SPRING_SKIP_MODEL_DOWNLOAD=1 is set.\n\
              Place the model at {dest:?} or unset the variable to download during build."
@@ -146,27 +160,21 @@ fn ensure_ecapa_model() {
     }
 
     eprintln!("cargo:warning=downloading ECAPA model (~80 MB) from HuggingFace");
-    let mut response = ureq::get(ECAPA_MODEL_URL)
-        .call()
-        .unwrap_or_else(|err| panic!("failed to download ECAPA model from {ECAPA_MODEL_URL}: {err}"));
+    let mut response = ureq::get(ECAPA_MODEL_URL).call().unwrap_or_else(|err| {
+        panic!("failed to download ECAPA model from {ECAPA_MODEL_URL}: {err}")
+    });
     if response.status() != 200 {
-        panic!(
-            "failed to download ECAPA model: HTTP {}",
-            response.status()
-        );
+        panic!("failed to download ECAPA model: HTTP {}", response.status());
     }
 
     let mut file = File::create(&dest).expect("create ECAPA model file");
-    std::io::copy(&mut response.body_mut().as_reader(), &mut file)
-        .expect("write ECAPA model file");
+    std::io::copy(&mut response.body_mut().as_reader(), &mut file).expect("write ECAPA model file");
     file.flush().expect("flush ECAPA model file");
 
     let hash = sha256_file(&dest).expect("hash downloaded ECAPA model");
     if hash != ECAPA_SHA256 {
         let _ = fs::remove_file(&dest);
-        panic!(
-            "downloaded ECAPA model SHA-256 mismatch (got {hash}, expected {ECAPA_SHA256})"
-        );
+        panic!("downloaded ECAPA model SHA-256 mismatch (got {hash}, expected {ECAPA_SHA256})");
     }
 }
 

@@ -204,8 +204,7 @@ impl VoiceShared {
 
     /// Consume the pending enroll command (returns it and resets to NONE).
     pub fn take_enroll_command(&self) -> u8 {
-        self.enroll_command
-            .swap(ENROLL_CMD_NONE, Ordering::Relaxed)
+        self.enroll_command.swap(ENROLL_CMD_NONE, Ordering::Relaxed)
     }
 
     pub fn set_speaker(&self, score: f32, matched: bool) {
@@ -298,12 +297,7 @@ impl VoiceShared {
     }
 
     pub fn set_spectrum_source(&self, source: u8) {
-        self.spectrum_source
-            .store(source.min(2), Ordering::Relaxed);
-    }
-
-    pub fn spectrum_source(&self) -> u8 {
-        self.spectrum_source.load(Ordering::Relaxed)
+        self.spectrum_source.store(source.min(2), Ordering::Relaxed);
     }
 
     pub fn set_latest_filtered(&self, magnitudes: &[f32]) {
@@ -375,30 +369,12 @@ pub fn spectrum_source_from_str(s: &str) -> u8 {
     }
 }
 
-/// Derive a VAD close threshold from the open threshold (minimum 0.12 hysteresis).
+/// Derive a VAD close threshold from the open threshold (minimum 0.02 hysteresis).
 pub fn vad_close_for_open(open: f32) -> f32 {
     let close = (open - 0.12).max(open * 0.5);
-    close.clamp(0.08, open - 0.02)
-}
-
-#[cfg(test)]
-mod vad_threshold_tests {
-    use super::vad_close_for_open;
-
-    #[test]
-    fn close_stays_below_open_with_hysteresis() {
-        for &open in &[0.45_f32, 0.30, 0.15, 0.95] {
-            let close = vad_close_for_open(open);
-            assert!(close < open, "open={open} close={close}");
-            assert!(open - close >= 0.02, "open={open} close={close}");
-        }
-    }
-
-    #[test]
-    fn default_open_maps_to_sane_close() {
-        let close = vad_close_for_open(0.45);
-        assert!((close - 0.22).abs() < 0.02 || close >= 0.20);
-    }
+    let hi = open - 0.02;
+    let lo = 0.08_f32.min(hi);
+    close.clamp(lo, hi)
 }
 
 static VOICE_SHARED: OnceLock<Arc<VoiceShared>> = OnceLock::new();
@@ -535,5 +511,34 @@ impl Drop for VoiceSession {
         shared.set_passing(false);
         shared.set_enroll_active(false);
         shared.set_enroll_progress(0.0);
+    }
+}
+
+#[cfg(test)]
+mod vad_threshold_tests {
+    use super::vad_close_for_open;
+
+    #[test]
+    fn close_stays_below_open_with_hysteresis() {
+        for &open in &[0.45_f32, 0.30, 0.15, 0.10, 0.08, 0.06, 0.95] {
+            let close = vad_close_for_open(open);
+            assert!(close < open, "open={open} close={close}");
+            assert!(open - close >= 0.02, "open={open} close={close}");
+        }
+    }
+
+    #[test]
+    fn low_open_values_do_not_panic() {
+        let mut open = 0.05_f32;
+        while open <= 0.15 {
+            let _ = vad_close_for_open(open);
+            open += 0.001;
+        }
+    }
+
+    #[test]
+    fn default_open_maps_to_sane_close() {
+        let close = vad_close_for_open(0.45);
+        assert!((close - 0.22).abs() < 0.02 || close >= 0.20);
     }
 }

@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use ort::session::Session;
-use ort::value::{Tensor, ValueType};
 use ort::tensor::TensorElementType;
+use ort::value::{Tensor, ValueType};
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
@@ -117,11 +117,9 @@ impl Embedder {
             bail!("embedding input too short: {} samples", samples.len());
         }
 
-        let feat_tensor = Tensor::from_array((
-            vec![1_i64, n_frames as i64, N_MELS as i64],
-            features,
-        ))
-        .context("build features tensor")?;
+        let feat_tensor =
+            Tensor::from_array((vec![1_i64, n_frames as i64, N_MELS as i64], features))
+                .context("build features tensor")?;
 
         let outputs = match self.len_kind {
             LenKind::FramesI64 => {
@@ -171,7 +169,11 @@ impl Embedder {
                 *dst = padded[start + i] * self.window[i];
             }
             self.fft
-                .process_with_scratch(&mut self.frame_in, &mut self.spectrum, &mut self.fft_scratch)
+                .process_with_scratch(
+                    &mut self.frame_in,
+                    &mut self.spectrum,
+                    &mut self.fft_scratch,
+                )
                 .map_err(|e| anyhow!("rfft: {e:?}"))?;
 
             let row = &mut log_mel[f * N_MELS..(f + 1) * N_MELS];

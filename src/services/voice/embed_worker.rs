@@ -124,7 +124,8 @@ fn run(
                             }
                             verifier.set_voiceprint(Some(vp));
                             shared.set_enrolled(true);
-                            if shared.verification_warmup_enabled() && shared.verification_enabled() {
+                            if shared.verification_warmup_enabled() && shared.verification_enabled()
+                            {
                                 shared.set_verify_warmup(true);
                             }
                             shared.bump_enroll_done();

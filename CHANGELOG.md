@@ -8,7 +8,7 @@ All notable changes to this project are documented in this file.
 - Embedded ECAPA-TDNN speaker model in the release binary (`build.rs` fetch + `include_bytes!`).
 - `Makefile` install target and Flatpak manifest skeleton (`packaging/flatpak/`).
 - `THIRD_PARTY_NOTICES.md` for bundled ML models.
-- Default tab directory seeding (`01-memes`, `02-music`, `03-effects`) on first layout setup.
+- Default tab directory seeding (`01-Memes`, `02-Music`, `03-Effects`) on first layout setup when `tabs/` has no subfolders (skipped on reinstall if the user's layout already exists).
 - `ci/test-chrome-bindings.sh` for QML binding regression checks.
 
 ### Removed

@@ -24,7 +24,7 @@ The first `cargo build` downloads the ECAPA speaker model (~80 MB) into `assets/
 ### First launch
 
 1. Open **Settings** (gear icon) and pick your hardware microphone under Audio.
-2. Add audio files to tab folders under `~/.config/soundboard/tabs/` (starter folders `01-memes`, `02-music`, `03-effects` are created automatically).
+2. Add audio files to tab folders under `~/.config/soundboard/tabs/` (starter folders `01-Memes`, `02-Music`, `03-Effects` are created automatically on first install when `tabs/` has no subfolders).
 3. Open **Settings → Shortcuts** and click **Apply** to register global hotkeys via the desktop portal.
 
 In Discord/OBS, set **Microphone** to **Sound-Spring-Virtual-Microphone**.
@@ -35,9 +35,9 @@ In Discord/OBS, set **Microphone** to **Sound-Spring-Virtual-Microphone**.
 ~/.config/soundboard/
 ├── config.toml              # mic, paths, voice settings, shortcuts
 ├── tabs/                    # default tabs root (subfolder per tab)
-│   ├── 01-memes/
-│   ├── 02-music/
-│   └── 03-effects/
+│   ├── 01-Memes/
+│   ├── 02-Music/
+│   └── 03-Effects/
 └── voiceprints/             # enrolled speaker profile (when using Voice panel)
 
 ~/.cache/soundboard/

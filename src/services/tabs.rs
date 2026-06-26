@@ -1,7 +1,7 @@
 use crate::config::{Config, TabEntry};
 use crate::services::audio_meta;
 use anyhow::{Context, Result};
-use notify::event::{CreateKind, Event, EventKind, ModifyKind};
+use notify::event::{Event, EventKind, ModifyKind};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -183,21 +183,13 @@ impl TabsRepository {
                 total_files - MAX_SLOTS,
                 path.display()
             ));
-            for slot_index in 0..MAX_SLOTS {
-                if by_slot[slot_index].is_some() || overflow.is_empty() {
-                    continue;
-                }
-                let (_, file_path) = overflow.remove(0);
-                by_slot[slot_index] = Some(file_path);
+        }
+        for slot in &mut by_slot {
+            if slot.is_some() || overflow.is_empty() {
+                continue;
             }
-        } else {
-            for slot_index in 0..MAX_SLOTS {
-                if by_slot[slot_index].is_some() || overflow.is_empty() {
-                    continue;
-                }
-                let (_, file_path) = overflow.remove(0);
-                by_slot[slot_index] = Some(file_path);
-            }
+            let (_, file_path) = overflow.remove(0);
+            *slot = Some(file_path);
         }
 
         let assigned: Vec<(PathBuf, usize)> = by_slot
@@ -263,15 +255,14 @@ impl TabsRepository {
     }
 
     pub fn rename_tab_dir(path: &Path, new_display_name: &str) -> Result<PathBuf> {
-        let parent = path
-            .parent()
-            .context("tab directory has no parent path")?;
+        let parent = path.parent().context("tab directory has no parent path")?;
         let prefix = order_prefix_from_path(path).unwrap_or_else(|| "99".to_string());
         let segment = sanitize_tab_segment(new_display_name);
         let new_path = parent.join(format!("{prefix}-{segment}"));
         if new_path != path {
-            fs::rename(path, &new_path)
-                .with_context(|| format!("rename tab {} -> {}", path.display(), new_path.display()))?;
+            fs::rename(path, &new_path).with_context(|| {
+                format!("rename tab {} -> {}", path.display(), new_path.display())
+            })?;
         }
         Ok(new_path)
     }
@@ -302,7 +293,11 @@ impl TabsRepository {
             ));
             if temp.exists() {
                 fs::rename(temp, &final_path).with_context(|| {
-                    format!("finalize tab reorder {} -> {}", temp.display(), final_path.display())
+                    format!(
+                        "finalize tab reorder {} -> {}",
+                        temp.display(),
+                        final_path.display()
+                    )
                 })?;
             }
             final_paths.push(final_path);
@@ -335,10 +330,7 @@ impl TabsRepository {
 
     pub fn remove_slot_file(tab_dir: &Path, slot: usize) -> Result<()> {
         let tab = Self::scan_tab_dir(tab_dir)?;
-        let path = tab
-            .slot(slot)
-            .context("slot is empty")?
-            .clone();
+        let path = tab.slot(slot).context("slot is empty")?.clone();
         fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))
     }
 
@@ -348,10 +340,7 @@ impl TabsRepository {
             anyhow::bail!("new name is empty");
         }
         let tab = Self::scan_tab_dir(tab_dir)?;
-        let existing = tab
-            .slot(slot)
-            .context("slot is empty")?
-            .clone();
+        let existing = tab.slot(slot).context("slot is empty")?.clone();
         let ext = existing
             .extension()
             .and_then(|value| value.to_str())
@@ -380,10 +369,7 @@ impl TabsRepository {
             anyhow::bail!("invalid slot move {from_slot} -> {to_slot}");
         }
         let tab = Self::scan_tab_dir(tab_dir)?;
-        let from_path = tab
-            .slot(from_slot)
-            .context("source slot is empty")?
-            .clone();
+        let from_path = tab.slot(from_slot).context("source slot is empty")?.clone();
         match tab.slot(to_slot) {
             None => {
                 let dest = path_with_slot_prefix(&from_path, tab_dir, to_slot)?;
@@ -512,9 +498,7 @@ fn is_tab_content_change(kind: &EventKind) -> bool {
         EventKind::Create(_)
             | EventKind::Remove(_)
             | EventKind::Modify(
-                ModifyKind::Data(_)
-                    | ModifyKind::Name(_)
-                    | ModifyKind::Metadata(_)
+                ModifyKind::Data(_) | ModifyKind::Name(_) | ModifyKind::Metadata(_)
             )
     )
 }
@@ -690,15 +674,18 @@ fn normalize_assigned_files(
             continue;
         }
         let temp = tab_dir.join(format!(".sound_spring_norm_{index}"));
-        fs::rename(src, &temp).with_context(|| {
-            format!("stage normalize {} -> {}", src.display(), temp.display())
-        })?;
+        fs::rename(src, &temp)
+            .with_context(|| format!("stage normalize {} -> {}", src.display(), temp.display()))?;
         staged.push((temp, dest.clone()));
     }
 
     for (temp, dest) in staged {
         fs::rename(&temp, &dest).with_context(|| {
-            format!("finalize normalize {} -> {}", temp.display(), dest.display())
+            format!(
+                "finalize normalize {} -> {}",
+                temp.display(),
+                dest.display()
+            )
         })?;
     }
 
@@ -733,20 +720,10 @@ fn swap_slot_files(tab_dir: &Path, path_a: &Path, path_b: &Path) -> Result<()> {
         .with_context(|| format!("stage swap {} -> {}", path_a.display(), temp_a.display()))?;
     fs::rename(path_b, &temp_b)
         .with_context(|| format!("stage swap {} -> {}", path_b.display(), temp_b.display()))?;
-    fs::rename(&temp_a, &dest_b).with_context(|| {
-        format!(
-            "finalize swap {} -> {}",
-            temp_a.display(),
-            dest_b.display()
-        )
-    })?;
-    fs::rename(&temp_b, &dest_a).with_context(|| {
-        format!(
-            "finalize swap {} -> {}",
-            temp_b.display(),
-            dest_a.display()
-        )
-    })?;
+    fs::rename(&temp_a, &dest_b)
+        .with_context(|| format!("finalize swap {} -> {}", temp_a.display(), dest_b.display()))?;
+    fs::rename(&temp_b, &dest_a)
+        .with_context(|| format!("finalize swap {} -> {}", temp_b.display(), dest_a.display()))?;
     Ok(())
 }
 
@@ -764,6 +741,7 @@ mod tests {
     #[test]
     fn strip_prefix() {
         assert_eq!(strip_order_prefix("01-memes"), "memes");
+        assert_eq!(strip_order_prefix("02-Music"), "Music");
         assert_eq!(strip_order_prefix("01 memes"), "memes");
         assert_eq!(strip_order_prefix("memes"), "memes");
     }
@@ -794,8 +772,14 @@ mod tests {
         assert!(warnings.is_empty());
         assert!(dir.join("01-airhorn.ogg").exists());
         assert!(dir.join("02-bruh.ogg").exists());
-        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-airhorn.ogg"));
-        assert_eq!(tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()), Some("02-bruh.ogg"));
+        assert_eq!(
+            tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("01-airhorn.ogg")
+        );
+        assert_eq!(
+            tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("02-bruh.ogg")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -822,8 +806,14 @@ mod tests {
         fs::write(dir.join("second.ogg"), b"fake").unwrap();
         let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-first.ogg"));
-        assert_eq!(tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()), Some("02-second.ogg"));
+        assert_eq!(
+            tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("01-first.ogg")
+        );
+        assert_eq!(
+            tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("02-second.ogg")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -836,12 +826,15 @@ mod tests {
         let (tab, warnings) = TabsRepository::scan_tab_dir_with_warnings(&dir).unwrap();
         assert!(warnings.is_empty());
         assert_eq!(tab.sounds.len(), 2);
-        assert_eq!(tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()), Some("01-one.ogg"));
+        assert_eq!(
+            tab.slot(1).unwrap().file_name().and_then(|s| s.to_str()),
+            Some("01-one.ogg")
+        );
         assert_eq!(
             tab.slot(2).unwrap().file_name().and_then(|s| s.to_str()),
             Some("02-fifteen.ogg")
         );
-        assert!(dir.join("15-fifteen.ogg").exists() == false);
+        assert!(!dir.join("15-fifteen.ogg").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -916,15 +909,9 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(
-            tab.slot(1).unwrap(),
-            &PathBuf::from("/tmp/t/01-first.ogg")
-        );
+        assert_eq!(tab.slot(1).unwrap(), &PathBuf::from("/tmp/t/01-first.ogg"));
         assert!(tab.slot(2).is_none());
-        assert_eq!(
-            tab.slot(3).unwrap(),
-            &PathBuf::from("/tmp/t/03-third.ogg")
-        );
+        assert_eq!(tab.slot(3).unwrap(), &PathBuf::from("/tmp/t/03-third.ogg"));
         assert!(tab.slot(10).is_none());
     }
 
@@ -995,7 +982,9 @@ mod tests {
         assert!(!is_tab_content_change(&EventKind::Access(
             notify::event::AccessKind::Read
         )));
-        assert!(is_tab_content_change(&EventKind::Create(CreateKind::File)));
+        assert!(is_tab_content_change(&EventKind::Create(
+            notify::event::CreateKind::File
+        )));
     }
 
     #[test]
@@ -1048,7 +1037,10 @@ mod tests {
         let source = dir.join("clip.ogg");
         fs::write(&source, b"fake").unwrap();
         let dest = destination_for_empty_slot(&dir, 3, &source).unwrap();
-        assert_eq!(dest.file_name().and_then(|s| s.to_str()), Some("03-clip.ogg"));
+        assert_eq!(
+            dest.file_name().and_then(|s| s.to_str()),
+            Some("03-clip.ogg")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

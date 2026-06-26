@@ -6,7 +6,11 @@ use std::path::PathBuf;
 const AUTOSTART_DESKTOP_NAME: &str = "sound-spring.desktop";
 
 pub fn autostart_desktop_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|dirs| dirs.config_dir().join("autostart").join(AUTOSTART_DESKTOP_NAME))
+    BaseDirs::new().map(|dirs| {
+        dirs.config_dir()
+            .join("autostart")
+            .join(AUTOSTART_DESKTOP_NAME)
+    })
 }
 
 /// Writes or removes `~/.config/autostart/sound-spring.desktop`.

@@ -19,13 +19,8 @@ pub struct Resampler {
 
 impl Resampler {
     pub fn new() -> Result<Self> {
-        let inner = FftFixedIn::<f32>::new(
-            CAPTURE_RATE as usize,
-            TARGET_RATE as usize,
-            1024,
-            1,
-            1,
-        )?;
+        let inner =
+            FftFixedIn::<f32>::new(CAPTURE_RATE as usize, TARGET_RATE as usize, 1024, 1, 1)?;
         let chunk_in = inner.input_frames_next();
         let out_max = inner.output_frames_max();
         Ok(Self {
@@ -42,9 +37,11 @@ impl Resampler {
             .extend(input.iter().map(|&s| if s.is_finite() { s } else { 0.0 }));
         while self.pending.len() >= self.chunk_in {
             let n = self.chunk_in;
-            let (_, written) =
-                self.inner
-                    .process_into_buffer(&[&self.pending[..n]], &mut self.out_scratch, None)?;
+            let (_, written) = self.inner.process_into_buffer(
+                &[&self.pending[..n]],
+                &mut self.out_scratch,
+                None,
+            )?;
             out.extend_from_slice(&self.out_scratch[0][..written]);
             self.pending.drain(..n);
         }

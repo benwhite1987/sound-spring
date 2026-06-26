@@ -299,9 +299,7 @@ fn internal_to_portal_key(part: &str) -> String {
 
 fn portal_numpad_keysym_to_internal(keysym: &str) -> Option<String> {
     match keysym {
-        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
-            Some(format!("KP_{keysym}"))
-        }
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => Some(format!("KP_{keysym}")),
         "plus" => Some("KP_Add".into()),
         "minus" => Some("KP_Subtract".into()),
         "period" => Some("KP_Decimal".into()),
@@ -324,16 +322,7 @@ fn portal_keysym_to_internal(keysym: &str) -> String {
         "BackSpace" | "Backspace" => "Backspace".into(),
         "PageUp" | "Prior" => "Page_Up".into(),
         "PageDown" | "Next" => "Page_Down".into(),
-        other => {
-            if other.starts_with('F')
-                && other[1..].chars().all(|c| c.is_ascii_digit())
-                && other.len() > 1
-            {
-                other.to_string()
-            } else {
-                other.to_string()
-            }
-        }
+        other => other.to_string(),
     }
 }
 
@@ -596,10 +585,7 @@ mod tests {
             trigger_from_qt(0x31, QT_KEYPAD_MODIFIER, 0),
             Some("KP_1".into())
         );
-        assert_eq!(
-            trigger_from_qt(QT_KEY_KEYPAD0 + 1, 0, 0),
-            Some("F2".into())
-        );
+        assert_eq!(trigger_from_qt(QT_KEY_KEYPAD0 + 1, 0, 0), Some("F2".into()));
         assert_eq!(
             trigger_from_qt(QT_KEY_KP_ADD, QT_CONTROL_MODIFIER, 0),
             Some("Ctrl+KP_Add".into())
@@ -657,8 +643,6 @@ mod tests {
         assert_eq!(portal_trigger("KP_PageUp"), "NUM+Prior");
         assert_eq!(portal_trigger("KP_Begin"), "NUM+Clear");
     }
-
-
 
     #[test]
     fn portal_keypad_trigger() {

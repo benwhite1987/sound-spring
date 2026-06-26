@@ -80,7 +80,11 @@ mod tests {
         }
 
         // Output tracks input rate within one model delay (lookahead + buffer).
-        assert!(out.len() >= n - 48_000, "too few output samples: {}", out.len());
+        assert!(
+            out.len() >= n - 48_000,
+            "too few output samples: {}",
+            out.len()
+        );
         assert!(out.len() <= n, "more output than input: {}", out.len());
 
         let energy = |s: &[f32]| s.iter().map(|x| x * x).sum::<f32>() / s.len().max(1) as f32;

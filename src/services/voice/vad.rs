@@ -97,6 +97,9 @@ mod tests {
         let mut vad = Vad::new(0.7, 0.3).expect("build vad");
         let (prob, active) = vad.process(&vec![0.0_f32; VAD_CHUNK * 4]);
         assert!(!active, "silence should not be flagged as speech");
-        assert!(prob < 0.7, "silence probability {prob} exceeded open threshold");
+        assert!(
+            prob < 0.7,
+            "silence probability {prob} exceeded open threshold"
+        );
     }
 }

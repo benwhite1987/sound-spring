@@ -332,9 +332,7 @@ impl qobject::VoiceController {
         let next = self.rust().spectrum_version.wrapping_add(1);
         self.as_mut().set_spectrum_version(next);
         if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetSpectrumSource {
-                source: source_str,
-            });
+            let _ = tx.blocking_send(BackendCommand::SetSpectrumSource { source: source_str });
         }
     }
 
@@ -380,10 +378,7 @@ fn persist_verification(enabled: bool, threshold: f32) {
         tracing::warn!("failed to persist voice verification settings: {err:#}");
     }
     if let Some(tx) = BACKEND_TX.get() {
-        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification {
-            enabled,
-            threshold,
-        });
+        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification { enabled, threshold });
     }
 }
 

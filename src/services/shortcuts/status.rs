@@ -42,7 +42,6 @@ pub fn global_shortcut_status() -> GlobalShortcutStatus {
         .unwrap_or(GlobalShortcutStatus::Inactive)
 }
 
-
 pub fn format_global_shortcut_status() -> String {
     match global_shortcut_status() {
         GlobalShortcutStatus::Inactive => {

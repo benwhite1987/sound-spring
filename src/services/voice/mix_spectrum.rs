@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use super::spectrum::SpectrumAnalyzer;
-use super::{VoiceShared, FFT_HOP, FFT_SIZE, SPECTRUM_BINS};
+use super::{VoiceShared, FFT_HOP, FFT_SIZE};
 
 pub struct MixSpectrum {
     stop: Arc<AtomicBool>,
@@ -91,13 +91,12 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
 mod tests {
     use super::*;
     use crate::services::voice::spectrum::SpectrumAnalyzer;
+    use crate::services::voice::SPECTRUM_BINS;
     use crate::services::voice::{CAPTURE_RATE, FFT_SIZE};
 
     fn sine(freq: f32, len: usize) -> Vec<f32> {
         (0..len)
-            .map(|n| {
-                (2.0 * std::f32::consts::PI * freq * n as f32 / CAPTURE_RATE as f32).sin()
-            })
+            .map(|n| (2.0 * std::f32::consts::PI * freq * n as f32 / CAPTURE_RATE as f32).sin())
             .collect()
     }
 

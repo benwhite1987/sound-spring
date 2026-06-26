@@ -286,7 +286,7 @@ use crate::state::{State, WindowGeometry};
 
 #[derive(Debug)]
 pub enum BackendCommand {
-    ApplyConfig(Config),
+    ApplyConfig(Box<Config>),
     BindShortcuts,
     ConfigurePortalShortcuts,
     Player(PlayerCommand),
@@ -990,7 +990,10 @@ impl qobject::SoundboardController {
         // Only prompt when binding has actually FAILED. While status is Inactive
         // (e.g. the in-flight bind during startup), say no — otherwise the QML
         // dialog races the bind and pops every launch.
-        matches!(global_shortcut_status(), GlobalShortcutStatus::Failed { .. })
+        matches!(
+            global_shortcut_status(),
+            GlobalShortcutStatus::Failed { .. }
+        )
     }
 
     pub fn dismiss_global_shortcuts_prompt(self: Pin<&mut Self>) {
@@ -1245,10 +1248,7 @@ impl qobject::SoundboardController {
 
     pub fn note_first_paint(self: Pin<&mut Self>) {
         if let Some(start) = crate::PROCESS_START.get() {
-            tracing::info!(
-                "startup: first frame in {} ms",
-                start.elapsed().as_millis()
-            );
+            tracing::info!("startup: first frame in {} ms", start.elapsed().as_millis());
         }
     }
 
@@ -1339,8 +1339,7 @@ impl qobject::SoundboardController {
                     Self::refresh_global_shortcuts_status(self.as_mut());
                 }
                 BackendEvent::VoiceCaptureStatus { active, error } => {
-                    crate::services::voice::voice_shared()
-                        .set_capture_status(active, &error);
+                    crate::services::voice::voice_shared().set_capture_status(active, &error);
                 }
             }
         }
@@ -1488,7 +1487,9 @@ impl qobject::SoundboardController {
 
         let mut config = config::load_config().unwrap_or_default();
         let select_path = if uses_custom_tabs(&config) {
-            let Some(cfg_index) = SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path) else {
+            let Some(cfg_index) =
+                SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path)
+            else {
                 return false;
             };
             config.tabs[cfg_index].name = Some(name_text);
@@ -1525,7 +1526,12 @@ impl qobject::SoundboardController {
         if from == to {
             return false;
         }
-        let ordered_paths: Vec<PathBuf> = self.rust().tabs.iter().map(|tab| tab.path.clone()).collect();
+        let ordered_paths: Vec<PathBuf> = self
+            .rust()
+            .tabs
+            .iter()
+            .map(|tab| tab.path.clone())
+            .collect();
         if from >= ordered_paths.len() || to >= ordered_paths.len() {
             return false;
         }
@@ -1534,10 +1540,14 @@ impl qobject::SoundboardController {
         let select_path = if uses_custom_tabs(&config) {
             let from_path = ordered_paths[from].clone();
             let to_path = ordered_paths[to].clone();
-            let Some(cfg_from) = SoundboardControllerRust::config_index_for_tab_path(&config, &from_path) else {
+            let Some(cfg_from) =
+                SoundboardControllerRust::config_index_for_tab_path(&config, &from_path)
+            else {
                 return false;
             };
-            let Some(cfg_to) = SoundboardControllerRust::config_index_for_tab_path(&config, &to_path) else {
+            let Some(cfg_to) =
+                SoundboardControllerRust::config_index_for_tab_path(&config, &to_path)
+            else {
                 return false;
             };
             TabsRepository::reorder_custom_tabs(&mut config.tabs, cfg_from, cfg_to);
@@ -1585,7 +1595,9 @@ impl qobject::SoundboardController {
         else {
             return false;
         };
-        let Some(cfg_index) = SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path) else {
+        let Some(cfg_index) =
+            SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path)
+        else {
             return false;
         };
         config.tabs.remove(cfg_index);
@@ -1597,11 +1609,11 @@ impl qobject::SoundboardController {
             .find(|tab| tab.path != tab_path)
             .map(|tab| tab.path.clone());
 
-        if !self.as_mut().rust_mut().finish_tab_mutation(
-            &config,
-            select_path.as_deref(),
-            true,
-        ) {
+        if !self
+            .as_mut()
+            .rust_mut()
+            .finish_tab_mutation(&config, select_path.as_deref(), true)
+        {
             return false;
         }
         properties::sync_tab_properties(self.as_mut());

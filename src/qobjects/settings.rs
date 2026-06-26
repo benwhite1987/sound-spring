@@ -132,8 +132,7 @@ impl SettingsRust {
         config.audio.monitor_sink = String::from(self.monitor_sink.clone());
         config.audio.latency_ms = self.latency_ms.max(10) as u32;
         config.audio.auto_teardown = self.auto_teardown;
-        config.audio.interruption_mode =
-            String::from(self.interruption_mode.clone());
+        config.audio.interruption_mode = String::from(self.interruption_mode.clone());
         if config.audio.interruption_mode != "interrupt" {
             config.audio.interruption_mode = "overlap".to_string();
         }
@@ -204,9 +203,7 @@ mod properties {
         settings.as_mut().set_monitor_sink(monitor_sink);
         settings.as_mut().set_latency_ms(latency_ms);
         settings.as_mut().set_auto_teardown(auto_teardown);
-        settings
-            .as_mut()
-            .set_interruption_mode(interruption_mode);
+        settings.as_mut().set_interruption_mode(interruption_mode);
         settings
             .as_mut()
             .set_mute_mic_during_playback(mute_mic_during_playback);
@@ -221,7 +218,9 @@ mod properties {
         settings.as_mut().set_shortcut_count(shortcut_count);
         settings.as_mut().set_gate_hangover_ms(gate_hangover_ms);
         settings.as_mut().set_gate_release_ms(gate_release_ms);
-        settings.as_mut().set_verification_warmup(verification_warmup);
+        settings
+            .as_mut()
+            .set_verification_warmup(verification_warmup);
     }
 }
 
@@ -246,14 +245,13 @@ impl qobject::Settings {
                     status = format!("Settings saved, but autostart update failed: {err:#}");
                 }
                 if let Some(tx) = BACKEND_TX.get() {
-                    let _ = tx.blocking_send(BackendCommand::ApplyConfig(config));
+                    let _ = tx.blocking_send(BackendCommand::ApplyConfig(Box::new(config)));
                 }
                 self.as_mut().rust_mut().set_status(&status);
                 properties::sync_settings_properties(self.as_mut());
             }
             Err(err) => {
-                self
-                    .as_mut()
+                self.as_mut()
                     .rust_mut()
                     .set_status(&format!("Failed to save settings: {err:#}"));
                 properties::sync_settings_properties(self.as_mut());

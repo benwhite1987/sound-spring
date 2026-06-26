@@ -120,7 +120,10 @@ mod tests {
         let vp = Voiceprint::from_embedding(&[3.0, 4.0, 0.0]);
         // 3-4-0 normalizes to magnitude 1.
         let norm = vp.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-5, "stored vector should be unit norm");
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "stored vector should be unit norm"
+        );
 
         let dir = std::env::temp_dir().join(format!("sspv-test-{}.bin", std::process::id()));
         vp.save(&dir).unwrap();

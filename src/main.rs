@@ -14,7 +14,7 @@ use services::autostart;
 use services::pipewire::{Modules, PipewireManager, VIRTMIC_SINK};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
-use services::tabs::{TabFilesystemWatch, TabsRepository, watch_paths};
+use services::tabs::{watch_paths, TabFilesystemWatch, TabsRepository};
 use services::voice::{spectrum_source_from_str, voice_shared, VoiceSession};
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -130,9 +130,7 @@ async fn sync_mic_mute_for_playback(config: &Config, active_sessions: usize) {
         return;
     }
     let muted = active_sessions > 0;
-    if let Err(err) =
-        PipewireManager::set_source_mute(&config.audio.mic_source, muted).await
-    {
+    if let Err(err) = PipewireManager::set_source_mute(&config.audio.mic_source, muted).await {
         warn!(
             "failed to {} mic for playback: {err:#}",
             if muted { "mute" } else { "unmute" }
@@ -355,8 +353,7 @@ async fn apply_runtime_config(
         // so the portal can parent its assignment dialog if it has to show one.
         bind_shortcuts(config, !initial, event_tx).await;
     } else if !initial
-        && previous
-            .is_some_and(|prev| ShortcutsManager::uses_global_binding(&prev.shortcuts.mode))
+        && previous.is_some_and(|prev| ShortcutsManager::uses_global_binding(&prev.shortcuts.mode))
     {
         set_global_shortcut_status(GlobalShortcutStatus::Inactive);
         let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
@@ -559,6 +556,7 @@ fn run_backend(
                 command = backend_cmd_rx.recv() => {
                     match command {
                         Some(BackendCommand::ApplyConfig(new_config)) => {
+                            let new_config = *new_config;
                             let previous = active_config.clone();
                             // A routing change tears down and rebuilds all
                             // modules (re-adding the raw mic loopback), so stop

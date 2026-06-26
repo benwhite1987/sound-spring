@@ -198,7 +198,7 @@ async fn wait_for_request(
         .await
         .map_err(|err| anyhow!("subscribe to portal request response: {err}"))?;
 
-    while let Some(signal) = stream.next().await {
+    if let Some(signal) = stream.next().await {
         let args = signal
             .args()
             .map_err(|err| anyhow!("parse portal request response args: {err}"))?;

@@ -325,21 +325,35 @@ pub fn state_path(config: &Config) -> PathBuf {
     config.paths.state_dir.join("state.json")
 }
 
+const DEFAULT_TAB_DIRS: &[&str] = &["01-Memes", "02-Music", "03-Effects"];
+
 pub fn ensure_default_layout(config: &mut Config) -> Result<()> {
     fs::create_dir_all(&config.paths.tabs_root)
         .with_context(|| format!("create tabs root {}", config.paths.tabs_root.display()))?;
     fs::create_dir_all(&config.paths.state_dir)
         .with_context(|| format!("create state dir {}", config.paths.state_dir.display()))?;
 
-    if config.tabs.is_empty() {
+    if config.tabs.is_empty() && !tabs_root_has_tab_dirs(&config.paths.tabs_root)? {
         seed_default_tab_dirs(&config.paths.tabs_root)?;
     }
 
     Ok(())
 }
 
+fn tabs_root_has_tab_dirs(tabs_root: &Path) -> Result<bool> {
+    if !tabs_root.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(tabs_root)? {
+        if entry?.file_type()?.is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn seed_default_tab_dirs(tabs_root: &Path) -> Result<()> {
-    for name in ["01-memes", "02-music", "03-effects"] {
+    for name in DEFAULT_TAB_DIRS {
         fs::create_dir_all(tabs_root.join(name))
             .with_context(|| format!("create default tab dir {name}"))?;
     }
@@ -387,18 +401,53 @@ name = "Custom"
 
     #[test]
     fn ensure_default_layout_seeds_tab_dirs() {
-        let dir = std::env::temp_dir().join(format!(
-            "sound-spring-tabs-{}",
+        let base = std::env::temp_dir().join(format!("sound-spring-tabs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let mut config = Config::default();
+        config.paths.tabs_root = base.join("tabs");
+        config.paths.state_dir = base.join("state");
+        ensure_default_layout(&mut config).unwrap();
+        for name in DEFAULT_TAB_DIRS {
+            assert!(config.paths.tabs_root.join(name).is_dir(), "missing {name}");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn ensure_default_layout_skips_seed_when_tabs_exist() {
+        let base = std::env::temp_dir().join(format!(
+            "sound-spring-tabs-skip-{}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&base);
+        let tabs = base.join("tabs");
+        fs::create_dir_all(tabs.join("01-Memes")).unwrap();
         let mut config = Config::default();
-        config.paths.tabs_root = dir.clone();
-        config.paths.state_dir = dir.join("state");
+        config.paths.tabs_root = tabs.clone();
+        config.paths.state_dir = base.join("state");
         ensure_default_layout(&mut config).unwrap();
-        for name in ["01-memes", "02-music", "03-effects"] {
-            assert!(dir.join(name).is_dir(), "missing {name}");
-        }
-        let _ = fs::remove_dir_all(&dir);
+        assert!(tabs.join("01-Memes").is_dir());
+        assert!(!tabs.join("02-Music").exists());
+        assert!(!tabs.join("03-Effects").exists());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn ensure_default_layout_skips_seed_when_renamed_layout() {
+        let base = std::env::temp_dir().join(format!(
+            "sound-spring-tabs-renamed-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let tabs = base.join("tabs");
+        fs::create_dir_all(tabs.join("02-Music")).unwrap();
+        let mut config = Config::default();
+        config.paths.tabs_root = tabs.clone();
+        config.paths.state_dir = base.join("state");
+        ensure_default_layout(&mut config).unwrap();
+        assert!(tabs.join("02-Music").is_dir());
+        assert!(!tabs.join("01-Memes").exists());
+        assert!(!tabs.join("03-Effects").exists());
+        let _ = fs::remove_dir_all(&base);
     }
 }

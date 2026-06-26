@@ -14,9 +14,7 @@ pub use status::{
     format_global_shortcut_status, global_shortcut_status, set_global_shortcut_status,
     GlobalShortcutStatus,
 };
-pub use trigger::{
-    play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt,
-};
+pub use trigger::{play_slot_from_qt_key, qt_shortcut_sequence, trigger_display, trigger_from_qt};
 
 #[derive(Debug, Clone)]
 pub struct ShortcutDef {
