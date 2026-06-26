@@ -143,6 +143,7 @@ fn run(
     let mut hangover_remaining: usize = 0;
     let mut raw_spectrum_buf = vec![0.0; SPECTRUM_BINS];
     let mut filtered_spectrum_buf = vec![0.0; SPECTRUM_BINS];
+    let mut pop_buf = [0.0f32; 2048];
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -168,8 +169,12 @@ fn run(
         }
 
         let mut got_any = false;
-        while let Ok(sample) = consumer.pop() {
-            window.push(sample);
+        loop {
+            let (filled, _) = consumer.pop_partial_slice(&mut pop_buf);
+            if filled.is_empty() {
+                break;
+            }
+            window.extend_from_slice(filled);
             got_any = true;
             if window.len() >= FFT_SIZE * 2 {
                 break;

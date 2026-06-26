@@ -98,7 +98,7 @@ use cxx_qt_lib::QString;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::qobjects::controller::{BackendCommand, BACKEND_TX};
+use crate::qobjects::controller::{BackendCommand, try_send_backend};
 use crate::services::voice::{
     spectrum_bars::{compute_bar_levels, SPECTRUM_BAR_COUNT},
     spectrum_source_from_str, vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS,
@@ -179,14 +179,12 @@ fn shared_done_seq() -> u32 {
 
 impl qobject::VoiceController {
     pub fn set_visualization_active(self: Pin<&mut Self>, active: bool) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let command = if active {
-                BackendCommand::StartVoiceCapture
-            } else {
-                BackendCommand::StopVoiceCapture
-            };
-            let _ = tx.blocking_send(command);
-        }
+        let command = if active {
+            BackendCommand::StartVoiceCapture
+        } else {
+            BackendCommand::StopVoiceCapture
+        };
+        try_send_backend(command);
     }
 
     /// Drain the shared spectrum queue (keeping only the newest frame) and bump
@@ -318,17 +316,13 @@ impl qobject::VoiceController {
 
     pub fn set_suppression(mut self: Pin<&mut Self>, enabled: bool) {
         self.as_mut().set_suppression_enabled(enabled);
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetVoiceSuppression { enabled });
-        }
+        try_send_backend(BackendCommand::SetVoiceSuppression { enabled });
     }
 
     pub fn persist_vad_enabled(mut self: Pin<&mut Self>, enabled: bool) {
         self.rust().shared.set_vad_enabled(enabled);
         self.as_mut().set_vad_enabled(enabled);
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetVoiceVad { enabled });
-        }
+        try_send_backend(BackendCommand::SetVoiceVad { enabled });
     }
 
     pub fn toggle_mic_mute(mut self: Pin<&mut Self>) {
@@ -339,12 +333,10 @@ impl qobject::VoiceController {
     pub fn persist_mic_muted(mut self: Pin<&mut Self>, muted: bool) {
         self.as_mut().set_mic_muted(muted);
         let config = crate::config::load_config().unwrap_or_default();
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetMicVolume {
-                percent: config.audio.mic_volume,
-                muted,
-            });
-        }
+        try_send_backend(BackendCommand::SetMicVolume {
+            percent: config.audio.mic_volume,
+            muted,
+        });
     }
 
     pub fn persist_spectrum_source(mut self: Pin<&mut Self>, source: QString) {
@@ -357,16 +349,12 @@ impl qobject::VoiceController {
         self.as_mut().rust_mut().bar_levels = [0.0; SPECTRUM_BAR_COUNT];
         let next = self.rust().spectrum_version.wrapping_add(1);
         self.as_mut().set_spectrum_version(next);
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetSpectrumSource { source: source_str });
-        }
+        try_send_backend(BackendCommand::SetSpectrumSource { source: source_str });
     }
 
     pub fn start_enrollment(mut self: Pin<&mut Self>) {
         // Enrollment needs a live capture; ensure it is running.
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::StartVoiceCapture);
-        }
+        try_send_backend(BackendCommand::StartVoiceCapture);
         self.rust().shared.request_enroll_start();
         self.as_mut().set_enroll_active(true);
         self.as_mut().set_enroll_progress(0.0);
@@ -403,9 +391,7 @@ fn persist_verification(enabled: bool, threshold: f32) {
     if let Err(err) = crate::config::save_config(&config) {
         tracing::warn!("failed to persist voice verification settings: {err:#}");
     }
-    if let Some(tx) = BACKEND_TX.get() {
-        let _ = tx.blocking_send(BackendCommand::SetVoiceVerification { enabled, threshold });
-    }
+    try_send_backend(BackendCommand::SetVoiceVerification { enabled, threshold });
 }
 
 fn persist_vad_threshold(open: f32, close: f32) {

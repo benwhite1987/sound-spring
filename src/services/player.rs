@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
@@ -72,13 +72,13 @@ pub enum PlayerEvent {
 }
 
 struct PlaySession {
-    remote: Child,
-    monitor: Child,
     spectrum_feed: JoinHandle<()>,
     tab_index: i32,
     slot: i32,
     remote_tag: String,
     monitor_tag: String,
+    stop: watch::Sender<bool>,
+    _reaper: JoinHandle<()>,
 }
 
 pub struct Player {
@@ -88,6 +88,7 @@ pub struct Player {
     next_id: u64,
     volumes: VolumeState,
     children: Arc<Mutex<HashMap<u64, PlaySession>>>,
+    done_tx: Option<mpsc::Sender<(i32, i32)>>,
 }
 
 impl Player {
@@ -99,7 +100,12 @@ impl Player {
             next_id: 1,
             volumes: VolumeState::default(),
             children: Arc::new(Mutex::new(HashMap::new())),
+            done_tx: None,
         }
+    }
+
+    pub fn set_playback_done_tx(&mut self, tx: mpsc::Sender<(i32, i32)>) {
+        self.done_tx = Some(tx);
     }
 
     pub fn default_sink() -> Self {
@@ -188,16 +194,33 @@ impl Player {
         .await?;
         let spectrum_feed = Self::spawn_sfx_spectrum_feed(file.clone());
 
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let done_tx = self
+            .done_tx
+            .clone()
+            .context("playback done notifier not configured")?;
+        let children = self.children.clone();
+        let reaper = tokio::spawn(Self::reap_playback(
+            id,
+            remote,
+            monitor,
+            tab_index,
+            slot,
+            stop_rx,
+            done_tx,
+            children,
+        ));
+
         self.children.lock().await.insert(
             id,
             PlaySession {
-                remote,
-                monitor,
                 spectrum_feed,
                 tab_index,
                 slot,
                 remote_tag,
                 monitor_tag,
+                stop: stop_tx,
+                _reaper: reaper,
             },
         );
         self.apply_volume_to_active().await;
@@ -212,43 +235,56 @@ impl Player {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            if let Some(mut session) = children.remove(&id) {
+            if let Some(session) = children.remove(&id) {
                 session.spectrum_feed.abort();
-                let _ = session.remote.kill().await;
-                let _ = session.monitor.kill().await;
+                let _ = session.stop.send(true);
             }
         }
     }
 
     pub async fn stop_all(&mut self) {
         let mut children = self.children.lock().await;
-        for (_, mut session) in children.drain() {
+        for (_, session) in children.drain() {
             session.spectrum_feed.abort();
-            let _ = session.remote.kill().await;
-            let _ = session.monitor.kill().await;
+            let _ = session.stop.send(true);
         }
     }
 
-    pub async fn reap_finished(&mut self) -> Vec<(i32, i32)> {
-        let mut finished = Vec::new();
-        let mut children = self.children.lock().await;
-        children.retain(|_id, session| {
-            let remote_done = matches!(session.remote.try_wait(), Ok(Some(_)) | Err(_));
-            let monitor_done = matches!(session.monitor.try_wait(), Ok(Some(_)) | Err(_));
-            if remote_done || monitor_done {
-                if !remote_done {
-                    let _ = session.remote.start_kill();
+    async fn reap_playback(
+        id: u64,
+        mut remote: Child,
+        mut monitor: Child,
+        tab_index: i32,
+        slot: i32,
+        mut stop_rx: watch::Receiver<bool>,
+        done_tx: mpsc::Sender<(i32, i32)>,
+        children: Arc<Mutex<HashMap<u64, PlaySession>>>,
+    ) {
+        let finished = tokio::select! {
+            changed = stop_rx.changed() => {
+                if changed.is_ok() && *stop_rx.borrow() {
+                    let _ = remote.start_kill();
+                    let _ = monitor.start_kill();
+                    let _ = remote.wait().await;
+                    let _ = monitor.wait().await;
                 }
-                if !monitor_done {
-                    let _ = session.monitor.start_kill();
-                }
-                finished.push((session.tab_index, session.slot));
                 false
-            } else {
+            }
+            _ = remote.wait() => {
+                let _ = monitor.start_kill();
+                let _ = monitor.wait().await;
                 true
             }
-        });
-        finished
+            _ = monitor.wait() => {
+                let _ = remote.start_kill();
+                let _ = remote.wait().await;
+                true
+            }
+        };
+        children.lock().await.remove(&id);
+        if finished {
+            let _ = done_tx.send((tab_index, slot)).await;
+        }
     }
 
     async fn apply_volume_to_active(&self) {

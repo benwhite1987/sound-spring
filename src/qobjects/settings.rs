@@ -81,7 +81,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{self, Config, TabEntry};
-use crate::qobjects::controller::{BackendCommand, SoundboardControllerRust, BACKEND_TX};
+use crate::qobjects::controller::{BackendCommand, try_send_backend, SoundboardControllerRust};
 use crate::services::autostart;
 use crate::services::shortcuts::{trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
 
@@ -244,9 +244,7 @@ impl qobject::Settings {
                 if let Err(err) = autostart::sync_launch_at_login(config.ui.launch_at_login) {
                     status = format!("Settings saved, but autostart update failed: {err:#}");
                 }
-                if let Some(tx) = BACKEND_TX.get() {
-                    let _ = tx.blocking_send(BackendCommand::ApplyConfig(Box::new(config)));
-                }
+                try_send_backend(BackendCommand::ApplyConfig(Box::new(config)));
                 self.as_mut().rust_mut().set_status(&status);
                 properties::sync_settings_properties(self.as_mut());
             }

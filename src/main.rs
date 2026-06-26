@@ -23,7 +23,7 @@ use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -528,7 +528,10 @@ fn run_backend(
         let mut tab_watch = TabFilesystemWatch::new();
         tab_watch.restart(watch_paths(&active_config), tab_watch_tx.clone());
 
+        let (playback_done_tx, mut playback_done_rx) = mpsc::channel(32);
+
         let mut player = Player::default_sink();
+        player.set_playback_done_tx(playback_done_tx);
         player.set_volumes(VolumeState {
             output_percent: active_config.audio.output_volume,
             monitor_percent: active_config.audio.monitor_volume,
@@ -784,14 +787,12 @@ fn run_backend(
                         let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
                     });
                 }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    let finished = player.reap_finished().await;
-                    for (tab_index, slot) in finished {
-                        let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
-                            tab_index,
-                            slot,
-                        });
-                    }
+                Some(done) = playback_done_rx.recv() => {
+                    let (tab_index, slot) = done;
+                    let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
+                        tab_index,
+                        slot,
+                    });
                     sync_mic_mute_for_playback(
                         &active_config,
                         player.active_session_count().await,

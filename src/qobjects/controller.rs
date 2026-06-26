@@ -334,6 +334,16 @@ pub static AUDIO_SINKS: OnceLock<Mutex<Vec<AudioSink>>> = OnceLock::new();
 pub static SHORTCUT_BINDINGS: OnceLock<Mutex<Vec<ShortcutDef>>> = OnceLock::new();
 pub static WINDOW_ACTIVE: AtomicBool = AtomicBool::new(true);
 
+/// Send a backend command without blocking the Qt/UI thread.
+pub fn try_send_backend(cmd: BackendCommand) {
+    let Some(tx) = BACKEND_TX.get() else {
+        return;
+    };
+    if let Err(err) = tx.try_send(cmd) {
+        tracing::warn!("backend command dropped: {err}");
+    }
+}
+
 const KEY_DEDUPE_MS: u64 = 120;
 const MIN_PLAY_BEFORE_TOGGLE_MS: u64 = 300;
 
@@ -405,8 +415,8 @@ struct ShortcutHandleResult {
 
 impl SoundboardControllerRust {
     fn send_player_command(&self, command: PlayerCommand) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::Player(command));
+        if BACKEND_TX.get().is_some() {
+            try_send_backend(BackendCommand::Player(command));
         } else if let Some(tx) = PLAYER_TX.get() {
             let _ = tx.blocking_send(command);
         }
@@ -435,14 +445,7 @@ impl SoundboardControllerRust {
     }
 
     fn push_volumes(&self) {
-        if let Some(tx) = BACKEND_TX.get() {
-            if tx
-                .blocking_send(BackendCommand::ApplyVolumes(self.volume_state()))
-                .is_err()
-            {
-                tracing::warn!("backend volume channel closed, dropping volume update");
-            }
-        }
+        try_send_backend(BackendCommand::ApplyVolumes(self.volume_state()));
     }
 
     fn persist_volumes(&self) {
@@ -465,12 +468,10 @@ impl SoundboardControllerRust {
     }
 
     fn push_mic_volume(&self) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::SetMicVolume {
-                percent: self.mic_volume.clamp(0, 100) as u8,
-                muted: self.mic_muted,
-            });
-        }
+        try_send_backend(BackendCommand::SetMicVolume {
+            percent: self.mic_volume.clamp(0, 100) as u8,
+            muted: self.mic_muted,
+        });
     }
 
     pub fn replace_tabs(&mut self, tabs: Vec<Tab>, current_path: Option<&str>) {
@@ -507,9 +508,7 @@ impl SoundboardControllerRust {
     }
 
     fn request_tab_watch_restart() {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::RestartTabWatch);
-        }
+        try_send_backend(BackendCommand::RestartTabWatch);
     }
 
     fn finish_tab_mutation(
@@ -1173,16 +1172,12 @@ impl qobject::SoundboardController {
 
     pub fn bind_global_shortcuts(_self: Pin<&mut Self>) {
         Self::refresh_portal_parent_window(_self);
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::BindShortcuts);
-        }
+        try_send_backend(BackendCommand::BindShortcuts);
     }
 
     pub fn configure_global_shortcuts(_self: Pin<&mut Self>) {
         Self::refresh_portal_parent_window(_self);
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::ConfigurePortalShortcuts);
-        }
+        try_send_backend(BackendCommand::ConfigurePortalShortcuts);
     }
 
     pub fn refresh_shortcut_bindings(mut self: Pin<&mut Self>) {
@@ -1904,10 +1899,8 @@ impl qobject::SoundboardController {
     }
 
     pub fn refresh_audio_devices(self: Pin<&mut Self>) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::RefreshMicSources);
-            let _ = tx.blocking_send(BackendCommand::RefreshAudioSinks);
-        }
+        try_send_backend(BackendCommand::RefreshMicSources);
+        try_send_backend(BackendCommand::RefreshAudioSinks);
     }
 }
 

@@ -17,6 +17,7 @@ pub struct Denoiser {
     df: DfTract,
     hop: usize,
     in_buf: Vec<f32>,
+    frame_out: Vec<f32>,
 }
 
 impl Denoiser {
@@ -29,6 +30,7 @@ impl Denoiser {
             df,
             hop,
             in_buf: Vec::with_capacity(hop * 4),
+            frame_out: vec![0.0; hop],
         })
     }
 
@@ -36,13 +38,12 @@ impl Denoiser {
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.in_buf.extend_from_slice(input);
         while self.in_buf.len() >= self.hop {
-            let mut frame_out = vec![0.0f32; self.hop];
             let noisy = ArrayView2::from_shape((1, self.hop), &self.in_buf[..self.hop])
                 .expect("noisy frame shape");
-            let enh = ArrayViewMut2::from_shape((1, self.hop), &mut frame_out)
+            let enh = ArrayViewMut2::from_shape((1, self.hop), &mut self.frame_out)
                 .expect("enhanced frame shape");
             match self.df.process(noisy, enh) {
-                Ok(_) => out.extend_from_slice(&frame_out),
+                Ok(_) => out.extend_from_slice(&self.frame_out),
                 Err(err) => {
                     debug!("denoise frame failed: {err:#}; passing through");
                     out.extend_from_slice(&self.in_buf[..self.hop]);

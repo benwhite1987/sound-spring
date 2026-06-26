@@ -3,7 +3,7 @@
 //! ring.
 
 use anyhow::{Context, Result};
-use rtrb::Producer;
+use rtrb::{chunks::ChunkError, Producer};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -57,10 +57,14 @@ impl Capture {
             let mut reader = BufReader::new(stdout);
             let mut buf = vec![0u8; 8192];
             let mut carry: Vec<u8> = Vec::with_capacity(4);
+            let mut pending = Vec::with_capacity(2048);
             loop {
                 match reader.read(&mut buf).await {
                     Ok(0) => break,
-                    Ok(n) => push_samples(&buf[..n], &mut carry, &mut producer),
+                    Ok(n) => {
+                        decode_samples(&buf[..n], &mut carry, &mut pending);
+                        flush_samples(&mut pending, &mut producer);
+                    }
                     Err(err) => {
                         warn!("voice capture read error: {err:#}");
                         if let Some(shared) = &status {
@@ -73,6 +77,7 @@ impl Capture {
                     }
                 }
             }
+            flush_samples(&mut pending, &mut producer);
             debug!("voice capture reader task ended");
             if let Some(shared) = &status {
                 if shared.capturing.load(Ordering::Relaxed) {
@@ -96,9 +101,8 @@ impl Drop for Capture {
 }
 
 /// Decode `bytes` (continuation of any partial sample in `carry`) into f32
-/// samples and push them into `producer`, dropping samples when the ring is
-/// full (the audio thread is behind; a viz gap is acceptable).
-fn push_samples(bytes: &[u8], carry: &mut Vec<u8>, producer: &mut Producer<f32>) {
+/// samples appended to `out`.
+fn decode_samples(bytes: &[u8], carry: &mut Vec<u8>, out: &mut Vec<f32>) {
     let mut offset = 0;
     if !carry.is_empty() {
         let need = 4 - carry.len();
@@ -107,7 +111,7 @@ fn push_samples(bytes: &[u8], carry: &mut Vec<u8>, producer: &mut Producer<f32>)
         offset = take;
         if carry.len() == 4 {
             let sample = f32::from_le_bytes([carry[0], carry[1], carry[2], carry[3]]);
-            let _ = producer.push(if sample.is_finite() { sample } else { 0.0 });
+            out.push(if sample.is_finite() { sample } else { 0.0 });
             carry.clear();
         }
     }
@@ -115,9 +119,25 @@ fn push_samples(bytes: &[u8], carry: &mut Vec<u8>, producer: &mut Producer<f32>)
     let full = rest.len() / 4 * 4;
     for chunk in rest[..full].chunks_exact(4) {
         let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        let _ = producer.push(if sample.is_finite() { sample } else { 0.0 });
+        out.push(if sample.is_finite() { sample } else { 0.0 });
     }
     carry.extend_from_slice(&rest[full..]);
+}
+
+fn flush_samples(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
+    while !pending.is_empty() {
+        match producer.push_entire_slice(pending) {
+            Ok(()) => {
+                pending.clear();
+                break;
+            }
+            Err(ChunkError::TooFewSlots(n)) if n > 0 => {
+                let _ = producer.push_entire_slice(&pending[..n]);
+                pending.drain(..n);
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -133,10 +153,12 @@ mod tests {
             raw.extend_from_slice(&v.to_le_bytes());
         }
         let mut carry = Vec::new();
+        let mut pending = Vec::new();
         // Deliver the byte stream in awkward splits to exercise the carry path.
-        push_samples(&raw[..3], &mut carry, &mut producer);
-        push_samples(&raw[3..7], &mut carry, &mut producer);
-        push_samples(&raw[7..], &mut carry, &mut producer);
+        decode_samples(&raw[..3], &mut carry, &mut pending);
+        decode_samples(&raw[3..7], &mut carry, &mut pending);
+        decode_samples(&raw[7..], &mut carry, &mut pending);
+        flush_samples(&mut pending, &mut producer);
 
         let mut decoded = Vec::new();
         while let Ok(s) = consumer.pop() {
@@ -144,5 +166,6 @@ mod tests {
         }
         assert_eq!(decoded, values);
         assert!(carry.is_empty());
+        assert!(pending.is_empty());
     }
 }
