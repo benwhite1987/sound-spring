@@ -705,7 +705,16 @@ fn run_backend(
                                 warn!("failed to persist mic volume setting: {err:#}");
                             }
                             if !active_config.audio.mic_source.is_empty() {
-                                if let Err(err) = PipewireManager::set_source_volume(
+                                let active_sessions = player.active_session_count().await;
+                                if active_config.audio.mute_mic_during_playback
+                                    && active_sessions > 0
+                                {
+                                    sync_mic_mute_for_playback(
+                                        &active_config,
+                                        active_sessions,
+                                    )
+                                    .await;
+                                } else if let Err(err) = PipewireManager::set_source_volume(
                                     &active_config.audio.mic_source,
                                     percent,
                                     muted,
