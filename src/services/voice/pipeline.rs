@@ -263,6 +263,9 @@ fn run(
                 } else if verifying_path {
                     if voiced {
                         verify_buf.extend_from_slice(&resampled);
+                        if verify_buf.len() > VERIFY_WINDOW {
+                            verify_buf.drain(..verify_buf.len() - VERIFY_WINDOW);
+                        }
                     }
                     if verify_buf.len() >= VERIFY_WINDOW && !busy.load(Ordering::Relaxed) {
                         let buf = std::mem::take(&mut verify_buf);
