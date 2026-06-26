@@ -415,10 +415,8 @@ name = "Custom"
 
     #[test]
     fn ensure_default_layout_skips_seed_when_tabs_exist() {
-        let base = std::env::temp_dir().join(format!(
-            "sound-spring-tabs-skip-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("sound-spring-tabs-skip-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let tabs = base.join("tabs");
         fs::create_dir_all(tabs.join("01-Memes")).unwrap();
@@ -434,10 +432,8 @@ name = "Custom"
 
     #[test]
     fn ensure_default_layout_skips_seed_when_renamed_layout() {
-        let base = std::env::temp_dir().join(format!(
-            "sound-spring-tabs-renamed-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("sound-spring-tabs-renamed-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let tabs = base.join("tabs");
         fs::create_dir_all(tabs.join("02-Music")).unwrap();
