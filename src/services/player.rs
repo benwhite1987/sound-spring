@@ -83,6 +83,13 @@ struct PlaySession {
     _reaper: JoinHandle<()>,
 }
 
+struct VolumeTarget {
+    remote_index: Arc<Mutex<Option<String>>>,
+    monitor_index: Arc<Mutex<Option<String>>>,
+    remote_tag: String,
+    monitor_tag: String,
+}
+
 pub struct Player {
     sink: String,
     monitor_sink: String,
@@ -298,31 +305,42 @@ impl Player {
 
     async fn apply_volume_to_active(&self) {
         let listing = Self::list_sink_input_indices().await.ok();
-        let children = self.children.lock().await;
-        for session in children.values() {
-            if let Err(err) = Self::apply_volume_to_session(session, listing.as_ref(), self.volumes)
-                .await
+        let targets: Vec<VolumeTarget> = {
+            let children = self.children.lock().await;
+            children
+                .values()
+                .map(|session| VolumeTarget {
+                    remote_index: Arc::clone(&session.remote_index),
+                    monitor_index: Arc::clone(&session.monitor_index),
+                    remote_tag: session.remote_tag.clone(),
+                    monitor_tag: session.monitor_tag.clone(),
+                })
+                .collect()
+        };
+        for target in targets {
+            if let Err(err) =
+                Self::apply_volume_to_target(&target, listing.as_ref(), self.volumes).await
             {
                 warn!("failed to apply playback volume: {err:#}");
             }
         }
     }
 
-    async fn apply_volume_to_session(
-        session: &PlaySession,
+    async fn apply_volume_to_target(
+        target: &VolumeTarget,
         listing: Option<&HashMap<String, String>>,
         volumes: VolumeState,
     ) -> Result<()> {
         Self::set_stream_volume_cached(
-            &session.remote_index,
-            &session.remote_tag,
+            &target.remote_index,
+            &target.remote_tag,
             listing,
             volumes.output_paplay_volume(),
         )
         .await?;
         Self::set_stream_volume_cached(
-            &session.monitor_index,
-            &session.monitor_tag,
+            &target.monitor_index,
+            &target.monitor_tag,
             listing,
             volumes.monitor_paplay_volume(),
         )
