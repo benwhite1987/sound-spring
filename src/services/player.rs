@@ -562,6 +562,7 @@ impl Player {
             };
             let shared = voice_shared();
             let mut carry = Vec::with_capacity(4);
+            let mut pending = Vec::with_capacity(2048);
             let mut buf = vec![0u8; 8192];
             loop {
                 let n = match stdout.read(&mut buf).await {
@@ -569,8 +570,10 @@ impl Player {
                     Ok(n) => n,
                     Err(_) => break,
                 };
-                push_sfx_spectrum_bytes(&buf[..n], &mut carry, &shared);
+                decode_sfx_spectrum_bytes(&buf[..n], &mut carry, &mut pending);
+                shared.flush_sfx_spectrum_pending(&mut pending);
             }
+            shared.flush_sfx_spectrum_pending(&mut pending);
         })
     }
 }
@@ -598,11 +601,7 @@ fn parse_sink_input_indices(text: &str) -> HashMap<String, String> {
     out
 }
 
-fn push_sfx_spectrum_bytes(
-    bytes: &[u8],
-    carry: &mut Vec<u8>,
-    shared: &Arc<crate::services::voice::VoiceShared>,
-) {
+fn decode_sfx_spectrum_bytes(bytes: &[u8], carry: &mut Vec<u8>, out: &mut Vec<f32>) {
     let mut offset = 0;
     if !carry.is_empty() {
         let need = 4 - carry.len();
@@ -612,7 +611,7 @@ fn push_sfx_spectrum_bytes(
         if carry.len() == 4 {
             let sample = f32::from_le_bytes([carry[0], carry[1], carry[2], carry[3]]);
             if sample.is_finite() {
-                shared.push_sfx_spectrum_sample(sample);
+                out.push(sample);
             }
             carry.clear();
         }
@@ -622,7 +621,7 @@ fn push_sfx_spectrum_bytes(
     for chunk in rest[..full].chunks_exact(4) {
         let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         if sample.is_finite() {
-            shared.push_sfx_spectrum_sample(sample);
+            out.push(sample);
         }
     }
     carry.extend_from_slice(&rest[full..]);

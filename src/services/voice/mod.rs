@@ -370,14 +370,36 @@ impl VoiceShared {
         }
     }
 
-    pub fn push_sfx_spectrum_sample(&self, sample: f32) {
-        if !sample.is_finite() {
+    pub fn flush_sfx_spectrum_pending(&self, pending: &mut Vec<f32>) {
+        if pending.is_empty() {
             return;
         }
-        if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
-            if let Some(producer) = guard.as_mut() {
-                let _ = producer.push(sample);
+        let Ok(mut guard) = self.sfx_spectrum_producer.lock() else {
+            pending.clear();
+            return;
+        };
+        let Some(producer) = guard.as_mut() else {
+            pending.clear();
+            return;
+        };
+        while !pending.is_empty() {
+            match producer.push_entire_slice(pending) {
+                Ok(()) => {
+                    pending.clear();
+                    break;
+                }
+                Err(rtrb::chunks::ChunkError::TooFewSlots(n)) if n > 0 => {
+                    let _ = producer.push_entire_slice(&pending[..n]);
+                    pending.drain(..n);
+                }
+                Err(_) => {
+                    pending.clear();
+                    break;
+                }
             }
+        }
+        if pending.len() > RING_CAPACITY {
+            pending.drain(..pending.len() - RING_CAPACITY);
         }
     }
 
