@@ -409,18 +409,26 @@ pub struct SoundboardControllerRust {
     window_geometry: Option<WindowGeometry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaySlotOutcome {
+    Started(i32),
+    Stopped(i32),
+}
+
 #[derive(Debug, Default)]
 struct KeyEventResult {
     handled: bool,
     tab_changed: bool,
     playback_changed: bool,
     mute_changed: bool,
+    play_outcome: Option<PlaySlotOutcome>,
 }
 
 #[derive(Debug, Default)]
 struct ShortcutHandleResult {
     tab_changed: bool,
     mute_changed: bool,
+    play_outcome: Option<PlaySlotOutcome>,
 }
 
 impl SoundboardControllerRust {
@@ -485,6 +493,15 @@ impl SoundboardControllerRust {
     }
 
     pub fn replace_tabs(&mut self, tabs: Vec<Tab>, current_path: Option<&str>) {
+        self.duration_cache.clear();
+        for tab in &tabs {
+            for sound in &tab.sounds {
+                if sound.duration_ms > 0 {
+                    self.duration_cache
+                        .insert(sound.path.clone(), sound.duration_ms);
+                }
+            }
+        }
         self.tabs = tabs;
         self.tab_count = self.tabs.len() as i32;
         if self.tabs.is_empty() {
@@ -725,6 +742,7 @@ impl SoundboardControllerRust {
                     tab_changed: result.tab_changed,
                     playback_changed: !result.tab_changed && !result.mute_changed,
                     mute_changed: result.mute_changed,
+                    play_outcome: result.play_outcome,
                 };
             }
         }
@@ -734,24 +752,21 @@ impl SoundboardControllerRust {
             if !accept_shortcut(&id) {
                 return KeyEventResult::default();
             }
-            self.play_slot_internal(slot);
+            let play_outcome = self.play_slot_internal(slot);
             return KeyEventResult {
                 handled: true,
                 tab_changed: false,
                 playback_changed: true,
                 mute_changed: false,
+                play_outcome,
             };
         }
 
         KeyEventResult::default()
     }
 
-    fn duration_for_path(&mut self, path: &Path) -> u64 {
-        if let Some(duration_ms) = self.duration_cache.get(path).copied() {
-            return duration_ms;
-        }
-        // Avoid blocking the UI thread on ffprobe; tab scan already caches durations.
-        5000
+    fn duration_for_path(&self, path: &Path) -> u64 {
+        self.duration_cache.get(path).copied().unwrap_or(0)
     }
 
     fn shortcut_id_for_trigger(&self, trigger: &str) -> Option<String> {
@@ -806,19 +821,19 @@ impl SoundboardControllerRust {
         self.playing_version += 1;
     }
 
-    fn play_slot_internal(&mut self, slot: i32) {
+    fn play_slot_internal(&mut self, slot: i32) -> Option<PlaySlotOutcome> {
         let tab_index = self.current_tab_index;
         let session_key = SessionKey { tab_index, slot };
 
         if self.active_playbacks.contains_key(&session_key) {
             if let Some(playback) = self.active_playbacks.get(&session_key) {
                 if playback.started.elapsed() < Duration::from_millis(MIN_PLAY_BEFORE_TOGGLE_MS) {
-                    return;
+                    return None;
                 }
             }
             self.stop_session_internal(tab_index, slot);
             self.play_coalesce = None;
-            return;
+            return Some(PlaySlotOutcome::Stopped(slot));
         }
 
         if let Some(coalesce) = self.play_coalesce {
@@ -826,7 +841,7 @@ impl SoundboardControllerRust {
                 && coalesce.slot == slot
                 && coalesce.at.elapsed() < Duration::from_millis(KEY_DEDUPE_MS)
             {
-                return;
+                return None;
             }
         }
 
@@ -837,14 +852,14 @@ impl SoundboardControllerRust {
         }
 
         let Some(index) = normalize_slot(slot) else {
-            return;
+            return None;
         };
         let (path, cached_duration) = {
             let Some(tab) = self.active_tab() else {
-                return;
+                return None;
             };
             let Some(path) = tab.slot(index).cloned() else {
-                return;
+                return None;
             };
             let cached = tab
                 .sound_at_slot(index)
@@ -876,6 +891,7 @@ impl SoundboardControllerRust {
             at: Instant::now(),
         });
         self.bump_playing_version();
+        Some(PlaySlotOutcome::Started(slot))
     }
 
     fn next_tab_internal(&mut self) {
@@ -917,7 +933,11 @@ impl SoundboardControllerRust {
         match id {
             s if s.starts_with("play_") => {
                 if let Ok(slot) = s.trim_start_matches("play_").parse::<i32>() {
-                    self.play_slot_internal(slot);
+                    let play_outcome = self.play_slot_internal(slot);
+                    return ShortcutHandleResult {
+                        play_outcome,
+                        ..Default::default()
+                    };
                 }
                 ShortcutHandleResult::default()
             }
@@ -978,6 +998,15 @@ impl SoundboardControllerRust {
 }
 
 impl qobject::SoundboardController {
+    fn emit_play_slot_outcome(mut self: Pin<&mut Self>, outcome: Option<PlaySlotOutcome>) {
+        if let Some(outcome) = outcome {
+            match outcome {
+                PlaySlotOutcome::Started(slot) => self.as_mut().playback_started(slot),
+                PlaySlotOutcome::Stopped(slot) => self.as_mut().playback_ended(slot),
+            }
+        }
+    }
+
     pub fn sync_global_shortcuts_status(self: Pin<&mut Self>) {
         Self::refresh_global_shortcuts_status(self);
     }
@@ -1095,7 +1124,8 @@ impl qobject::SoundboardController {
     }
 
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
-        self.as_mut().rust_mut().play_slot_internal(slot);
+        let outcome = self.as_mut().rust_mut().play_slot_internal(slot);
+        Self::emit_play_slot_outcome(self.as_mut(), outcome);
         self.as_mut().playing_state_changed();
     }
 
@@ -1137,6 +1167,7 @@ impl qobject::SoundboardController {
         } else if !result.mute_changed {
             self.as_mut().rust_mut().bump_playing_version();
         }
+        Self::emit_play_slot_outcome(self.as_mut(), result.play_outcome);
         self.as_mut().playing_state_changed();
     }
 
@@ -1162,6 +1193,7 @@ impl qobject::SoundboardController {
         } else if result.playback_changed {
             self.as_mut().rust_mut().bump_playing_version();
         }
+        Self::emit_play_slot_outcome(self.as_mut(), result.play_outcome);
         self.as_mut().playing_state_changed();
         true
     }
@@ -1284,9 +1316,13 @@ impl qobject::SoundboardController {
         for event in events {
             match event {
                 BackendEvent::PlaybackEnded { tab_index, slot } => {
+                    let current_tab = self.as_ref().rust().current_tab_index;
                     self.as_mut()
                         .rust_mut()
                         .mark_playback_ended(tab_index, slot);
+                    if tab_index == current_tab {
+                        self.as_mut().playback_ended(slot);
+                    }
                     playback_changed = true;
                 }
                 BackendEvent::ShortcutTriggered { id } => {
@@ -1299,6 +1335,7 @@ impl qobject::SoundboardController {
                     } else if !result.mute_changed {
                         playback_changed = true;
                     }
+                    Self::emit_play_slot_outcome(self.as_mut(), result.play_outcome);
                 }
                 BackendEvent::ConfigApplied => {
                     let config = crate::config::load_config().unwrap_or_default();

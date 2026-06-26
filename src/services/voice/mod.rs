@@ -99,6 +99,8 @@ pub struct VoiceShared {
     enroll_done_seq: AtomicU32,
     /// Human-readable capture failure message for the Voice panel (empty when ok).
     capture_error: Mutex<String>,
+    /// Bumped when [`Self::set_capture_status`] updates [`Self::capture_error`].
+    capture_error_seq: AtomicU32,
     /// VAD open/close thresholds (f32 bits); hot-updated from the Voice panel.
     vad_open: AtomicU32,
     vad_close: AtomicU32,
@@ -146,6 +148,7 @@ impl VoiceShared {
             enroll_progress: AtomicU32::new(0),
             enroll_done_seq: AtomicU32::new(0),
             capture_error: Mutex::new(String::new()),
+            capture_error_seq: AtomicU32::new(0),
             vad_open: AtomicU32::new(0.45_f32.to_bits()),
             vad_close: AtomicU32::new(0.20_f32.to_bits()),
             vad_enabled: AtomicBool::new(true),
@@ -276,15 +279,24 @@ impl VoiceShared {
     pub fn set_capture_status(&self, active: bool, error: &str) {
         self.capturing.store(active, Ordering::Relaxed);
         if let Ok(mut msg) = self.capture_error.lock() {
-            *msg = error.to_string();
+            if *msg != error {
+                *msg = error.to_string();
+                self.capture_error_seq.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
-    pub fn capture_error(&self) -> String {
+    /// Latest capture-error generation; cheap to poll from the UI thread.
+    pub fn capture_error_seq(&self) -> u32 {
+        self.capture_error_seq.load(Ordering::Relaxed)
+    }
+
+    /// Read the capture error without blocking the audio thread.
+    pub fn read_capture_error(&self) -> Option<String> {
         self.capture_error
-            .lock()
+            .try_lock()
+            .ok()
             .map(|msg| msg.clone())
-            .unwrap_or_default()
     }
 
     pub fn set_vad_thresholds(&self, open: f32, close: f32) {

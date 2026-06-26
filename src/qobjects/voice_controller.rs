@@ -123,6 +123,8 @@ pub struct VoiceControllerRust {
     mic_muted: bool,
     spectrum_source: QString,
     capture_error: QString,
+    capture_error_buf: String,
+    last_capture_error_seq: u32,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
     bar_levels: [f32; SPECTRUM_BAR_COUNT],
@@ -163,6 +165,8 @@ impl Default for VoiceControllerRust {
             mic_muted: config.audio.mic_muted,
             spectrum_source: QString::from(config.voice.spectrum_source.as_str()),
             capture_error: QString::from(""),
+            capture_error_buf: String::new(),
+            last_capture_error_seq: 0,
             shared,
             latest: vec![0.0; SPECTRUM_BINS],
             bar_levels: [0.0; SPECTRUM_BAR_COUNT],
@@ -196,10 +200,24 @@ impl qobject::VoiceController {
             self.as_mut().set_is_capturing(capturing);
         }
 
-        let error = self.rust().shared.capture_error();
-        let error_q = QString::from(error.as_str());
-        if error_q != self.rust().capture_error {
-            self.as_mut().set_capture_error(error_q);
+        let (seq, last_seq, error_opt, prev_error) = {
+            let rust = self.rust();
+            (
+                rust.shared.capture_error_seq(),
+                rust.last_capture_error_seq,
+                rust.shared.read_capture_error(),
+                rust.capture_error.clone(),
+            )
+        };
+        if seq != last_seq {
+            if let Some(error) = error_opt {
+                let error_q = QString::from(error.as_str());
+                self.as_mut().rust_mut().last_capture_error_seq = seq;
+                self.as_mut().rust_mut().capture_error_buf = error;
+                if error_q != prev_error {
+                    self.as_mut().set_capture_error(error_q);
+                }
+            }
         }
 
         let (probability, speaking) = self.rust().shared.vad_state();

@@ -66,11 +66,6 @@ pub enum PlayerCommand {
     SetVolumes(VolumeState),
 }
 
-#[derive(Debug, Clone)]
-pub enum PlayerEvent {
-    Started,
-}
-
 struct PlaySession {
     spectrum_feed: JoinHandle<()>,
     tab_index: i32,
@@ -147,7 +142,7 @@ impl Player {
         self.children.lock().await.len()
     }
 
-    pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<Option<PlayerEvent>> {
+    pub async fn handle_command(&mut self, command: PlayerCommand) -> Result<()> {
         match command {
             PlayerCommand::Play {
                 path,
@@ -158,20 +153,20 @@ impl Player {
                 self.volumes = volumes;
                 let id = self.play(path, tab_index, slot).await?;
                 let _ = id;
-                Ok(Some(PlayerEvent::Started))
+                Ok(())
             }
             PlayerCommand::StopSession { tab_index, slot } => {
                 self.stop_session(tab_index, slot).await;
-                Ok(None)
+                Ok(())
             }
             PlayerCommand::StopAll => {
                 self.stop_all().await;
-                Ok(None)
+                Ok(())
             }
             PlayerCommand::SetVolumes(volumes) => {
                 self.volumes = volumes;
                 self.apply_volume_to_active().await;
-                Ok(None)
+                Ok(())
             }
         }
     }
