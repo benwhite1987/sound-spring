@@ -20,8 +20,8 @@ use services::voice::{
 };
 use std::ffi::CString;
 use std::os::raw::c_char;
-use std::sync::atomic::Ordering;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -531,6 +531,8 @@ fn run_backend(
         let (tab_watch_tx, mut tab_watch_rx) = tokio::sync::mpsc::channel(8);
         let mut tab_watch = TabFilesystemWatch::new();
         tab_watch.restart(watch_paths(&active_config), tab_watch_tx.clone());
+        let tab_scan_busy = Arc::new(AtomicBool::new(false));
+        let tab_scan_pending = Arc::new(AtomicBool::new(false));
 
         let (playback_done_tx, mut playback_done_rx) = mpsc::channel(32);
 
@@ -813,11 +815,25 @@ fn run_backend(
                     publish_audio_sinks(&backend_event_tx).await;
                 }
                 _ = tab_watch_rx.recv() => {
+                    while tab_watch_rx.try_recv().is_ok() {}
+                    if tab_scan_busy.swap(true, Ordering::AcqRel) {
+                        tab_scan_pending.store(true, Ordering::Release);
+                        continue;
+                    }
+                    let busy = tab_scan_busy.clone();
+                    let pending = tab_scan_pending.clone();
                     let config = active_config.clone();
                     let event_tx = backend_event_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let tabs = TabsRepository::scan(&config).unwrap_or_default();
-                        let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
+                        loop {
+                            pending.store(false, Ordering::Release);
+                            let tabs = TabsRepository::scan(&config).unwrap_or_default();
+                            let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
+                            if !pending.swap(false, Ordering::AcqRel) {
+                                break;
+                            }
+                        }
+                        busy.store(false, Ordering::Release);
                     });
                 }
                 Some(done) = playback_done_rx.recv() => {
