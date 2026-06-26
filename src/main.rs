@@ -365,9 +365,13 @@ async fn apply_runtime_config(
         let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
     }
 
-    let tabs = TabsRepository::scan(config).unwrap_or_default();
-    info!("loaded {} tabs", tabs.len());
-    let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
+    let tabs_changed = initial
+        || previous.is_some_and(|prev| prev.paths.tabs_root != config.paths.tabs_root);
+    if tabs_changed {
+        let tabs = TabsRepository::scan(config).unwrap_or_default();
+        info!("loaded {} tabs", tabs.len());
+        let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
+    }
     let _ = event_tx.send(BackendEvent::ConfigApplied);
 }
 
