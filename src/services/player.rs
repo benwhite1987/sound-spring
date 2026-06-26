@@ -77,6 +77,8 @@ struct PlaySession {
     slot: i32,
     remote_tag: String,
     monitor_tag: String,
+    remote_index: Arc<Mutex<Option<String>>>,
+    monitor_index: Arc<Mutex<Option<String>>>,
     stop: watch::Sender<bool>,
     _reaper: JoinHandle<()>,
 }
@@ -194,6 +196,11 @@ impl Player {
         .await?;
         let spectrum_feed = Self::spawn_sfx_spectrum_feed(file.clone());
 
+        let remote_index = Arc::new(Mutex::new(None));
+        let monitor_index = Arc::new(Mutex::new(None));
+        Self::spawn_sink_index_resolver(remote_tag.clone(), remote_index.clone());
+        Self::spawn_sink_index_resolver(monitor_tag.clone(), monitor_index.clone());
+
         let (stop_tx, stop_rx) = watch::channel(false);
         let done_tx = self
             .done_tx
@@ -219,6 +226,8 @@ impl Player {
                 slot,
                 remote_tag,
                 monitor_tag,
+                remote_index,
+                monitor_index,
                 stop: stop_tx,
                 _reaper: reaper,
             },
@@ -288,31 +297,110 @@ impl Player {
     }
 
     async fn apply_volume_to_active(&self) {
+        let listing = Self::list_sink_input_indices().await.ok();
         let children = self.children.lock().await;
         for session in children.values() {
-            if let Err(err) = Self::set_stream_volume_by_media_name(
-                &session.remote_tag,
-                self.volumes.output_paplay_volume(),
-            )
-            .await
+            if let Err(err) = Self::apply_volume_to_session(session, listing.as_ref(), self.volumes)
+                .await
             {
-                warn!(
-                    "failed to set remote stream volume for {}: {err:#}",
-                    session.remote_tag
-                );
-            }
-            if let Err(err) = Self::set_stream_volume_by_media_name(
-                &session.monitor_tag,
-                self.volumes.monitor_paplay_volume(),
-            )
-            .await
-            {
-                warn!(
-                    "failed to set monitor stream volume for {}: {err:#}",
-                    session.monitor_tag
-                );
+                warn!("failed to apply playback volume: {err:#}");
             }
         }
+    }
+
+    async fn apply_volume_to_session(
+        session: &PlaySession,
+        listing: Option<&HashMap<String, String>>,
+        volumes: VolumeState,
+    ) -> Result<()> {
+        Self::set_stream_volume_cached(
+            &session.remote_index,
+            &session.remote_tag,
+            listing,
+            volumes.output_paplay_volume(),
+        )
+        .await?;
+        Self::set_stream_volume_cached(
+            &session.monitor_index,
+            &session.monitor_tag,
+            listing,
+            volumes.monitor_paplay_volume(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn spawn_sink_index_resolver(tag: String, slot: Arc<Mutex<Option<String>>>) {
+        tokio::spawn(async move {
+            for attempt in 0..8 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                }
+                let Ok(listing) = Self::list_sink_input_indices().await else {
+                    continue;
+                };
+                if let Some(index) = listing.get(&tag) {
+                    *slot.lock().await = Some(index.clone());
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn set_stream_volume_cached(
+        cached: &Mutex<Option<String>>,
+        name: &str,
+        listing: Option<&HashMap<String, String>>,
+        volume: u32,
+    ) -> Result<()> {
+        if let Some(index) = cached.lock().await.clone() {
+            if Self::set_sink_input_volume_by_index(&index, volume).await.is_ok() {
+                return Ok(());
+            }
+        }
+        if let Some(map) = listing {
+            if let Some(index) = map.get(name) {
+                Self::set_sink_input_volume_by_index(index, volume).await?;
+                *cached.lock().await = Some(index.clone());
+                return Ok(());
+            }
+        }
+        if Self::set_stream_volume_by_media_name(name, volume).await.is_ok() {
+            if let Ok(map) = Self::list_sink_input_indices().await {
+                if let Some(index) = map.get(name) {
+                    *cached.lock().await = Some(index.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_sink_input_volume_by_index(index: &str, volume: u32) -> Result<()> {
+        let percent = ((volume as f64 / 65535.0) * 100.0).round() as u32;
+        let status = Command::new("pactl")
+            .args(["set-sink-input-volume", index, &format!("{percent}%")])
+            .status()
+            .await
+            .context("pactl set-sink-input-volume")?;
+        if !status.success() {
+            anyhow::bail!("pactl set-sink-input-volume failed for index {index}");
+        }
+        Ok(())
+    }
+
+    async fn list_sink_input_indices() -> Result<HashMap<String, String>> {
+        let output = Command::new("pactl")
+            .args(["list", "sink-inputs"])
+            .output()
+            .await
+            .context("pactl list sink-inputs")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "pactl list sink-inputs failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(parse_sink_input_indices(&String::from_utf8_lossy(&output.stdout)))
     }
 
     async fn set_stream_volume_by_media_name(name: &str, volume: u32) -> Result<()> {
@@ -328,44 +416,12 @@ impl Player {
     }
 
     async fn try_set_stream_volume_by_media_name(name: &str, volume: u32) -> Result<bool> {
-        let output = Command::new("pactl")
-            .args(["list", "sink-inputs"])
-            .output()
-            .await
-            .context("pactl list sink-inputs")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "pactl list sink-inputs failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        let marker = format!("media.name = \"{name}\"");
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut current_index: Option<String> = None;
-
-        for line in text.lines() {
-            if let Some(index) = line.strip_prefix("Sink Input #") {
-                current_index = Some(index.trim().to_string());
-                continue;
-            }
-            if line.trim() == marker {
-                if let Some(index) = current_index {
-                    let percent = ((volume as f64 / 65535.0) * 100.0).round() as u32;
-                    let status = Command::new("pactl")
-                        .args(["set-sink-input-volume", &index, &format!("{percent}%")])
-                        .status()
-                        .await
-                        .context("pactl set-sink-input-volume")?;
-                    if !status.success() {
-                        anyhow::bail!("pactl set-sink-input-volume failed for index {index}");
-                    }
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
+        let listing = Self::list_sink_input_indices().await?;
+        let Some(index) = listing.get(name) else {
+            return Ok(false);
+        };
+        Self::set_sink_input_volume_by_index(index, volume).await?;
+        Ok(true)
     }
 
     async fn spawn_playback(
@@ -519,6 +575,29 @@ impl Player {
     }
 }
 
+/// Map `media.name` property values to PulseAudio sink-input indices.
+fn parse_sink_input_indices(text: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut current_index: Option<String> = None;
+    for line in text.lines() {
+        if let Some(index) = line.strip_prefix("Sink Input #") {
+            current_index = Some(index.trim().to_string());
+            continue;
+        }
+        let trimmed = line.trim();
+        let Some(name) = trimmed.strip_prefix("media.name = \"") else {
+            continue;
+        };
+        let Some(name) = name.strip_suffix('"') else {
+            continue;
+        };
+        if let Some(index) = current_index.clone() {
+            out.insert(name.to_string(), index);
+        }
+    }
+    out
+}
+
 fn push_sfx_spectrum_bytes(
     bytes: &[u8],
     carry: &mut Vec<u8>,
@@ -558,6 +637,19 @@ mod tests {
         assert!(player.interrupts_playback());
         player.set_interruption_mode("overlap");
         assert!(!player.interrupts_playback());
+    }
+
+    #[test]
+    fn parse_sink_input_indices_maps_media_names() {
+        let text = r#"
+Sink Input #42
+	media.name = "sound-spring-remote-1"
+Sink Input #43
+	media.name = "sound-spring-monitor-1"
+"#;
+        let map = super::parse_sink_input_indices(text);
+        assert_eq!(map.get("sound-spring-remote-1").map(String::as_str), Some("42"));
+        assert_eq!(map.get("sound-spring-monitor-1").map(String::as_str), Some("43"));
     }
 
     #[test]

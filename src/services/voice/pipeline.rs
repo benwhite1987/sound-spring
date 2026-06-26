@@ -301,11 +301,12 @@ fn run(
                 true
             };
             let target = if gate_open { 1.0 } else { 0.0 };
+            let skip_denoise = target == 0.0 && gate_gain == 0.0;
 
             out_scratch.clear();
             match denoiser.as_mut() {
-                Some(d) => d.process(&window[..FFT_HOP], &mut out_scratch),
-                None => out_scratch.extend_from_slice(&window[..FFT_HOP]),
+                Some(d) if !skip_denoise => d.process(&window[..FFT_HOP], &mut out_scratch),
+                _ => out_scratch.extend_from_slice(&window[..FFT_HOP]),
             }
 
             for &sample in &out_scratch {
