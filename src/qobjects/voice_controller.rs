@@ -98,7 +98,7 @@ use cxx_qt_lib::QString;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::qobjects::controller::{BackendCommand, try_send_backend};
+use crate::qobjects::controller::{BackendCommand, send_backend, try_send_backend};
 use crate::services::voice::{
     spectrum_bars::{compute_bar_levels, SPECTRUM_BAR_COUNT},
     spectrum_source_from_str, vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS,
@@ -184,7 +184,7 @@ impl qobject::VoiceController {
         } else {
             BackendCommand::StopVoiceCapture
         };
-        try_send_backend(command);
+        send_backend(command);
     }
 
     /// Drain the shared spectrum queue (keeping only the newest frame) and bump
@@ -316,7 +316,7 @@ impl qobject::VoiceController {
 
     pub fn set_suppression(mut self: Pin<&mut Self>, enabled: bool) {
         self.as_mut().set_suppression_enabled(enabled);
-        try_send_backend(BackendCommand::SetVoiceSuppression { enabled });
+        send_backend(BackendCommand::SetVoiceSuppression { enabled });
     }
 
     pub fn persist_vad_enabled(mut self: Pin<&mut Self>, enabled: bool) {
@@ -354,7 +354,7 @@ impl qobject::VoiceController {
 
     pub fn start_enrollment(mut self: Pin<&mut Self>) {
         // Enrollment needs a live capture; ensure it is running.
-        try_send_backend(BackendCommand::StartVoiceCapture);
+        send_backend(BackendCommand::StartVoiceCapture);
         self.rust().shared.request_enroll_start();
         self.as_mut().set_enroll_active(true);
         self.as_mut().set_enroll_progress(0.0);
@@ -391,7 +391,7 @@ fn persist_verification(enabled: bool, threshold: f32) {
     if let Err(err) = crate::config::save_config(&config) {
         tracing::warn!("failed to persist voice verification settings: {err:#}");
     }
-    try_send_backend(BackendCommand::SetVoiceVerification { enabled, threshold });
+    send_backend(BackendCommand::SetVoiceVerification { enabled, threshold });
 }
 
 fn persist_vad_threshold(open: f32, close: f32) {

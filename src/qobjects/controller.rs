@@ -344,6 +344,16 @@ pub fn try_send_backend(cmd: BackendCommand) {
     }
 }
 
+/// Send a backend command that must not be dropped (play, config apply, routing).
+pub fn send_backend(cmd: BackendCommand) {
+    let Some(tx) = BACKEND_TX.get() else {
+        return;
+    };
+    if let Err(err) = tx.blocking_send(cmd) {
+        tracing::warn!("backend command failed: {err}");
+    }
+}
+
 const KEY_DEDUPE_MS: u64 = 120;
 const MIN_PLAY_BEFORE_TOGGLE_MS: u64 = 300;
 
@@ -416,7 +426,7 @@ struct ShortcutHandleResult {
 impl SoundboardControllerRust {
     fn send_player_command(&self, command: PlayerCommand) {
         if BACKEND_TX.get().is_some() {
-            try_send_backend(BackendCommand::Player(command));
+            send_backend(BackendCommand::Player(command));
         } else if let Some(tx) = PLAYER_TX.get() {
             let _ = tx.blocking_send(command);
         }
@@ -1081,9 +1091,7 @@ impl qobject::SoundboardController {
     }
 
     pub fn shutdown_backend(self: Pin<&mut Self>) {
-        if let Some(tx) = BACKEND_TX.get() {
-            let _ = tx.blocking_send(BackendCommand::Shutdown);
-        }
+        send_backend(BackendCommand::Shutdown);
     }
 
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
