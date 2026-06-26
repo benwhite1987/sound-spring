@@ -34,6 +34,14 @@ impl Denoiser {
         })
     }
 
+    /// Reset streaming state after a long gate-closed skip.
+    pub fn reset(&mut self) -> Result<()> {
+        self.in_buf.clear();
+        self.df
+            .init()
+            .map_err(|err| anyhow::anyhow!("reset DeepFilterNet state: {err}"))
+    }
+
     /// Feed 48 kHz mono `input`; append enhanced samples to `out`.
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.in_buf.extend_from_slice(input);
