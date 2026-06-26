@@ -6,6 +6,7 @@
 //! its own `std::thread`, not Tokio.
 
 use anyhow::Result;
+use rtrb::chunks::ChunkError;
 use rtrb::{Consumer, Producer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -21,7 +22,7 @@ use super::spectrum::SpectrumAnalyzer;
 use super::vad::Vad;
 use super::{
     VoiceShared, CAPTURE_RATE, ENROLL_CMD_CANCEL, ENROLL_CMD_CLEAR, ENROLL_CMD_START,
-    ENROLL_SAMPLES, FFT_HOP, FFT_SIZE, SPECTRUM_BINS, SPECTRUM_SOURCE_FILTERED,
+    ENROLL_SAMPLES, FFT_HOP, FFT_SIZE, RING_CAPACITY, SPECTRUM_BINS, SPECTRUM_SOURCE_FILTERED,
     SPECTRUM_SOURCE_MIXED, SPECTRUM_SOURCE_RAW, TARGET_RATE,
 };
 
@@ -341,10 +342,15 @@ fn run(
                     gate_gain = (gate_gain - release_step).max(target);
                 }
                 let gated = sample * gate_gain;
-                if let Some(out) = output.as_mut() {
-                    let _ = out.push(gated);
+                if output.is_some() {
+                    out_pending.push(gated);
                 }
-                filtered_window.push(gated);
+                if need_filtered_spectrum {
+                    filtered_window.push(gated);
+                }
+            }
+            if let Some(out) = output.as_mut() {
+                flush_output_samples(&mut out_pending, out);
             }
 
             while filtered_window.len() >= FFT_SIZE {
@@ -353,11 +359,6 @@ fn run(
                     filtered_spectrum_buf.copy_from_slice(magnitudes);
                     shared.set_latest_filtered(&filtered_spectrum_buf);
                     push_spectrum_frame(&shared.spectrum_filtered, &filtered_spectrum_buf);
-                    if !shared.sfx_mix_enabled()
-                        && shared.spectrum_source() != SPECTRUM_SOURCE_MIXED
-                    {
-                        push_spectrum_frame(&shared.spectrum_mixed, &filtered_spectrum_buf);
-                    }
                 }
                 filtered_window.drain(..FFT_HOP);
             }
@@ -375,4 +376,26 @@ fn push_spectrum_frame(queue: &crossbeam_queue::ArrayQueue<Vec<f32>>, frame: &[f
     }
     buf.copy_from_slice(frame);
     let _ = queue.force_push(buf);
+}
+
+fn flush_output_samples(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
+    while !pending.is_empty() {
+        match producer.push_entire_slice(pending) {
+            Ok(()) => {
+                pending.clear();
+                break;
+            }
+            Err(ChunkError::TooFewSlots(n)) if n > 0 => {
+                let _ = producer.push_entire_slice(&pending[..n]);
+                pending.drain(..n);
+            }
+            Err(_) => {
+                pending.clear();
+                break;
+            }
+        }
+    }
+    if pending.len() > RING_CAPACITY {
+        pending.drain(..pending.len() - RING_CAPACITY);
+    }
 }
