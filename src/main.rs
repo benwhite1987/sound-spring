@@ -734,8 +734,15 @@ fn run_backend(
                             apply_volumes(volumes).await;
                         }
                         Some(BackendCommand::Player(cmd)) => {
-                            let play = matches!(cmd, PlayerCommand::Play { .. });
-                            if play
+                            let play_target = match &cmd {
+                                PlayerCommand::Play {
+                                    tab_index,
+                                    slot,
+                                    ..
+                                } => Some((*tab_index, *slot)),
+                                _ => None,
+                            };
+                            if play_target.is_some()
                                 && !ensure_playback_routing(
                                     &active_config,
                                     &mut modules,
@@ -743,10 +750,23 @@ fn run_backend(
                                 )
                                 .await
                             {
+                                if let Some((tab_index, slot)) = play_target {
+                                    let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
+                                        tab_index,
+                                        slot,
+                                    });
+                                }
                                 continue;
                             }
-                            if let Err(err) = player.handle_command(cmd).await {
+                            let play_result = player.handle_command(cmd).await;
+                            if let Err(err) = play_result {
                                 warn!("player command failed: {err:#}");
+                                if let Some((tab_index, slot)) = play_target {
+                                    let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
+                                        tab_index,
+                                        slot,
+                                    });
+                                }
                             }
                             sync_mic_mute_for_playback(
                                 &active_config,
