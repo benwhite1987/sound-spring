@@ -1313,8 +1313,19 @@ impl qobject::SoundboardController {
                     });
                     rust.mic_volume = config.audio.mic_volume as i32;
                     rust.mic_muted = config.audio.mic_muted;
-                    let tabs = TabsRepository::scan(&config).unwrap_or_default();
-                    rust.replace_tabs(tabs, Some(&saved.current_tab));
+                    let tabs_root = rust.tabs_root.clone();
+                    let tabs_snapshot = rust.tabs.clone();
+                    if let Some(tab) = TabsRepository::resolve_current_tab(
+                        &tabs_snapshot,
+                        &saved.current_tab,
+                        &tabs_root,
+                    ) {
+                        if let Some(index) = tabs_snapshot.iter().position(|t| t.path == tab.path)
+                        {
+                            rust.current_tab_index = index as i32;
+                            rust.current_tab_name = QString::from(tab.display_name());
+                        }
+                    }
                     rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
                     rust.refresh_mic_source_count();
                     rust.refresh_audio_sink_count();

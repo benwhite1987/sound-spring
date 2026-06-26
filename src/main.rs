@@ -367,6 +367,7 @@ async fn apply_runtime_config(
 
     let tabs = TabsRepository::scan(config).unwrap_or_default();
     info!("loaded {} tabs", tabs.len());
+    let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
     let _ = event_tx.send(BackendEvent::ConfigApplied);
 }
 

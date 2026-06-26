@@ -196,74 +196,88 @@ fn run(
                 push_spectrum_frame(&shared.spectrum, &raw_spectrum_buf);
             }
 
-            resampled.clear();
-            if let Err(err) = resampler.process(&window[..FFT_HOP], &mut resampled) {
-                debug!("voice resample error: {err:#}");
-                window.drain(..FFT_HOP);
-                continue;
-            }
-
             let vad_on = shared.vad_enabled();
-            let vad_active = if vad_on {
-                match vad.as_mut() {
-                    Some(vad) => {
-                        let (open, close) = shared.vad_thresholds();
-                        vad.set_thresholds(open, close);
-                        let (prob, active) = vad.process(&resampled);
-                        shared.set_vad(prob, active);
-                        active
-                    }
-                    None => false,
+            let verifying_path = shared.verification_enabled() && shared.is_enrolled();
+            let need_resampled = enrolling || vad_on || verifying_path;
+
+            let effective_voiced = if need_resampled {
+                resampled.clear();
+                if let Err(err) = resampler.process(&window[..FFT_HOP], &mut resampled) {
+                    debug!("voice resample error: {err:#}");
+                    window.drain(..FFT_HOP);
+                    continue;
                 }
+
+                let vad_active = if vad_on {
+                    match vad.as_mut() {
+                        Some(vad) => {
+                            let (open, close) = shared.vad_thresholds();
+                            vad.set_thresholds(open, close);
+                            let (prob, active) = vad.process(&resampled);
+                            shared.set_vad(prob, active);
+                            active
+                        }
+                        None => false,
+                    }
+                } else {
+                    shared.set_vad(0.0, false);
+                    false
+                };
+
+                let voiced = vad_active || !vad_available || !vad_on;
+
+                let effective_voiced = if !vad_on || !vad_available {
+                    true
+                } else if vad_active {
+                    hangover_remaining = hangover_samples(shared.gate_hangover_ms());
+                    true
+                } else if hangover_remaining > 0 {
+                    hangover_remaining = hangover_remaining.saturating_sub(FFT_HOP);
+                    true
+                } else {
+                    false
+                };
+
+                if !effective_voiced
+                    && shared.verification_warmup_enabled()
+                    && !shared.speaker_state().1
+                {
+                    shared.set_verify_warmup(true);
+                }
+
+                if enrolling {
+                    enroll_buf.extend_from_slice(&resampled);
+                    let progress = (enroll_buf.len() as f32 / ENROLL_SAMPLES as f32).min(1.0);
+                    shared.set_enroll_progress(progress);
+                    if enroll_buf.len() >= ENROLL_SAMPLES {
+                        let buf = std::mem::take(&mut enroll_buf);
+                        let _ = job_tx.send(EmbedJob::Enroll(buf));
+                        enrolling = false;
+                        shared.set_enroll_progress(1.0);
+                    }
+                } else if verifying_path {
+                    if voiced {
+                        verify_buf.extend_from_slice(&resampled);
+                    }
+                    if verify_buf.len() >= VERIFY_WINDOW && !busy.load(Ordering::Relaxed) {
+                        let buf = std::mem::take(&mut verify_buf);
+                        verify_buf = Vec::with_capacity(VERIFY_WINDOW + FFT_SIZE);
+                        let _ = job_tx.send(EmbedJob::Verify(buf));
+                    }
+                } else if !verify_buf.is_empty() {
+                    verify_buf.clear();
+                }
+
+                effective_voiced
             } else {
                 shared.set_vad(0.0, false);
-                false
-            };
-            let voiced = vad_active || !vad_available || !vad_on;
-
-            let effective_voiced = if !vad_on || !vad_available {
+                if !verify_buf.is_empty() {
+                    verify_buf.clear();
+                }
                 true
-            } else if vad_active {
-                hangover_remaining = hangover_samples(shared.gate_hangover_ms());
-                true
-            } else if hangover_remaining > 0 {
-                hangover_remaining = hangover_remaining.saturating_sub(FFT_HOP);
-                true
-            } else {
-                false
             };
 
-            if !effective_voiced
-                && shared.verification_warmup_enabled()
-                && !shared.speaker_state().1
-            {
-                shared.set_verify_warmup(true);
-            }
-
-            if enrolling {
-                enroll_buf.extend_from_slice(&resampled);
-                let progress = (enroll_buf.len() as f32 / ENROLL_SAMPLES as f32).min(1.0);
-                shared.set_enroll_progress(progress);
-                if enroll_buf.len() >= ENROLL_SAMPLES {
-                    let buf = std::mem::take(&mut enroll_buf);
-                    let _ = job_tx.send(EmbedJob::Enroll(buf));
-                    enrolling = false;
-                    shared.set_enroll_progress(1.0);
-                }
-            } else if shared.verification_enabled() && shared.is_enrolled() {
-                if voiced {
-                    verify_buf.extend_from_slice(&resampled);
-                }
-                if verify_buf.len() >= VERIFY_WINDOW && !busy.load(Ordering::Relaxed) {
-                    let buf = std::mem::take(&mut verify_buf);
-                    verify_buf = Vec::with_capacity(VERIFY_WINDOW + FFT_SIZE);
-                    let _ = job_tx.send(EmbedJob::Verify(buf));
-                }
-            } else if !verify_buf.is_empty() {
-                verify_buf.clear();
-            }
-
-            let verifying = shared.verification_enabled() && shared.is_enrolled();
+            let verifying = verifying_path;
             let matched = shared.speaker_state().1;
             let passing = if verifying {
                 effective_voiced && (matched || shared.verify_warmup())

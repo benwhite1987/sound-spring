@@ -20,6 +20,7 @@ pub struct Vad {
     active: bool,
     last_prob: f32,
     pending: Vec<f32>,
+    chunk: [f32; VAD_CHUNK],
 }
 
 impl Vad {
@@ -36,6 +37,7 @@ impl Vad {
             active: false,
             last_prob: 0.0,
             pending: Vec::with_capacity(VAD_CHUNK * 2),
+            chunk: [0.0; VAD_CHUNK],
         })
     }
 
@@ -50,9 +52,10 @@ impl Vad {
     pub fn process(&mut self, samples: &[f32]) -> (f32, bool) {
         self.pending.extend_from_slice(samples);
         while self.pending.len() >= VAD_CHUNK {
-            let chunk: Vec<f32> = self.pending.drain(..VAD_CHUNK).collect();
+            self.chunk.copy_from_slice(&self.pending[..VAD_CHUNK]);
+            self.pending.drain(..VAD_CHUNK);
             let prob = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.detector.predict(chunk)
+                self.detector.predict(self.chunk)
             })) {
                 Ok(prob) => prob,
                 Err(_) => {
