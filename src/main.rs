@@ -15,9 +15,12 @@ use services::pipewire::{Modules, PipewireManager, VIRTMIC_SINK};
 use services::player::{Player, PlayerCommand, VolumeState};
 use services::shortcuts::{set_global_shortcut_status, GlobalShortcutStatus, ShortcutsManager};
 use services::tabs::{watch_paths, TabFilesystemWatch, TabsRepository};
-use services::voice::{spectrum_source_from_str, voice_shared, VoiceSession};
+use services::voice::{
+    spectrum_source_from_str, voice_shared, VoiceSession, SPECTRUM_SOURCE_MIXED,
+};
 use std::ffi::CString;
 use std::os::raw::c_char;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -139,7 +142,10 @@ async fn sync_mic_mute_for_playback(config: &Config, active_sessions: usize) {
 }
 
 fn sync_sfx_mix_for_playback(active_sessions: usize) {
-    voice_shared().set_sfx_mix_enabled(active_sessions > 0);
+    let shared = voice_shared();
+    let want_mix = shared.capturing.load(Ordering::Relaxed)
+        && (active_sessions > 0 || shared.spectrum_source() == SPECTRUM_SOURCE_MIXED);
+    shared.set_sfx_mix_enabled(want_mix);
 }
 
 fn sync_voice_gate_config(config: &Config) {
@@ -403,6 +409,10 @@ async fn stop_voice_session(
 /// removes the Phase 1 raw mic loopback and feeds the processed mic into the
 /// virtmic instead; leaving it restores the loopback so Phase 1 passthrough
 /// resumes. Suppression denoises the routed path; verification gates it.
+fn sync_spectrum_panel_visible(visible: bool) {
+    voice_shared().set_spectrum_panel_visible(visible);
+}
+
 async fn reconcile_voice(
     config: &Config,
     session: &mut Option<VoiceSession>,
@@ -625,6 +635,7 @@ fn run_backend(
                         }
                         Some(BackendCommand::StartVoiceCapture) => {
                             voice_panel_visible = true;
+                            sync_spectrum_panel_visible(true);
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
@@ -633,9 +644,11 @@ fn run_backend(
                                 &backend_event_tx,
                             )
                             .await;
+                            sync_sfx_mix_for_playback(player.active_session_count().await);
                         }
                         Some(BackendCommand::StopVoiceCapture) => {
                             voice_panel_visible = false;
+                            sync_spectrum_panel_visible(false);
                             reconcile_voice(
                                 &active_config,
                                 &mut voice_session,
@@ -705,6 +718,7 @@ fn run_backend(
                                 warn!("failed to persist spectrum source: {err:#}");
                             }
                             voice_shared().set_spectrum_source(spectrum_source_from_str(&source));
+                            sync_sfx_mix_for_playback(player.active_session_count().await);
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
                             if let Err(err) = player
@@ -762,25 +776,27 @@ fn run_backend(
                     publish_audio_sinks(&backend_event_tx).await;
                 }
                 _ = tab_watch_rx.recv() => {
-                    let _ = backend_event_tx.send(BackendEvent::TabsChanged);
+                    let config = active_config.clone();
+                    let event_tx = backend_event_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let tabs = TabsRepository::scan(&config).unwrap_or_default();
+                        let _ = event_tx.send(BackendEvent::TabsRescanned { tabs });
+                    });
                 }
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     let finished = player.reap_finished().await;
-                    let had_finished = !finished.is_empty();
                     for (tab_index, slot) in finished {
                         let _ = backend_event_tx.send(BackendEvent::PlaybackEnded {
                             tab_index,
                             slot,
                         });
                     }
-                    if had_finished {
-                        sync_mic_mute_for_playback(
-                            &active_config,
-                            player.active_session_count().await,
-                        )
-                        .await;
-                        sync_sfx_mix_for_playback(player.active_session_count().await);
-                    }
+                    sync_mic_mute_for_playback(
+                        &active_config,
+                        player.active_session_count().await,
+                    )
+                    .await;
+                    sync_sfx_mix_for_playback(player.active_session_count().await);
                 }
             }
         }

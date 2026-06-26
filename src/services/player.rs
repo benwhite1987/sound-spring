@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::config::SFX_SINK;
+use crate::services::voice::voice_shared;
 
 /// PipeWire/Pulse sink that follows the system default output device.
 const DEFAULT_MONITOR_SINK: &str = "@DEFAULT_SINK@";
@@ -72,6 +74,7 @@ pub enum PlayerEvent {
 struct PlaySession {
     remote: Child,
     monitor: Child,
+    spectrum_feed: JoinHandle<()>,
     tab_index: i32,
     slot: i32,
     remote_tag: String,
@@ -183,12 +186,14 @@ impl Player {
             self.volumes.monitor_paplay_volume(),
         )
         .await?;
+        let spectrum_feed = Self::spawn_sfx_spectrum_feed(file.clone());
 
         self.children.lock().await.insert(
             id,
             PlaySession {
                 remote,
                 monitor,
+                spectrum_feed,
                 tab_index,
                 slot,
                 remote_tag,
@@ -208,6 +213,7 @@ impl Player {
             .collect();
         for id in ids {
             if let Some(mut session) = children.remove(&id) {
+                session.spectrum_feed.abort();
                 let _ = session.remote.kill().await;
                 let _ = session.monitor.kill().await;
             }
@@ -217,6 +223,7 @@ impl Player {
     pub async fn stop_all(&mut self) {
         let mut children = self.children.lock().await;
         for (_, mut session) in children.drain() {
+            session.spectrum_feed.abort();
             let _ = session.remote.kill().await;
             let _ = session.monitor.kill().await;
         }
@@ -427,6 +434,83 @@ impl Player {
 
         Ok(paplay)
     }
+
+    /// Decode the playing clip to mono f32 @ 48 kHz and feed the mixed-spectrum
+    /// SFX leg (PipeWire monitor capture is unreliable for null-sink monitors).
+    fn spawn_sfx_spectrum_feed(file: PathBuf) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let path = file.as_os_str().to_str().unwrap_or_default();
+            let mut child = match Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-loglevel",
+                    "quiet",
+                    "-re",
+                    "-i",
+                    path,
+                    "-f",
+                    "f32le",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "48000",
+                    "-",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(_) => return,
+            };
+            let mut stdout = match child.stdout.take() {
+                Some(stdout) => stdout,
+                None => return,
+            };
+            let shared = voice_shared();
+            let mut carry = Vec::with_capacity(4);
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = match stdout.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                push_sfx_spectrum_bytes(&buf[..n], &mut carry, &shared);
+            }
+        })
+    }
+}
+
+fn push_sfx_spectrum_bytes(
+    bytes: &[u8],
+    carry: &mut Vec<u8>,
+    shared: &Arc<crate::services::voice::VoiceShared>,
+) {
+    let mut offset = 0;
+    if !carry.is_empty() {
+        let need = 4 - carry.len();
+        let take = need.min(bytes.len());
+        carry.extend_from_slice(&bytes[..take]);
+        offset = take;
+        if carry.len() == 4 {
+            let sample = f32::from_le_bytes([carry[0], carry[1], carry[2], carry[3]]);
+            if sample.is_finite() {
+                shared.push_sfx_spectrum_sample(sample);
+            }
+            carry.clear();
+        }
+    }
+    let rest = &bytes[offset..];
+    let full = rest.len() / 4 * 4;
+    for chunk in rest[..full].chunks_exact(4) {
+        let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if sample.is_finite() {
+            shared.push_sfx_spectrum_sample(sample);
+        }
+    }
+    carry.extend_from_slice(&rest[full..]);
 }
 
 #[cfg(test)]

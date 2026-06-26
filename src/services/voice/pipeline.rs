@@ -21,7 +21,8 @@ use super::spectrum::SpectrumAnalyzer;
 use super::vad::Vad;
 use super::{
     VoiceShared, CAPTURE_RATE, ENROLL_CMD_CANCEL, ENROLL_CMD_CLEAR, ENROLL_CMD_START,
-    ENROLL_SAMPLES, FFT_HOP, FFT_SIZE, TARGET_RATE,
+    ENROLL_SAMPLES, FFT_HOP, FFT_SIZE, SPECTRUM_BINS, SPECTRUM_SOURCE_FILTERED,
+    SPECTRUM_SOURCE_MIXED, SPECTRUM_SOURCE_RAW, TARGET_RATE,
 };
 
 /// Voiced 16 kHz samples accumulated before running one verification embedding (~0.75 s).
@@ -140,6 +141,8 @@ fn run(
     let mut enroll_buf: Vec<f32> = Vec::new();
     let mut verify_buf: Vec<f32> = Vec::with_capacity(VERIFY_WINDOW + FFT_SIZE);
     let mut hangover_remaining: usize = 0;
+    let mut raw_spectrum_buf = vec![0.0; SPECTRUM_BINS];
+    let mut filtered_spectrum_buf = vec![0.0; SPECTRUM_BINS];
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -181,8 +184,17 @@ fn run(
         let (attack_step, release_step) = gate_ramp_steps(shared.gate_release_ms());
 
         while window.len() >= FFT_SIZE {
-            let magnitudes = analyzer.analyze(&window[..FFT_SIZE]).to_vec();
-            shared.spectrum.force_push(magnitudes);
+            let spectrum_visible = shared.spectrum_panel_visible();
+            let source = shared.spectrum_source();
+            let need_raw_spectrum = spectrum_visible && source == SPECTRUM_SOURCE_RAW;
+            let need_filtered_spectrum = spectrum_visible
+                && matches!(source, SPECTRUM_SOURCE_FILTERED | SPECTRUM_SOURCE_MIXED);
+
+            if need_raw_spectrum {
+                let magnitudes = analyzer.analyze(&window[..FFT_SIZE]);
+                raw_spectrum_buf.copy_from_slice(magnitudes);
+                push_spectrum_frame(&shared.spectrum, &raw_spectrum_buf);
+            }
 
             resampled.clear();
             if let Err(err) = resampler.process(&window[..FFT_HOP], &mut resampled) {
@@ -291,13 +303,16 @@ fn run(
             }
 
             while filtered_window.len() >= FFT_SIZE {
-                let magnitudes = filtered_analyzer
-                    .analyze(&filtered_window[..FFT_SIZE])
-                    .to_vec();
-                shared.set_latest_filtered(&magnitudes);
-                shared.spectrum_filtered.force_push(magnitudes.clone());
-                if !shared.sfx_mix_enabled() {
-                    shared.spectrum_mixed.force_push(magnitudes);
+                if need_filtered_spectrum {
+                    let magnitudes = filtered_analyzer.analyze(&filtered_window[..FFT_SIZE]);
+                    filtered_spectrum_buf.copy_from_slice(magnitudes);
+                    shared.set_latest_filtered(&filtered_spectrum_buf);
+                    push_spectrum_frame(&shared.spectrum_filtered, &filtered_spectrum_buf);
+                    if !shared.sfx_mix_enabled()
+                        && shared.spectrum_source() != SPECTRUM_SOURCE_MIXED
+                    {
+                        push_spectrum_frame(&shared.spectrum_mixed, &filtered_spectrum_buf);
+                    }
                 }
                 filtered_window.drain(..FFT_HOP);
             }
@@ -306,4 +321,13 @@ fn run(
         }
     }
     debug!("voice pipeline thread stopped");
+}
+
+fn push_spectrum_frame(queue: &crossbeam_queue::ArrayQueue<Vec<f32>>, frame: &[f32]) {
+    let mut buf = queue.pop().unwrap_or_else(|| vec![0.0; SPECTRUM_BINS]);
+    if buf.len() != SPECTRUM_BINS {
+        buf.resize(SPECTRUM_BINS, 0.0);
+    }
+    buf.copy_from_slice(frame);
+    let _ = queue.force_push(buf);
 }

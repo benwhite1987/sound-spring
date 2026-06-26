@@ -41,6 +41,12 @@ pub mod qobject {
         fn spectrum_value_at(self: &VoiceController, index: i32) -> f64;
 
         #[qinvokable]
+        fn bar_level_at(self: &VoiceController, index: i32) -> f64;
+
+        #[qinvokable]
+        fn spectrum_bar_count(self: &VoiceController) -> i32;
+
+        #[qinvokable]
         fn open_pavucontrol(self: Pin<&mut VoiceController>);
 
         #[qinvokable]
@@ -94,7 +100,9 @@ use std::sync::Arc;
 
 use crate::qobjects::controller::{BackendCommand, BACKEND_TX};
 use crate::services::voice::{
+    spectrum_bars::{compute_bar_levels, SPECTRUM_BAR_COUNT},
     spectrum_source_from_str, vad_close_for_open, voice_shared, VoiceShared, SPECTRUM_BINS,
+    SPECTRUM_SOURCE_FILTERED, SPECTRUM_SOURCE_MIXED,
 };
 
 pub struct VoiceControllerRust {
@@ -117,6 +125,8 @@ pub struct VoiceControllerRust {
     capture_error: QString,
     shared: Arc<VoiceShared>,
     latest: Vec<f32>,
+    bar_levels: [f32; SPECTRUM_BAR_COUNT],
+    spectrum_source_code: u8,
     last_enroll_done_seq: u32,
     last_progress_percent: i32,
 }
@@ -155,6 +165,8 @@ impl Default for VoiceControllerRust {
             capture_error: QString::from(""),
             shared,
             latest: vec![0.0; SPECTRUM_BINS],
+            bar_levels: [0.0; SPECTRUM_BAR_COUNT],
+            spectrum_source_code: spectrum_source_from_str(&config.voice.spectrum_source),
             last_enroll_done_seq: shared_done_seq(),
             last_progress_percent: 0,
         }
@@ -235,15 +247,16 @@ impl qobject::VoiceController {
         }
 
         let mut newest: Option<Vec<f32>> = None;
-        let queue = match self.rust().spectrum_source.to_string().as_str() {
-            "filtered" => &self.rust().shared.spectrum_filtered,
-            "mixed" => &self.rust().shared.spectrum_mixed,
+        let queue = match self.rust().spectrum_source_code {
+            SPECTRUM_SOURCE_FILTERED => &self.rust().shared.spectrum_filtered,
+            SPECTRUM_SOURCE_MIXED => &self.rust().shared.spectrum_mixed,
             _ => &self.rust().shared.spectrum,
         };
         while let Some(frame) = queue.pop() {
             newest = Some(frame);
         }
         if let Some(frame) = newest {
+            self.as_mut().rust_mut().bar_levels = compute_bar_levels(&frame);
             self.as_mut().rust_mut().latest = frame;
             let next = self.rust().spectrum_version.wrapping_add(1);
             self.as_mut().set_spectrum_version(next);
@@ -252,6 +265,18 @@ impl qobject::VoiceController {
 
     pub fn spectrum_bin_count(&self) -> i32 {
         SPECTRUM_BINS as i32
+    }
+
+    pub fn bar_level_at(&self, index: i32) -> f64 {
+        self.rust()
+            .bar_levels
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0.0) as f64
+    }
+
+    pub fn spectrum_bar_count(&self) -> i32 {
+        SPECTRUM_BAR_COUNT as i32
     }
 
     pub fn spectrum_value_at(&self, index: i32) -> f64 {
@@ -324,11 +349,12 @@ impl qobject::VoiceController {
 
     pub fn persist_spectrum_source(mut self: Pin<&mut Self>, source: QString) {
         let source_str = source.to_string();
-        self.rust()
-            .shared
-            .set_spectrum_source(spectrum_source_from_str(&source_str));
+        let code = spectrum_source_from_str(&source_str);
+        self.rust().shared.set_spectrum_source(code);
+        self.as_mut().rust_mut().spectrum_source_code = code;
         self.as_mut().set_spectrum_source(source);
         self.as_mut().rust_mut().latest = vec![0.0; SPECTRUM_BINS];
+        self.as_mut().rust_mut().bar_levels = [0.0; SPECTRUM_BAR_COUNT];
         let next = self.rust().spectrum_version.wrapping_add(1);
         self.as_mut().set_spectrum_version(next);
         if let Some(tx) = BACKEND_TX.get() {

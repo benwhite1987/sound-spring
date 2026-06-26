@@ -90,18 +90,13 @@ Item {
 
     function subBarLevel(bandIndex, subIndex) {
         var _ = version
-        var range = subBarRange(bandIndex, subIndex)
-        var hz0 = freqFromFraction(range.t0)
-        var hz1 = freqFromFraction(range.t1)
-        var bins = controller.spectrumBinCount()
-        var peak = 0
-        for (var i = 0; i < bins; i++) {
-            var t = i / Math.max(1, bins - 1)
-            var hz = freqFromFraction(t)
-            if (hz >= hz0 && hz < hz1)
-                peak = Math.max(peak, controller.spectrumValueAt(i))
+        var barIndex = 0
+        for (var b = 0; b < bands.length; b++) {
+            if (b === bandIndex)
+                return controller.barLevelAt(barIndex + subIndex)
+            barIndex += bands[b].subdivisions
         }
-        return displayLevel(peak)
+        return 0
     }
 
     Rectangle {

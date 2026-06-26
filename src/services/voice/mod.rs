@@ -16,12 +16,14 @@ pub mod output;
 pub mod pipeline;
 pub mod resample;
 pub mod spectrum;
+pub mod spectrum_bars;
 pub mod vad;
 pub mod verifier;
 pub mod voiceprint;
 
 use anyhow::Result;
 use crossbeam_queue::ArrayQueue;
+use rtrb::Producer;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -104,10 +106,16 @@ pub struct VoiceShared {
     vad_enabled: AtomicBool,
     /// Active spectrum display source (0=raw, 1=filtered, 2=mixed).
     spectrum_source: AtomicU8,
+    /// Voice panel is showing (spectrum visualization is active).
+    spectrum_panel_visible: AtomicBool,
     /// Latest filtered magnitude frame for magnitude-domain mixed spectrum.
     latest_filtered: Mutex<Vec<f32>>,
+    /// Bumped when [`Self::set_latest_filtered`] publishes a new frame.
+    filtered_seq: AtomicU32,
     /// When false, mixed spectrum mirrors filtered (no SFX monitor contribution).
     sfx_mix_enabled: AtomicBool,
+    /// Playback decode feed for mixed-spectrum SFX leg (replaces monitor capture).
+    sfx_spectrum_producer: Mutex<Option<Producer<f32>>>,
     /// Config: hold gate open after VAD drops (milliseconds).
     gate_hangover_ms: AtomicU32,
     /// Config: output gate release ramp (milliseconds).
@@ -142,8 +150,11 @@ impl VoiceShared {
             vad_close: AtomicU32::new(0.20_f32.to_bits()),
             vad_enabled: AtomicBool::new(true),
             spectrum_source: AtomicU8::new(SPECTRUM_SOURCE_RAW),
+            spectrum_panel_visible: AtomicBool::new(false),
             latest_filtered: Mutex::new(vec![0.0; SPECTRUM_BINS]),
+            filtered_seq: AtomicU32::new(0),
             sfx_mix_enabled: AtomicBool::new(false),
+            sfx_spectrum_producer: Mutex::new(None),
             gate_hangover_ms: AtomicU32::new(200),
             gate_release_ms: AtomicU32::new(100),
             verification_warmup_enabled: AtomicBool::new(true),
@@ -297,7 +308,24 @@ impl VoiceShared {
     }
 
     pub fn set_spectrum_source(&self, source: u8) {
-        self.spectrum_source.store(source.min(2), Ordering::Relaxed);
+        let source = source.min(2);
+        let prev = self.spectrum_source.swap(source, Ordering::Relaxed);
+        if source == SPECTRUM_SOURCE_MIXED && prev != SPECTRUM_SOURCE_MIXED {
+            self.filtered_seq.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn spectrum_source(&self) -> u8 {
+        self.spectrum_source.load(Ordering::Relaxed)
+    }
+
+    pub fn set_spectrum_panel_visible(&self, visible: bool) {
+        self.spectrum_panel_visible
+            .store(visible, Ordering::Relaxed);
+    }
+
+    pub fn spectrum_panel_visible(&self) -> bool {
+        self.spectrum_panel_visible.load(Ordering::Relaxed)
     }
 
     pub fn set_latest_filtered(&self, magnitudes: &[f32]) {
@@ -308,6 +336,11 @@ impl VoiceShared {
                 latest.copy_from_slice(magnitudes);
             }
         }
+        self.filtered_seq.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn filtered_seq(&self) -> u32 {
+        self.filtered_seq.load(Ordering::Relaxed)
     }
 
     pub fn latest_filtered_snapshot(&self) -> Vec<f32> {
@@ -323,6 +356,29 @@ impl VoiceShared {
 
     pub fn sfx_mix_enabled(&self) -> bool {
         self.sfx_mix_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn attach_sfx_spectrum_producer(&self, producer: Producer<f32>) {
+        if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
+            *guard = Some(producer);
+        }
+    }
+
+    pub fn detach_sfx_spectrum_producer(&self) {
+        if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
+            *guard = None;
+        }
+    }
+
+    pub fn push_sfx_spectrum_sample(&self, sample: f32) {
+        if !sample.is_finite() {
+            return;
+        }
+        if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
+            if let Some(producer) = guard.as_mut() {
+                let _ = producer.push(sample);
+            }
+        }
     }
 
     pub fn set_gate_hangover_ms(&self, ms: u32) {
@@ -410,8 +466,6 @@ pub struct VoiceParams {
     pub verification_warmup: bool,
 }
 
-use crate::services::pipewire::SFX_SINK;
-
 /// A running capture + processing session. Dropping it tears everything down:
 /// the `pw-cat` child is killed, the reader task aborted, the audio thread
 /// joined, and the embedding worker joined.
@@ -423,7 +477,6 @@ pub struct VoiceSession {
     _pipeline: pipeline::VoicePipeline,
     // Dropped after the pipeline so its producer is gone before the writer dies.
     _output: Option<output::Output>,
-    _mix_capture: Option<capture::Capture>,
     _mix_spectrum: Option<mix_spectrum::MixSpectrum>,
     _embed: embed_worker::EmbedWorker,
 }
@@ -477,18 +530,13 @@ impl VoiceSession {
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer, Some(shared.clone()))?;
 
-        let (mix_capture, mix_spectrum) = {
+        let mix_spectrum = {
             let (sfx_producer, sfx_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
-            let sfx_monitor = format!("{SFX_SINK}.monitor");
-            let sfx_cap = match capture::Capture::start(&sfx_monitor, sfx_producer, None) {
-                Ok(cap) => Some(cap),
-                Err(err) => {
-                    tracing::warn!("sfx monitor capture unavailable: {err:#}");
-                    None
-                }
-            };
-            let mix_spec = mix_spectrum::MixSpectrum::spawn(Some(sfx_consumer), shared.clone())?;
-            (sfx_cap, Some(mix_spec))
+            shared.attach_sfx_spectrum_producer(sfx_producer);
+            Some(mix_spectrum::MixSpectrum::spawn(
+                Some(sfx_consumer),
+                shared.clone(),
+            )?)
         };
 
         shared.set_capture_status(true, "");
@@ -496,7 +544,6 @@ impl VoiceSession {
             _capture: capture,
             _pipeline: pipeline,
             _output: output,
-            _mix_capture: mix_capture,
             _mix_spectrum: mix_spectrum,
             _embed: embed,
         })
@@ -506,6 +553,7 @@ impl VoiceSession {
 impl Drop for VoiceSession {
     fn drop(&mut self) {
         let shared = voice_shared();
+        shared.detach_sfx_spectrum_producer();
         shared.set_capture_status(false, "");
         shared.set_vad(0.0, false);
         shared.set_passing(false);

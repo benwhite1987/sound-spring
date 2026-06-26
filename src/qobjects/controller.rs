@@ -306,14 +306,24 @@ pub enum BackendCommand {
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    PlaybackEnded { tab_index: i32, slot: i32 },
-    ShortcutTriggered { id: String },
+    PlaybackEnded {
+        tab_index: i32,
+        slot: i32,
+    },
+    ShortcutTriggered {
+        id: String,
+    },
     GlobalShortcutStatusChanged,
     ConfigApplied,
-    TabsChanged,
+    TabsRescanned {
+        tabs: Vec<crate::services::tabs::Tab>,
+    },
     MicSourcesUpdated,
     AudioSinksUpdated,
-    VoiceCaptureStatus { active: bool, error: String },
+    VoiceCaptureStatus {
+        active: bool,
+        error: String,
+    },
 }
 
 pub static BACKEND_TX: OnceLock<TokioSender<BackendCommand>> = OnceLock::new();
@@ -494,15 +504,6 @@ impl SoundboardControllerRust {
             Err(err) => tracing::warn!("tab rescan failed: {err:#}"),
         }
         self.set_tab_warning(&Self::collect_tab_warnings(config));
-    }
-
-    fn refresh_tabs_from_disk(&mut self) {
-        let config = crate::config::load_config().unwrap_or_default();
-        let current = self
-            .active_tab()
-            .map(|tab| tab.path.to_string_lossy().into_owned());
-        self.tabs_root = config.paths.tabs_root.clone();
-        self.rescan_tabs(&config, current.as_deref());
     }
 
     fn request_tab_watch_restart() {
@@ -1323,8 +1324,20 @@ impl qobject::SoundboardController {
                     playback_changed = true;
                     tab_changed = true;
                 }
-                BackendEvent::TabsChanged => {
-                    self.as_mut().rust_mut().refresh_tabs_from_disk();
+                BackendEvent::TabsRescanned { tabs } => {
+                    let config = crate::config::load_config().unwrap_or_default();
+                    let current = self
+                        .as_ref()
+                        .rust()
+                        .active_tab()
+                        .map(|tab| tab.path.to_string_lossy().into_owned());
+                    self.as_mut().rust_mut().tabs_root = config.paths.tabs_root.clone();
+                    self.as_mut()
+                        .rust_mut()
+                        .replace_tabs(tabs, current.as_deref());
+                    self.as_mut()
+                        .rust_mut()
+                        .set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
                     tab_changed = true;
                 }
                 BackendEvent::MicSourcesUpdated => {
@@ -1582,9 +1595,8 @@ impl qobject::SoundboardController {
     }
 
     pub fn remove_tab(mut self: Pin<&mut Self>, index: i32) -> bool {
-        let mut config = config::load_config().unwrap_or_default();
-        if !uses_custom_tabs(&config) {
-            tracing::warn!("remove tab: only custom [[tabs]] entries can be removed");
+        if self.rust().tabs.len() <= 1 {
+            tracing::warn!("remove tab: at least one tab must remain");
             return false;
         }
         let Some(tab_path) = self
@@ -1595,19 +1607,35 @@ impl qobject::SoundboardController {
         else {
             return false;
         };
-        let Some(cfg_index) =
-            SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path)
-        else {
-            return false;
-        };
-        config.tabs.remove(cfg_index);
+
+        let mut config = config::load_config().unwrap_or_default();
+        if uses_custom_tabs(&config) {
+            let Some(cfg_index) =
+                SoundboardControllerRust::config_index_for_tab_path(&config, &tab_path)
+            else {
+                return false;
+            };
+            config.tabs.remove(cfg_index);
+        }
+
+        let delete_dir = tab_path.starts_with(&config.paths.tabs_root);
+        if delete_dir {
+            if let Err(err) = TabsRepository::remove_tab_dir(&tab_path) {
+                tracing::warn!(
+                    "failed to remove tab directory {}: {err:#}",
+                    tab_path.display()
+                );
+                return false;
+            }
+        }
 
         let select_path = self
             .rust()
             .tabs
             .iter()
-            .find(|tab| tab.path != tab_path)
-            .map(|tab| tab.path.clone());
+            .enumerate()
+            .find(|(i, _)| *i != index as usize)
+            .map(|(_, tab)| tab.path.clone());
 
         if !self
             .as_mut()
