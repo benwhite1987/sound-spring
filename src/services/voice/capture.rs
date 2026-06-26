@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use super::{VoiceShared, CAPTURE_CHANNELS, CAPTURE_RATE};
+use super::{VoiceShared, CAPTURE_CHANNELS, CAPTURE_RATE, RING_CAPACITY};
 
 /// A live capture session. Dropping it kills the `pw-cat` child and aborts the
 /// reader task.
@@ -135,8 +135,15 @@ fn flush_samples(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
                 let _ = producer.push_entire_slice(&pending[..n]);
                 pending.drain(..n);
             }
-            Err(_) => break,
+            Err(_) => {
+                // Ring full: drop backlog so the capture task cannot grow without bound.
+                pending.clear();
+                break;
+            }
         }
+    }
+    if pending.len() > RING_CAPACITY {
+        pending.drain(..pending.len() - RING_CAPACITY);
     }
 }
 
@@ -166,6 +173,17 @@ mod tests {
         }
         assert_eq!(decoded, values);
         assert!(carry.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn flush_drops_pending_when_ring_full() {
+        let (mut producer, _) = rtrb::RingBuffer::<f32>::new(4);
+        for i in 0..4 {
+            producer.push(i as f32).unwrap();
+        }
+        let mut pending = vec![1.0_f32, 2.0, 3.0];
+        flush_samples(&mut pending, &mut producer);
         assert!(pending.is_empty());
     }
 }
