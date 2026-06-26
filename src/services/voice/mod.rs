@@ -343,11 +343,14 @@ impl VoiceShared {
         self.filtered_seq.load(Ordering::Relaxed)
     }
 
-    pub fn latest_filtered_snapshot(&self) -> Vec<f32> {
-        self.latest_filtered
-            .lock()
-            .map(|latest| latest.clone())
-            .unwrap_or_else(|_| vec![0.0; SPECTRUM_BINS])
+    pub fn latest_filtered_copy_into(&self, out: &mut [f32]) -> bool {
+        if let Ok(latest) = self.latest_filtered.lock() {
+            if latest.len() == out.len() {
+                out.copy_from_slice(&latest);
+                return true;
+            }
+        }
+        false
     }
 
     pub fn set_sfx_mix_enabled(&self, enabled: bool) {

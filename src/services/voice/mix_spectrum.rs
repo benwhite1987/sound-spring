@@ -60,6 +60,7 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
     let mut analyzer = SpectrumAnalyzer::new();
     let mut window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
     let mut mixed_buf = vec![0.0; SPECTRUM_BINS];
+    let mut filtered_buf = vec![0.0; SPECTRUM_BINS];
     let mut last_sfx_magnitudes = vec![0.0; SPECTRUM_BINS];
     let mut last_filtered_seq = 0u32;
 
@@ -86,8 +87,11 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
             while window.len() >= FFT_SIZE {
                 let sfx_magnitudes = analyzer.analyze(&window[..FFT_SIZE]);
                 last_sfx_magnitudes.copy_from_slice(sfx_magnitudes);
-                let filtered = shared.latest_filtered_snapshot();
-                combine_magnitude_spectra_into(&mut mixed_buf, &filtered, sfx_magnitudes);
+                let filtered_ok = shared.latest_filtered_copy_into(&mut filtered_buf);
+                if !filtered_ok {
+                    filtered_buf.fill(0.0);
+                }
+                combine_magnitude_spectra_into(&mut mixed_buf, &filtered_buf, sfx_magnitudes);
                 push_spectrum_frame(&shared.spectrum_mixed, &mixed_buf);
                 window.drain(..FFT_HOP);
             }
@@ -95,12 +99,19 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
             let seq = shared.filtered_seq();
             if seq != last_filtered_seq {
                 last_filtered_seq = seq;
-                let filtered = shared.latest_filtered_snapshot();
+                let filtered_ok = shared.latest_filtered_copy_into(&mut filtered_buf);
+                if !filtered_ok {
+                    filtered_buf.fill(0.0);
+                }
                 let last_sfx_peak = last_sfx_magnitudes.iter().cloned().fold(0.0_f32, f32::max);
                 if sfx_playing && last_sfx_peak > 1e-4 {
-                    combine_magnitude_spectra_into(&mut mixed_buf, &filtered, &last_sfx_magnitudes);
+                    combine_magnitude_spectra_into(
+                        &mut mixed_buf,
+                        &filtered_buf,
+                        &last_sfx_magnitudes,
+                    );
                 } else {
-                    mixed_buf.copy_from_slice(&filtered);
+                    mixed_buf.copy_from_slice(&filtered_buf);
                 }
                 push_spectrum_frame(&shared.spectrum_mixed, &mixed_buf);
             }
