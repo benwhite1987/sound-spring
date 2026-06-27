@@ -3,100 +3,75 @@ import QtQuick
 Item {
     id: spectrum
 
-    // The VoiceController instance providing spectrum data.
     required property var controller
     property var theme
-    // When false (gate not passing), bars are drawn at reduced opacity.
     property bool active: true
-
-    // Log-frequency span must match services/voice/spectrum.rs (FREQ_MIN..Nyquist).
-    readonly property real freqMin: 20.0
-    readonly property real freqMax: 24000.0
 
     readonly property color colorGreen: theme ? theme.accent : "#6abf69"
     readonly property color colorYellow: theme ? theme.warningAccent : "#ffb74d"
     readonly property color colorRed: theme ? theme.danger : "#c62828"
-
-    // Display scaling: idle room noise maps ~0.45 raw → green after floor + gamma.
-    readonly property real noiseFloor: 0.38
-    readonly property real displayGamma: 1.6
+    readonly property color ghostGreen: Qt.darker(colorGreen, 2.8)
+    readonly property color ghostRed: Qt.darker(colorRed, 2.8)
 
     readonly property int chartMargin: 4
     readonly property int labelHeight: 20
-    readonly property real barGap: 4
-    readonly property int barCount: 21
+    readonly property real barGap: 3
+    readonly property real segmentGap: 2
+    readonly property int barCount: controller.spectrumBarCount
+    readonly property int segmentCount: controller.spectrumSegmentCount
 
     readonly property var bands: [
-        { label: "Sub-bass", minHz: 20, maxHz: 60, subdivisions: 3 },
-        { label: "Bass", minHz: 60, maxHz: 250, subdivisions: 3 },
-        { label: "Low-mid", minHz: 250, maxHz: 500, subdivisions: 3 },
-        { label: "Mid", minHz: 500, maxHz: 2000, subdivisions: 3 },
-        { label: "High-mid", minHz: 2000, maxHz: 4000, subdivisions: 3 },
-        { label: "Presence", minHz: 4000, maxHz: 6000, subdivisions: 3 },
-        { label: "Brilliance", minHz: 6000, maxHz: 24000, subdivisions: 3 }
+        { label: "Sub-bass", subdivisions: 3 },
+        { label: "Bass", subdivisions: 3 },
+        { label: "Low-mid", subdivisions: 3 },
+        { label: "Mid", subdivisions: 3 },
+        { label: "High-mid", subdivisions: 3 },
+        { label: "Presence", subdivisions: 3 },
+        { label: "Brilliance", subdivisions: 3 }
     ]
 
     readonly property int version: controller.spectrumVersion
     readonly property real chartHeight: Math.max(1, height - labelHeight - chartMargin * 2)
+    readonly property real slotWidth: Math.max(
+        1,
+        (chartArea.width - (barCount + 1) * barGap) / barCount)
 
-    function freqFraction(freq) {
-        var f = Math.max(freqMin, Math.min(freqMax, freq))
-        return Math.log(f / freqMin) / Math.log(freqMax / freqMin)
+    function segmentDbAt(index) {
+        return controller.spectrumSegmentDbAt(index)
     }
 
-    function freqFromFraction(t) {
-        var clamped = Math.max(0, Math.min(1, t))
-        return freqMin * Math.pow(freqMax / freqMin, clamped)
+    function segmentYFracAt(index) {
+        return controller.spectrumSegmentYFracAt(index)
     }
 
-    function displayLevel(raw) {
-        var t = Math.max(0, (raw - noiseFloor) / (1 - noiseFloor))
-        return Math.min(1, Math.pow(t, displayGamma))
+    function segmentYOffset(index, chartH) {
+        var usable = chartH - (segmentCount - 1) * segmentGap
+        var above = 0
+        for (var j = 0; j < index; j++)
+            above += segmentYFracAt(j) * usable + segmentGap
+        return chartH - above - segmentYFracAt(index) * usable
     }
 
-    function mixColors(c1, c2, u) {
-        return Qt.rgba(
-            c1.r + (c2.r - c1.r) * u,
-            c1.g + (c2.g - c1.g) * u,
-            c1.b + (c2.b - c1.b) * u,
-            1)
+    function segmentPixelHeight(index, chartH) {
+        var usable = chartH - (segmentCount - 1) * segmentGap
+        return Math.max(1, segmentYFracAt(index) * usable)
     }
 
-    function amplitudeColor(amplitude) {
-        var t = Math.max(0, Math.min(1, amplitude))
-        if (t < 0.5)
-            return mixColors(colorGreen, colorYellow, t * 2)
-        return mixColors(colorYellow, colorRed, (t - 0.5) * 2)
+    function segmentColor(dbTick) {
+        if (dbTick <= -2)
+            return colorGreen
+        if (dbTick === 0)
+            return colorYellow
+        return colorRed
     }
 
-    function barDescriptor(index) {
-        var n = 0
-        for (var b = 0; b < bands.length; b++) {
-            var sub = bands[b].subdivisions
-            if (index < n + sub)
-                return { bandIndex: b, subIndex: index - n }
-            n += sub
-        }
-        return { bandIndex: 0, subIndex: 0 }
+    function ghostColor(dbTick) {
+        return dbTick <= -2 ? ghostGreen : ghostRed
     }
 
-    function subBarRange(bandIndex, subIndex) {
-        var b = bands[bandIndex]
-        var t0 = freqFraction(b.minHz)
-        var t1 = freqFraction(b.maxHz)
-        var w = (t1 - t0) / b.subdivisions
-        return { t0: t0 + subIndex * w, t1: t0 + (subIndex + 1) * w }
-    }
-
-    function subBarLevel(bandIndex, subIndex) {
+    function barLevelAt(index) {
         var _ = version
-        var barIndex = 0
-        for (var b = 0; b < bands.length; b++) {
-            if (b === bandIndex)
-                return controller.barLevelAt(barIndex + subIndex)
-            barIndex += bands[b].subdivisions
-        }
-        return 0
+        return controller.barLevelAt(index)
     }
 
     Rectangle {
@@ -117,23 +92,41 @@ Item {
 
         Repeater {
             model: barCount
-            delegate: Rectangle {
+            delegate: Item {
                 required property int index
-                property var desc: spectrum.barDescriptor(index)
-                property var range: spectrum.subBarRange(desc.bandIndex, desc.subIndex)
-                property real level: spectrum.subBarLevel(desc.bandIndex, desc.subIndex)
+                readonly property real level: spectrum.barLevelAt(index)
+                readonly property int litCount: controller.litSegmentCountAt(level)
 
-                readonly property real slotLeft: range.t0 * chartArea.width
-                readonly property real slotWidth: (range.t1 - range.t0) * chartArea.width
+                x: spectrum.barGap + index * (spectrum.slotWidth + spectrum.barGap)
+                width: spectrum.slotWidth
+                height: chartArea.height
 
-                x: slotLeft + spectrum.barGap / 2
-                width: Math.max(1, slotWidth - spectrum.barGap)
-                height: Math.max(level > 0.02 ? 1 : 0, level * chartArea.height)
-                y: chartArea.height - height
-                radius: Math.min(3, width / 2)
-                color: spectrum.amplitudeColor(level)
-                opacity: spectrum.active ? 1.0 : 0.45
-                visible: level > 0.02
+                Repeater {
+                    model: spectrum.segmentCount
+                    delegate: Item {
+                        required property int index
+                        readonly property real dbTick: spectrum.segmentDbAt(index)
+                        readonly property bool isLit: index < litCount
+
+                        y: spectrum.segmentYOffset(index, chartArea.height)
+                        width: parent.width
+                        height: spectrum.segmentPixelHeight(index, chartArea.height)
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: Math.min(2, width / 3)
+                            color: spectrum.ghostColor(dbTick)
+                            opacity: 0.14
+                        }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: Math.min(2, width / 3)
+                            color: spectrum.segmentColor(dbTick)
+                            opacity: isLit ? (spectrum.active ? 1.0 : 0.45) : 0
+                        }
+                    }
+                }
             }
         }
     }
@@ -149,12 +142,18 @@ Item {
         Repeater {
             model: bands
             delegate: Text {
+                required property int index
                 required property var modelData
-                readonly property real x0: spectrum.freqFraction(modelData.minHz) * labelRow.width
-                readonly property real x1: spectrum.freqFraction(modelData.maxHz) * labelRow.width
+                readonly property int barStart: {
+                    var n = 0
+                    for (var b = 0; b < index; b++)
+                        n += spectrum.bands[b].subdivisions
+                    return n
+                }
 
-                x: x0
-                width: Math.max(1, x1 - x0)
+                x: spectrum.barGap + barStart * (spectrum.slotWidth + spectrum.barGap)
+                width: modelData.subdivisions * spectrum.slotWidth
+                    + (modelData.subdivisions - 1) * spectrum.barGap
                 anchors.bottom: parent.bottom
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignBottom

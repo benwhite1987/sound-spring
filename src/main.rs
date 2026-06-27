@@ -155,6 +155,15 @@ fn sync_voice_gate_config(config: &Config) {
     shared.set_verification_warmup_enabled(config.voice.verification_warmup);
 }
 
+fn sync_spectrum_display_volumes(config: &Config) {
+    voice_shared().set_spectrum_display_volumes(
+        config.audio.mic_volume,
+        config.audio.mic_muted,
+        config.audio.output_volume,
+        config.audio.output_muted,
+    );
+}
+
 async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
@@ -324,6 +333,7 @@ async fn apply_runtime_config(
             monitor_muted: config.audio.monitor_muted,
         })
         .await;
+        sync_spectrum_display_volumes(config);
     }
 
     if previous.is_some_and(|prev| {
@@ -351,6 +361,7 @@ async fn apply_runtime_config(
         {
             warn!("failed to apply mic volume: {err:#}");
         }
+        sync_spectrum_display_volumes(config);
     }
 
     if ShortcutsManager::uses_global_binding(&config.shortcuts.mode) {
@@ -386,6 +397,7 @@ async fn stop_voice_session(
     if session.is_none() {
         return;
     }
+    voice_shared().clear_spectrum_display();
     let was_routing = *voice_routing;
     *session = None;
     *voice_routing = false;
@@ -561,6 +573,7 @@ fn run_backend(
             &active_config.voice.spectrum_source,
         ));
         sync_voice_gate_config(&active_config);
+        sync_spectrum_display_volumes(&active_config);
         // Engage suppression/gating routing at startup if the config enables it,
         // so the processed mic is active without first opening the Voice panel.
         reconcile_voice(
@@ -730,6 +743,7 @@ fn run_backend(
                                     warn!("failed to set mic volume: {err:#}");
                                 }
                             }
+                            sync_spectrum_display_volumes(&active_config);
                         }
                         Some(BackendCommand::SetSpectrumSource { source }) => {
                             active_config.voice.spectrum_source = source.clone();
@@ -747,6 +761,12 @@ fn run_backend(
                                 warn!("failed to apply live stream volumes: {err:#}");
                             }
                             apply_volumes(volumes).await;
+                            voice_shared().set_spectrum_display_volumes(
+                                active_config.audio.mic_volume,
+                                active_config.audio.mic_muted,
+                                volumes.output_percent,
+                                volumes.output_muted,
+                            );
                         }
                         Some(BackendCommand::Player(cmd)) => {
                             let play_target = match &cmd {
@@ -773,6 +793,7 @@ fn run_backend(
                                 }
                                 continue;
                             }
+                            let stop_all = matches!(&cmd, PlayerCommand::StopAll);
                             let play_result = player.handle_command(cmd).await;
                             if let Err(err) = play_result {
                                 warn!("player command failed: {err:#}");
@@ -783,12 +804,18 @@ fn run_backend(
                                     });
                                 }
                             }
+                            if stop_all {
+                                voice_shared().clear_spectrum_display();
+                            }
                             sync_mic_mute_for_playback(
                                 &active_config,
                                 player.active_session_count().await,
                             )
                             .await;
                             sync_sfx_mix_for_playback(player.active_session_count().await);
+                            if player.active_session_count().await == 0 {
+                                voice_shared().clear_spectrum_display();
+                            }
                         }
                         Some(BackendCommand::Shutdown) => {
                             stop_voice_session(
@@ -802,6 +829,7 @@ fn run_backend(
                             {
                                 warn!("failed to stop playback on shutdown: {err:#}");
                             }
+                            voice_shared().clear_spectrum_display();
                             if let Err(err) = PipewireManager::teardown(&modules).await {
                                 warn!("PipeWire teardown on shutdown failed: {err:#}");
                             }
@@ -848,6 +876,9 @@ fn run_backend(
                     )
                     .await;
                     sync_sfx_mix_for_playback(player.active_session_count().await);
+                    if player.active_session_count().await == 0 {
+                        voice_shared().clear_spectrum_display();
+                    }
                 }
             }
         }

@@ -138,6 +138,14 @@ Item {
                     }
                 }
 
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Spectrum follows Mic Output and Remote Output (post-fader), not Local Monitor.")
+                    font.pointSize: 9
+                    opacity: 0.65
+                    wrapMode: Text.WordWrap
+                }
+
                 Spectrum {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 240

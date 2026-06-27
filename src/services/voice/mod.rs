@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod resample;
 pub mod spectrum;
 pub mod spectrum_bars;
+pub mod spectrum_meter;
 pub mod vad;
 pub mod verifier;
 pub mod voiceprint;
@@ -126,6 +127,16 @@ pub struct VoiceShared {
     verification_warmup_enabled: AtomicBool,
     /// Runtime: warm-up gate active until first confident non-match.
     verify_warmup: AtomicBool,
+    /// Mic Output fader (0..100) for spectrum display scaling.
+    spectrum_mic_percent: AtomicU8,
+    spectrum_mic_muted: AtomicBool,
+    /// Remote Output fader (0..100) for spectrum display scaling.
+    spectrum_output_percent: AtomicU8,
+    spectrum_output_muted: AtomicBool,
+    /// Bumped when spectrum display should reset (stop, source change, etc.).
+    spectrum_generation: AtomicU32,
+    /// Mix thread clears SFX window when this is set.
+    spectrum_reset_requested: AtomicBool,
 }
 
 impl VoiceShared {
@@ -162,6 +173,12 @@ impl VoiceShared {
             gate_release_ms: AtomicU32::new(100),
             verification_warmup_enabled: AtomicBool::new(true),
             verify_warmup: AtomicBool::new(false),
+            spectrum_mic_percent: AtomicU8::new(100),
+            spectrum_mic_muted: AtomicBool::new(false),
+            spectrum_output_percent: AtomicU8::new(100),
+            spectrum_output_muted: AtomicBool::new(false),
+            spectrum_generation: AtomicU32::new(0),
+            spectrum_reset_requested: AtomicBool::new(false),
         }
     }
 
@@ -325,6 +342,23 @@ impl VoiceShared {
         if source == SPECTRUM_SOURCE_MIXED && prev != SPECTRUM_SOURCE_MIXED {
             self.filtered_seq.fetch_add(1, Ordering::Relaxed);
         }
+        if prev != source {
+            self.bump_spectrum_generation();
+        }
+    }
+
+    pub fn spectrum_generation(&self) -> u32 {
+        self.spectrum_generation.load(Ordering::Acquire)
+    }
+
+    /// Invalidate spectrum display state; returns the new generation value.
+    pub fn bump_spectrum_generation(&self) -> u32 {
+        self.spectrum_reset_requested.store(true, Ordering::Release);
+        self.spectrum_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn take_spectrum_reset_requested(&self) -> bool {
+        self.spectrum_reset_requested.swap(false, Ordering::AcqRel)
     }
 
     pub fn spectrum_source(&self) -> u8 {
@@ -373,6 +407,38 @@ impl VoiceShared {
         self.sfx_mix_enabled.load(Ordering::Relaxed)
     }
 
+    /// Publish soundboard fader positions for spectrum display scaling.
+    pub fn set_spectrum_display_volumes(
+        &self,
+        mic_percent: u8,
+        mic_muted: bool,
+        output_percent: u8,
+        output_muted: bool,
+    ) {
+        self.spectrum_mic_percent
+            .store(mic_percent, Ordering::Relaxed);
+        self.spectrum_mic_muted
+            .store(mic_muted, Ordering::Relaxed);
+        self.spectrum_output_percent
+            .store(output_percent, Ordering::Relaxed);
+        self.spectrum_output_muted
+            .store(output_muted, Ordering::Relaxed);
+    }
+
+    /// Linear amplitude gains for mic and remote-output legs (0..1).
+    pub fn spectrum_volume_gains(&self) -> (f32, f32) {
+        use spectrum_bars::linear_volume_gain;
+        let mic = linear_volume_gain(
+            self.spectrum_mic_percent.load(Ordering::Relaxed),
+            self.spectrum_mic_muted.load(Ordering::Relaxed),
+        );
+        let output = linear_volume_gain(
+            self.spectrum_output_percent.load(Ordering::Relaxed),
+            self.spectrum_output_muted.load(Ordering::Relaxed),
+        );
+        (mic, output)
+    }
+
     pub fn attach_sfx_spectrum_producer(&self, producer: Producer<f32>) {
         if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
             *guard = Some(producer);
@@ -382,6 +448,22 @@ impl VoiceShared {
     pub fn detach_sfx_spectrum_producer(&self) {
         if let Ok(mut guard) = self.sfx_spectrum_producer.lock() {
             *guard = None;
+        }
+    }
+
+    /// Drain spectrum queues, push silence, and bump display generation.
+    pub fn clear_spectrum_display(&self) {
+        self.bump_spectrum_generation();
+        let silent = vec![0.0; SPECTRUM_BINS];
+        while self.spectrum_mixed.pop().is_some() {}
+        while self.spectrum_filtered.pop().is_some() {}
+        while self.spectrum.pop().is_some() {}
+        let _ = self.spectrum_mixed.force_push(silent.clone());
+        let _ = self.spectrum_filtered.force_push(silent.clone());
+        let _ = self.spectrum.force_push(silent);
+        self.set_sfx_mix_enabled(false);
+        if let Ok(mut latest) = self.latest_filtered.lock() {
+            latest.fill(0.0);
         }
     }
 
@@ -596,6 +678,37 @@ impl Drop for VoiceSession {
         shared.set_passing(false);
         shared.set_enroll_active(false);
         shared.set_enroll_progress(0.0);
+    }
+}
+
+#[cfg(test)]
+mod spectrum_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn clear_spectrum_bumps_generation_and_drains_queues() {
+        let shared = VoiceShared::new();
+        let hot = vec![0.9; SPECTRUM_BINS];
+        let _ = shared.spectrum.force_push(hot.clone());
+        let _ = shared.spectrum_filtered.force_push(hot.clone());
+        let _ = shared.spectrum_mixed.force_push(hot);
+        shared.set_sfx_mix_enabled(true);
+        let gen0 = shared.spectrum_generation();
+        shared.clear_spectrum_display();
+        assert_eq!(shared.spectrum_generation(), gen0 + 1);
+        assert!(!shared.sfx_mix_enabled());
+        while let Some(frame) = shared.spectrum.pop() {
+            assert!(frame.iter().all(|v| *v == 0.0));
+        }
+        assert!(shared.take_spectrum_reset_requested());
+    }
+
+    #[test]
+    fn spectrum_source_change_bumps_generation() {
+        let shared = VoiceShared::new();
+        let gen0 = shared.spectrum_generation();
+        shared.set_spectrum_source(SPECTRUM_SOURCE_MIXED);
+        assert!(shared.spectrum_generation() > gen0);
     }
 }
 

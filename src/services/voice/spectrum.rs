@@ -78,16 +78,6 @@ impl SpectrumAnalyzer {
                 *slot = level;
             }
         }
-        // Fill empty low bins (sparse at the bottom of the log scale) by
-        // carrying the previous value so the curve stays continuous.
-        let mut last = 0.0;
-        for value in self.magnitudes.iter_mut() {
-            if *value == 0.0 {
-                *value = last;
-            } else {
-                last = *value;
-            }
-        }
         &self.magnitudes
     }
 }
@@ -101,10 +91,37 @@ fn hann_window(len: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Convert a linear FFT magnitude to a normalized 0..1 level on a dB scale.
+/// Analysis dB floor for normalized FFT magnitudes (below visible -60 dB).
+pub const ANALYSIS_DB_MIN: f32 = -72.0;
+/// Analysis dB ceiling; headroom above the +4 dB display top.
+pub const ANALYSIS_DB_MAX: f32 = 12.0;
+
+/// Convert a normalized analysis level (0..1) back to dB.
+pub fn analysis_level_to_db(level: f32) -> f32 {
+    level.clamp(0.0, 1.0) * (ANALYSIS_DB_MAX - ANALYSIS_DB_MIN) + ANALYSIS_DB_MIN
+}
+
+/// Map analysis dB back to a normalized 0..1 level.
+pub fn analysis_db_to_level(db: f32) -> f32 {
+    ((db - ANALYSIS_DB_MIN) / (ANALYSIS_DB_MAX - ANALYSIS_DB_MIN)).clamp(0.0, 1.0)
+}
+
+/// Apply linear amplitude gain in the analysis dB domain (avoids sub-floor cliffs).
+pub fn analysis_level_apply_gain(level: f32, amplitude_gain: f32) -> f32 {
+    if amplitude_gain <= 0.0 {
+        return 0.0;
+    }
+    if (amplitude_gain - 1.0).abs() < f32::EPSILON {
+        return level.clamp(0.0, 1.0);
+    }
+    let db = analysis_level_to_db(level) + 20.0 * amplitude_gain.log10();
+    analysis_db_to_level(db)
+}
+
+/// Convert a linear FFT magnitude to a normalized 0..1 level on the analysis dB scale.
 fn normalize_db(magnitude: f32) -> f32 {
     let db = 20.0 * (magnitude + 1e-9).log10();
-    ((db + 90.0) / 90.0).clamp(0.0, 1.0)
+    ((db - ANALYSIS_DB_MIN) / (ANALYSIS_DB_MAX - ANALYSIS_DB_MIN)).clamp(0.0, 1.0)
 }
 
 /// Map FFT bin `i` (of an `fft_size`-point transform at `sample_rate`) onto one
