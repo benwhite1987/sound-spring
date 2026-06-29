@@ -74,7 +74,7 @@ impl ShortcutsManager {
         defs.push(ShortcutDef {
             id: "stop_all".into(),
             description: "Stop all".into(),
-            trigger: "Ctrl+KP_Decimal".into(),
+            trigger: "KP_Decimal".into(),
         });
         defs.push(ShortcutDef {
             id: "mute_output".into(),

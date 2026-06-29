@@ -76,7 +76,7 @@ Default bindings (configurable in Settings):
 | ------------------- | ------------- |
 | Play slots 1–10     | Numpad 1–9, 0 |
 | Next / previous tab | Numpad + / −  |
-| Stop all            | Escape        |
+| Stop all            | Num .         |
 
 ## PipeWire routing
 
