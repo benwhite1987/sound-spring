@@ -500,7 +500,7 @@ ApplicationWindow {
         }
         MenuItem {
             text: "Remove"
-            enabled: controller.tabUsesCustomList
+            enabled: controller.tabCount > 1
             onTriggered: controller.removeTab(tabContextMenu.tabIndex)
         }
         MenuSeparator {}

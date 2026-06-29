@@ -10,8 +10,9 @@ pub const DB_MIN: f32 = -60.0;
 pub const DB_MAX: f32 = 4.0;
 
 /// Subtracted from analysis dB before mapping to the visible -60..+4 scale.
-/// Tuned so typical speech at 100% post-fader sits mid-scale.
-pub const DISPLAY_INPUT_TRIM_DB: f32 = 14.0;
+/// At analysis ceiling (+12 dBFS) with trim 8 → display +4 dB (top segment).
+/// Typical speech (~-10 dBFS analysis) → ~-18 dB display (mid segments).
+pub const DISPLAY_INPUT_TRIM_DB: f32 = 8.0;
 
 /// UI poll interval (matches VoicePanel.qml timer).
 pub const UI_TICK_MS: f32 = 33.0;
@@ -193,8 +194,8 @@ mod tests {
     fn peak_at_ceiling_reaches_upper_segments() {
         let level = raw_peak_to_display_level(1.0);
         let db = level_to_display_db(level);
-        assert!(db >= -4.0, "peak should reach upper segments, got {db} dB");
-        assert!(lit_segment_count(level) >= 8);
+        assert!(db >= 2.0, "peak should reach red tier, got {db} dB");
+        assert!(lit_segment_count(level) >= 10);
     }
 
     #[test]

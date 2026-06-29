@@ -245,6 +245,13 @@ impl TabsRepository {
             })
     }
 
+    pub fn remove_tab_dir(path: &Path) -> Result<()> {
+        if !path.is_dir() {
+            anyhow::bail!("{} is not a tab directory", path.display());
+        }
+        fs::remove_dir_all(path).with_context(|| format!("remove tab directory {}", path.display()))
+    }
+
     pub fn create_tab_dir(root: &Path, display_name: &str) -> Result<PathBuf> {
         fs::create_dir_all(root).with_context(|| format!("create tabs root {}", root.display()))?;
         let segment = sanitize_tab_segment(display_name);
