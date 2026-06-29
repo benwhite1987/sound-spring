@@ -1,5 +1,7 @@
 # ![Sound Spring](./logo.png)
 
+![Screenshot](./resources/screenshots/sound-spring-screen-combined.png)
+
 A PipeWire-routed soundboard with tab-cycling hotkeys, designed for KDE Plasma on Wayland (CachyOS and similar distros).
 
 Sounds play through a dedicated virtual sink and are mixed with your real microphone into a single **virtual microphone** that Discord, Zoom, and OBS can capture.
