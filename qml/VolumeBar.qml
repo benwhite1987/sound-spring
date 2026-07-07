@@ -9,6 +9,10 @@ ToolBar {
     required property SoundboardController controller
     property var theme
 
+    function uiIcon(name) {
+        return "qrc:/icons/ui/" + name + ".png"
+    }
+
     readonly property bool compactText: width < 720
     readonly property int layoutMinimumWidth:
         padding * 2
@@ -52,9 +56,11 @@ ToolBar {
                 palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
                 icon.width: 20
                 icon.height: 20
-                icon.name: {
+                icon.source: {
                     volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted ? "audio-volume-muted" : "audio-volume-high"
+                    return volumeBar.controller.outputMuted
+                           ? volumeBar.uiIcon("audio-volume-muted")
+                           : volumeBar.uiIcon("audio-volume-high")
                 }
                 text: {
                     volumeBar.controller.uiVersion
@@ -140,9 +146,11 @@ ToolBar {
                 palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
                 icon.width: 20
                 icon.height: 20
-                icon.name: {
+                icon.source: {
                     volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted ? "audio-volume-muted" : "audio-headphones"
+                    return volumeBar.controller.monitorMuted
+                           ? volumeBar.uiIcon("audio-volume-muted")
+                           : volumeBar.uiIcon("audio-headphones")
                 }
                 text: {
                     volumeBar.controller.uiVersion
@@ -228,9 +236,11 @@ ToolBar {
                 palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
                 icon.width: 20
                 icon.height: 20
-                icon.name: {
+                icon.source: {
                     volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted ? "audio-volume-muted" : "audio-input-microphone"
+                    return volumeBar.controller.micMuted
+                           ? volumeBar.uiIcon("audio-volume-muted")
+                           : volumeBar.uiIcon("audio-input-microphone")
                 }
                 text: {
                     volumeBar.controller.uiVersion

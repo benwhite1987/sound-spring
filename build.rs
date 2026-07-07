@@ -14,31 +14,30 @@ fn main() {
     println!("cargo:rerun-if-changed={ECAPA_MODEL_PATH}");
     println!("cargo:rerun-if-env-changed=SOUND_SPRING_SKIP_MODEL_DOWNLOAD");
 
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let icons_cpp = compile_icons_qrc(&manifest_dir);
     println!("cargo:rerun-if-changed=resources/icons/icons.qrc");
     println!("cargo:rerun-if-changed=resources/icons/source.png");
     println!("cargo:rerun-if-changed=resources/icons/hicolor");
+    println!("cargo:rerun-if-changed=resources/icons/ui");
 
     CxxQtBuilder::new()
+        .qrc("resources/icons/icons.qrc")
         .include_prefix("src/cpp")
         .qobject_header(QObjectHeaderOpts::from("src/cpp/key_forwarder.h"))
         .qobject_header(QObjectHeaderOpts::from("src/cpp/system_tray.h"))
-        .cc_builder(move |builder| {
+        .cc_builder(|builder| {
             builder
                 .include("src/cpp")
                 .file("src/cpp/key_forwarder.cpp")
                 .file("src/cpp/app_identity.cpp")
                 .file("src/cpp/system_tray.cpp")
-                .file("src/cpp/app_bootstrap.cpp")
-                .file(&icons_cpp);
+                .file("src/cpp/app_bootstrap.cpp");
         })
         .qt_module("Network")
         .qt_module("Quick")
         .qt_module("QuickControls2")
         .qt_module("QuickDialogs2")
         .qt_module("Widgets")
+        .qt_module("Svg")
         .qml_module(QmlModule {
             uri: "io.github.benwhite1987.soundspring",
             rust_files: &[
@@ -63,72 +62,6 @@ fn main() {
             ..Default::default()
         })
         .build();
-}
-
-fn compile_icons_qrc(manifest_dir: &Path) -> PathBuf {
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    let qrc = manifest_dir.join("resources/icons/icons.qrc");
-    let cpp = out_dir.join("qrc_icons.cpp");
-    let rcc = find_qt_rcc();
-
-    let status = std::process::Command::new(&rcc)
-        .arg("-o")
-        .arg(&cpp)
-        .arg(&qrc)
-        .status()
-        .unwrap_or_else(|err| panic!("failed to run Qt rcc ({}): {err}", rcc.display()));
-
-    if !status.success() {
-        panic!("Qt rcc failed compiling {}", qrc.display());
-    }
-
-    cpp
-}
-
-fn find_qt_rcc() -> PathBuf {
-    let mut qmake_candidates = Vec::new();
-    if let Ok(qmake) = std::env::var("QMAKE") {
-        qmake_candidates.push(qmake);
-    }
-    qmake_candidates.push("qmake6".into());
-
-    for qmake in qmake_candidates {
-        for var in [
-            "QT_HOST_LIBEXECS",
-            "QT_INSTALL_LIBEXECS",
-            "QT_INSTALL_BINS",
-            "QT_HOST_BINS",
-        ] {
-            if let Ok(output) = std::process::Command::new(&qmake)
-                .args(["-query", var])
-                .output()
-            {
-                if output.status.success() {
-                    let base = String::from_utf8_lossy(&output.stdout);
-                    let base = base.trim();
-                    if !base.is_empty() {
-                        let rcc = PathBuf::from(base).join("rcc");
-                        if rcc.is_file() {
-                            return rcc;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for candidate in [
-        "/usr/lib/qt6/libexec/rcc",
-        "/usr/lib/qt6/rcc",
-        "/usr/lib/qt6/bin/rcc",
-    ] {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
-            return path;
-        }
-    }
-
-    panic!("could not find Qt 6 rcc; install qt6-tools or set QMAKE to your Qt 6 qmake");
 }
 
 fn ensure_ecapa_model() {

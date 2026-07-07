@@ -3,5 +3,9 @@
     <qresource prefix="/icons">
         <file>hicolor/48x48/apps/io.github.benwhite1987.SoundSpring.png</file>
         <file>hicolor/256x256/apps/io.github.benwhite1987.SoundSpring.png</file>
+        <file>ui/audio-volume-high.png</file>
+        <file>ui/audio-volume-muted.png</file>
+        <file>ui/audio-headphones.png</file>
+        <file>ui/audio-input-microphone.png</file>
     </qresource>
 </RCC>
