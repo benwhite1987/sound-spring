@@ -1,0 +1,48 @@
+# nfpm packaging for .deb and .rpm. Run after:
+#   DESTDIR=staging PREFIX=/usr make install
+# Set VERSION (e.g. 0.1.0) in the environment before nfpm package.
+
+name: sound-spring
+arch: amd64
+platform: linux
+version: "${VERSION}"
+release: "1"
+section: sound
+priority: optional
+maintainer: "Ben White <benwhite1987@users.noreply.github.com>"
+description: |
+  Sound Spring — PipeWire soundboard with tab hotkeys and optional live
+  microphone enhancement (VAD, noise suppression, speaker verification).
+vendor: Ben White
+homepage: https://github.com/benwhite1987/sound-spring
+license: MIT
+
+contents:
+  - src: staging/usr/bin/sound-spring
+    dst: /usr/bin/sound-spring
+  - src: staging/usr/share/applications/sound-spring.desktop
+    dst: /usr/share/applications/sound-spring.desktop
+  - src: staging/usr/share/icons
+    dst: /usr/share/icons
+    type: tree
+
+overrides:
+  deb:
+    depends:
+      - pipewire
+      - pulseaudio-utils
+      - qt6-base
+      - qt6-declarative
+      - qt6-wayland
+      - ffmpeg
+    recommends:
+      - qml6-module-qtquick
+      - qml6-module-qtquick-controls
+  rpm:
+    depends:
+      - pipewire
+      - pulseaudio-utils
+      - qt6-qtbase
+      - qt6-qtdeclarative
+      - qt6-qtwayland
+      - ffmpeg

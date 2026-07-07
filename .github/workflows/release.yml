@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  QMAKE: /usr/bin/qmake6
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          eval "$(./scripts/release-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "deb_version=$DEB_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Cache ECAPA model
+        uses: actions/cache@v4
+        with:
+          path: assets/models/ecapa-speaker-v1.onnx
+          key: ecapa-v1-${{ hashFiles('build.rs') }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-tools-dev \
+            libpulse-dev pkg-config curl file rpm libfuse2
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL -o /tmp/nfpm.tgz \
+            https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
+          sudo tar -C /usr/local/bin -xzf /tmp/nfpm.tgz nfpm
+          nfpm --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: QMAKE="$QMAKE" make build
+
+      - name: Log dynamic library dependencies
+        run: ldd target/release/sound-spring || true
+
+      - name: Stage install tree
+        run: |
+          rm -rf staging
+          DESTDIR=staging PREFIX=/usr make install QMAKE="$QMAKE"
+
+      - name: Build .deb and .rpm
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          nfpm package -f packaging/nfpm/nfpm.yaml -p deb --target dist
+          nfpm package -f packaging/nfpm/nfpm.yaml -p rpm --target dist
+          ls -la dist/
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          chmod +x packaging/appimage/build-appimage.sh
+          packaging/appimage/build-appimage.sh
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.deb *.rpm *.AppImage > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/SHA256SUMS

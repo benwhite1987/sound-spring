@@ -14,6 +14,9 @@ GEMINI.md
 
 # Build artifacts
 dist/
+staging/
+AppDir/
+.cache/
 build/
 out/
 target/
