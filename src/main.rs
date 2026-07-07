@@ -437,6 +437,13 @@ async fn reconcile_voice(
     panel_visible: bool,
     event_tx: &std::sync::mpsc::Sender<BackendEvent>,
 ) {
+    if config.audio.mic_source.is_empty() {
+        if session.is_some() {
+            stop_voice_session(config, session, current_routing, event_tx).await;
+        }
+        return;
+    }
+
     let want_verify =
         config.voice.verification_enabled && config::voiceprint_path(config).is_file();
     let want_routing = want_verify || config.voice.suppression_enabled;

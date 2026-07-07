@@ -33,6 +33,9 @@ pub struct AudioSink {
 
 pub struct PipewireManager;
 
+const LOOPBACK_STREAM_PROPS: &str =
+    "node.passive=true,node.dont-fallback=true,node.autoconnect=false";
+
 impl PipewireManager {
     pub async fn available_sources() -> Result<Vec<MicSource>> {
         let output = Command::new("pactl")
@@ -111,6 +114,9 @@ impl PipewireManager {
         if Self::sinks_ready().await {
             let ids = Self::find_module_ids().await?;
             if !ids.is_empty() {
+                if mic_source.is_empty() {
+                    Self::remove_virtmic_mic_loopbacks().await?;
+                }
                 info!(
                     "reusing {} existing soundboard PipeWire module(s)",
                     ids.len()
@@ -152,6 +158,8 @@ impl PipewireManager {
                     .await
                     .with_context(|| format!("loop mic {mic_source}"))?,
             );
+        } else {
+            Self::remove_virtmic_mic_loopbacks().await?;
         }
 
         ids.push(
@@ -190,6 +198,16 @@ impl PipewireManager {
         Ok(())
     }
 
+    /// Remove any `module-loopback` feeding a real mic into the mix bus. The
+    /// SFX monitor loop is kept; only non-`soundboard_sfx.monitor` sources are
+    /// unloaded.
+    pub async fn remove_virtmic_mic_loopbacks() -> Result<()> {
+        for id in Self::find_virtmic_mic_loopback_ids().await? {
+            Self::unload_module(id).await;
+        }
+        Ok(())
+    }
+
     /// Add or remove the raw `mic_source -> virtmic` loopback. The voice gate
     /// removes it (so the gated, processed feed is the only mic path into the
     /// virtmic) and restores it when gating stops, returning Phase 1 behavior.
@@ -216,6 +234,29 @@ impl PipewireManager {
             info!("removed raw mic loopback for gated routing");
         }
         Ok(())
+    }
+
+    async fn find_virtmic_mic_loopback_ids() -> Result<Vec<u32>> {
+        let sfx_monitor = format!("{SFX_SINK}.monitor");
+        let lines = Self::list_short("modules").await?;
+        let mut ids = Vec::new();
+        for line in lines {
+            let mut parts = line.split_whitespace();
+            let Some(id_str) = parts.next() else {
+                continue;
+            };
+            let Ok(id) = id_str.parse::<u32>() else {
+                continue;
+            };
+            let rest = parts.collect::<Vec<_>>().join(" ");
+            if rest.contains("module-loopback")
+                && rest.contains(&format!("sink={VIRTMIC_SINK}"))
+                && !rest.contains(&format!("source={sfx_monitor}"))
+            {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
     }
 
     async fn find_mic_loopback_ids(mic_source: &str) -> Result<Vec<u32>> {
@@ -399,6 +440,8 @@ impl PipewireManager {
                 &format!("source={source}"),
                 &format!("sink={sink}"),
                 &format!("latency_msec={latency_ms}"),
+                &format!("sink_input_properties={LOOPBACK_STREAM_PROPS}"),
+                &format!("source_output_properties={LOOPBACK_STREAM_PROPS}"),
             ])
             .output()
             .await?;
@@ -517,6 +560,7 @@ fn is_user_mic_source(name: &str) -> bool {
         && !name.ends_with(".monitor")
         && !name.starts_with("soundboard_")
         && !name.starts_with("sound_spring_")
+        && !name.contains("loopback")
 }
 
 fn parse_sink_list(text: &str) -> Vec<AudioSink> {
@@ -584,6 +628,21 @@ fn module_matches_soundboard(rest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_sources_skips_loopback_nodes() {
+        let text = "\
+Source #0
+\tName: input.loopback-11850-13
+\tDescription: loopback-11850-13
+Source #1
+\tName: alsa_input.usb_mic
+\tDescription: USB Microphone
+";
+        let sources = parse_source_list(text);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, "alsa_input.usb_mic");
+    }
 
     #[test]
     fn parse_sources_skips_monitors_and_virtual() {

@@ -45,6 +45,11 @@ fi
 export QMAKE
 export LINUXDEPLOY_PLUGIN_QT="$PLUGIN_QT"
 
+# QML imports and native Wayland are not inferred reliably from the binary alone.
+export QML_SOURCES_PATHS="$ROOT/qml"
+export EXTRA_QT_MODULES="QtQuick;QtQuick.Controls;QtQuick.Dialogs;QtQuick.Layouts;waylandcompositor"
+export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
+
 ICON="$(find "$APPDIR/usr/share/icons" -name 'io.github.benwhite1987.SoundSpring.png' | head -1)"
 if [[ -z "$ICON" ]]; then
   echo "application icon not found under $APPDIR/usr/share/icons" >&2
@@ -62,6 +67,16 @@ echo "== linuxdeploy (binary, desktop, icon) =="
 echo "== linuxdeploy-plugin-qt =="
 # KDE kimageformats plugins (Arch, etc.) often pull optional deps we do not need.
 "$PLUGIN_QT" --appdir "$APPDIR" --exclude-library 'kimg_*'
+
+for required in \
+  "$APPDIR/usr/plugins/platforms/libqwayland.so" \
+  "$APPDIR/usr/qml/QtQuick/libqtquick2plugin.so" \
+  "$APPDIR/usr/qml/QtQuick/Controls/libqtquickcontrols2plugin.so"; do
+  if [[ ! -f "$required" ]]; then
+    echo "AppImage bundle missing required Qt file: $required" >&2
+    exit 1
+  fi
+done
 
 # appimagetool rejects non-X-prefixed extension keys (DesktopNames is KDE-specific).
 DESKTOP_SRC="$APPDIR/usr/share/applications/sound-spring.desktop"

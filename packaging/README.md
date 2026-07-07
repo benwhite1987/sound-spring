@@ -44,7 +44,9 @@ chmod +x sound-spring-*-x86_64.AppImage
 ./sound-spring-*-x86_64.AppImage
 ```
 
-Requires PipeWire, `paplay`, and `ffmpeg` on the host. For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
+Requires PipeWire, `paplay`, and `ffmpeg` on the host. The AppImage bundles Qt (including QML modules and native Wayland support). For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
+
+If an older AppImage fails on Wayland with missing `wayland` or QML plugins, rebuild with the current `packaging/appimage/build-appimage.sh` or download a newer GitHub Release.
 
 ---
 
