@@ -10,7 +10,13 @@ ToolBar {
     property var theme
 
     function uiIcon(name) {
-        return "qrc:/icons/ui/" + name + ".png"
+        return "qrc:/icons/ui/" + name + ".svg"
+    }
+
+    function uiIconColor(muted) {
+        if (muted || !theme)
+            return undefined
+        return theme.textPrimary
     }
 
     readonly property bool compactText: width < 720
@@ -61,6 +67,10 @@ ToolBar {
                     return volumeBar.controller.outputMuted
                            ? volumeBar.uiIcon("audio-volume-muted")
                            : volumeBar.uiIcon("audio-volume-high")
+                }
+                icon.color: {
+                    volumeBar.controller.uiVersion
+                    return volumeBar.uiIconColor(volumeBar.controller.outputMuted)
                 }
                 text: {
                     volumeBar.controller.uiVersion
@@ -152,6 +162,10 @@ ToolBar {
                            ? volumeBar.uiIcon("audio-volume-muted")
                            : volumeBar.uiIcon("audio-headphones")
                 }
+                icon.color: {
+                    volumeBar.controller.uiVersion
+                    return volumeBar.uiIconColor(volumeBar.controller.monitorMuted)
+                }
                 text: {
                     volumeBar.controller.uiVersion
                     if (volumeBar.compactText || !volumeBar.controller.monitorMuted)
@@ -241,6 +255,10 @@ ToolBar {
                     return volumeBar.controller.micMuted
                            ? volumeBar.uiIcon("audio-volume-muted")
                            : volumeBar.uiIcon("audio-input-microphone")
+                }
+                icon.color: {
+                    volumeBar.controller.uiVersion
+                    return volumeBar.uiIconColor(volumeBar.controller.micMuted)
                 }
                 text: {
                     volumeBar.controller.uiVersion
