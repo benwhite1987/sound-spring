@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use super::{VoiceShared, CAPTURE_CHANNELS, CAPTURE_RATE, RING_CAPACITY};
+use crate::services::host_audio::host_audio_command;
 
 /// A live capture session. Dropping it kills the `pw-cat` child and aborts the
 /// reader task.
@@ -27,7 +28,7 @@ impl Capture {
         producer: Producer<f32>,
         status: Option<Arc<VoiceShared>>,
     ) -> Result<Self> {
-        let mut command = Command::new("pw-cat");
+        let mut command = host_audio_command("pw-cat");
         command
             .arg("--record")
             .arg("--raw")

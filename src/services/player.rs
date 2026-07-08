@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::config::SFX_SINK;
+use crate::services::host_audio::host_audio_command;
 use crate::services::voice::voice_shared;
 
 /// PipeWire/Pulse sink that follows the system default output device.
@@ -390,7 +391,7 @@ impl Player {
 
     async fn set_sink_input_volume_by_index(index: &str, volume: u32) -> Result<()> {
         let percent = ((volume as f64 / 65535.0) * 100.0).round() as u32;
-        let status = Command::new("pactl")
+        let status = host_audio_command("pactl")
             .args(["set-sink-input-volume", index, &format!("{percent}%")])
             .status()
             .await
@@ -402,7 +403,7 @@ impl Player {
     }
 
     async fn list_sink_input_indices() -> Result<HashMap<String, String>> {
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args(["list", "sink-inputs"])
             .output()
             .await
@@ -468,7 +469,7 @@ impl Player {
             anyhow::bail!("audio file not found: {}", file.display());
         }
 
-        Command::new("paplay")
+        host_audio_command("paplay")
             .args([
                 "--device",
                 sink,
@@ -490,7 +491,7 @@ impl Player {
             anyhow::bail!("audio file not found: {}", file.display());
         }
 
-        let mut paplay = Command::new("paplay")
+        let mut paplay = host_audio_command("paplay")
             .args([
                 "--device",
                 sink,

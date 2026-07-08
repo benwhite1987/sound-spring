@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::mpsc::Sender as TokioSender;
 use tokio::time::{sleep, sleep_until, Duration, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+use crate::services::host_audio::host_audio_command;
 
 pub const VIRTMIC_SINK: &str = "soundboard_virtmic";
 pub const SFX_SINK: &str = "soundboard_sfx";
@@ -36,9 +38,105 @@ pub struct PipewireManager;
 const LOOPBACK_STREAM_PROPS: &str =
     "node.passive=true,node.dont-fallback=true,node.autoconnect=false";
 
+#[derive(Debug, Deserialize)]
+struct PactlJsonEntry {
+    name: String,
+    description: String,
+}
+
 impl PipewireManager {
     pub async fn available_sources() -> Result<Vec<MicSource>> {
-        let output = Command::new("pactl")
+        let sources = match Self::fetch_sources_json().await {
+            Ok(sources) if !sources.is_empty() => {
+                debug!("listed mic sources via pactl JSON");
+                sources
+            }
+            Ok(_) => {
+                debug!("pactl JSON returned no user mic sources; trying list short");
+                Self::fetch_sources_short().await?
+            }
+            Err(err) => {
+                debug!("pactl JSON list sources failed: {err:#}; trying list short");
+                Self::fetch_sources_short().await?
+            }
+        };
+
+        if sources.is_empty() {
+            if let Ok(verbose) = Self::fetch_sources_verbose().await {
+                if !verbose.is_empty() {
+                    info!("listed {} mic source(s) via pactl verbose fallback", verbose.len());
+                    return Ok(verbose);
+                }
+            }
+            warn!("pactl returned no user microphone sources");
+        } else {
+            info!("listed {} mic source(s)", sources.len());
+        }
+        Ok(sources)
+    }
+
+    pub async fn available_sinks() -> Result<Vec<AudioSink>> {
+        let sinks = match Self::fetch_sinks_json().await {
+            Ok(sinks) if !sinks.is_empty() => {
+                debug!("listed output sinks via pactl JSON");
+                sinks
+            }
+            Ok(_) => {
+                debug!("pactl JSON returned no user sinks; trying list short");
+                Self::fetch_sinks_short().await?
+            }
+            Err(err) => {
+                debug!("pactl JSON list sinks failed: {err:#}; trying list short");
+                Self::fetch_sinks_short().await?
+            }
+        };
+
+        if sinks.is_empty() {
+            if let Ok(verbose) = Self::fetch_sinks_verbose().await {
+                if !verbose.is_empty() {
+                    info!("listed {} output sink(s) via pactl verbose fallback", verbose.len());
+                    return Ok(verbose);
+                }
+            }
+            warn!("pactl returned no user output sinks");
+        } else {
+            info!("listed {} output sink(s)", sinks.len());
+        }
+        Ok(sinks)
+    }
+
+    async fn fetch_sources_json() -> Result<Vec<MicSource>> {
+        let output = host_audio_command("pactl")
+            .args(["-f", "json", "list", "sources"])
+            .output()
+            .await
+            .context("pactl -f json list sources")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl -f json list sources failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        parse_source_json(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    async fn fetch_sources_short() -> Result<Vec<MicSource>> {
+        let output = host_audio_command("pactl")
+            .args(["list", "short", "sources"])
+            .output()
+            .await
+            .context("pactl list short sources")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl list short sources failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(parse_source_short(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    async fn fetch_sources_verbose() -> Result<Vec<MicSource>> {
+        let output = host_audio_command("pactl")
             .args(["list", "sources"])
             .output()
             .await
@@ -52,8 +150,38 @@ impl PipewireManager {
         Ok(parse_source_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
-    pub async fn available_sinks() -> Result<Vec<AudioSink>> {
-        let output = Command::new("pactl")
+    async fn fetch_sinks_json() -> Result<Vec<AudioSink>> {
+        let output = host_audio_command("pactl")
+            .args(["-f", "json", "list", "sinks"])
+            .output()
+            .await
+            .context("pactl -f json list sinks")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl -f json list sinks failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        parse_sink_json(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    async fn fetch_sinks_short() -> Result<Vec<AudioSink>> {
+        let output = host_audio_command("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .await
+            .context("pactl list short sinks")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pactl list short sinks failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(parse_sink_short(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    async fn fetch_sinks_verbose() -> Result<Vec<AudioSink>> {
+        let output = host_audio_command("pactl")
             .args(["list", "sinks"])
             .output()
             .await
@@ -81,7 +209,7 @@ impl PipewireManager {
     async fn run_source_subscribe(notify_tx: &TokioSender<()>) -> Result<()> {
         // Subscribe to all PipeWire/Pulse events (not just sources) so device
         // hotplug for both microphones and output sinks triggers a refresh.
-        let mut child = Command::new("pactl")
+        let mut child = host_audio_command("pactl")
             .args(["subscribe"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -283,7 +411,7 @@ impl PipewireManager {
 
     pub async fn set_sink_volume(sink: &str, percent: u8, muted: bool) -> Result<()> {
         let mute_arg = if muted { "1" } else { "0" };
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args(["set-sink-mute", sink, mute_arg])
             .output()
             .await
@@ -296,7 +424,7 @@ impl PipewireManager {
         }
         if !muted {
             let volume = (65535 * percent as u32 / 100).to_string();
-            let output = Command::new("pactl")
+            let output = host_audio_command("pactl")
                 .args(["set-sink-volume", sink, &volume])
                 .output()
                 .await
@@ -316,7 +444,7 @@ impl PipewireManager {
             return Ok(());
         }
         let mute_arg = if muted { "1" } else { "0" };
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args(["set-source-mute", source, mute_arg])
             .output()
             .await
@@ -335,7 +463,7 @@ impl PipewireManager {
             return Ok(());
         }
         let mute_arg = if muted { "1" } else { "0" };
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args(["set-source-mute", source, mute_arg])
             .output()
             .await
@@ -348,7 +476,7 @@ impl PipewireManager {
         }
         if !muted {
             let volume = (65535 * percent as u32 / 100).to_string();
-            let output = Command::new("pactl")
+            let output = host_audio_command("pactl")
                 .args(["set-source-volume", source, &volume])
                 .output()
                 .await
@@ -364,7 +492,7 @@ impl PipewireManager {
     }
 
     async fn unload_module(id: u32) {
-        let _ = Command::new("pactl")
+        let _ = host_audio_command("pactl")
             .args(["unload-module", &id.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -420,7 +548,7 @@ impl PipewireManager {
     }
 
     async fn load_null_sink(name: &str, description: &str) -> Result<u32> {
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args([
                 "load-module",
                 "module-null-sink",
@@ -433,7 +561,7 @@ impl PipewireManager {
     }
 
     async fn load_loopback(source: &str, sink: &str, latency_ms: u32) -> Result<u32> {
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args([
                 "load-module",
                 "module-loopback",
@@ -453,7 +581,7 @@ impl PipewireManager {
         source_name: &str,
         description: &str,
     ) -> Result<u32> {
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args([
                 "load-module",
                 "module-remap-source",
@@ -480,7 +608,7 @@ impl PipewireManager {
     }
 
     async fn list_short(kind: &str) -> Result<Vec<String>> {
-        let output = Command::new("pactl")
+        let output = host_audio_command("pactl")
             .args(["list", "short", kind])
             .output()
             .await?;
@@ -512,6 +640,70 @@ impl PipewireManager {
             Err(anyhow!("source not found: {name}"))
         }
     }
+}
+
+fn parse_source_json(text: &str) -> Result<Vec<MicSource>> {
+    let entries: Vec<PactlJsonEntry> = serde_json::from_str(text).context("parse pactl JSON sources")?;
+    let mut sources = entries
+        .into_iter()
+        .filter(|entry| is_user_mic_source(&entry.name))
+        .map(|entry| MicSource {
+            name: entry.name,
+            description: entry.description,
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|a, b| a.description.cmp(&b.description));
+    Ok(sources)
+}
+
+fn parse_sink_json(text: &str) -> Result<Vec<AudioSink>> {
+    let entries: Vec<PactlJsonEntry> = serde_json::from_str(text).context("parse pactl JSON sinks")?;
+    let mut sinks = entries
+        .into_iter()
+        .filter(|entry| is_user_sink(&entry.name))
+        .map(|entry| AudioSink {
+            name: entry.name,
+            description: entry.description,
+        })
+        .collect::<Vec<_>>();
+    sinks.sort_by(|a, b| a.description.cmp(&b.description));
+    Ok(sinks)
+}
+
+fn parse_source_short(text: &str) -> Vec<MicSource> {
+    let mut sources = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.nth(1) else {
+            continue;
+        };
+        if is_user_mic_source(name) {
+            sources.push(MicSource {
+                name: name.to_string(),
+                description: name.to_string(),
+            });
+        }
+    }
+    sources.sort_by(|a, b| a.description.cmp(&b.description));
+    sources
+}
+
+fn parse_sink_short(text: &str) -> Vec<AudioSink> {
+    let mut sinks = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.nth(1) else {
+            continue;
+        };
+        if is_user_sink(name) {
+            sinks.push(AudioSink {
+                name: name.to_string(),
+                description: name.to_string(),
+            });
+        }
+    }
+    sinks.sort_by(|a, b| a.description.cmp(&b.description));
+    sinks
 }
 
 fn parse_source_list(text: &str) -> Vec<MicSource> {
@@ -661,6 +853,53 @@ Source #2
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name, "alsa_input.usb_mic");
         assert_eq!(sources[0].description, "USB Microphone");
+    }
+
+    #[test]
+    fn parse_source_short_skips_virtual_and_monitor_nodes() {
+        let text = "\
+55\talsa_output.pci-0000_80_1f.3.analog-stereo.monitor\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED
+56\talsa_input.pci-0000_80_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED
+3939\tsound_spring_virtual_mic\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE
+";
+        let sources = parse_source_short(text);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, "alsa_input.pci-0000_80_1f.3.analog-stereo");
+    }
+
+    #[test]
+    fn parse_sink_short_skips_soundboard_sinks() {
+        let text = "\
+55\talsa_output.pci-0000_80_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED
+3914\tsoundboard_sfx\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE
+";
+        let sinks = parse_sink_short(text);
+        assert_eq!(sinks.len(), 1);
+        assert_eq!(sinks[0].name, "alsa_output.pci-0000_80_1f.3.analog-stereo");
+    }
+
+    #[test]
+    fn parse_source_json_filters_virtual_nodes() {
+        let text = r#"[
+            {"name":"alsa_input.pci-0000_80_1f.3.analog-stereo","description":"Built-in Mic"},
+            {"name":"sound_spring_virtual_mic","description":"Sound-Spring-Virtual-Microphone"},
+            {"name":"alsa_output.pci.monitor","description":"Monitor"}
+        ]"#;
+        let sources = parse_source_json(text).expect("json sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, "alsa_input.pci-0000_80_1f.3.analog-stereo");
+        assert_eq!(sources[0].description, "Built-in Mic");
+    }
+
+    #[test]
+    fn parse_sink_json_filters_soundboard_sinks() {
+        let text = r#"[
+            {"name":"alsa_output.pci-0000_80_1f.3.analog-stereo","description":"Speakers"},
+            {"name":"soundboard_sfx","description":"Sound-Spring-Effects"}
+        ]"#;
+        let sinks = parse_sink_json(text).expect("json sinks");
+        assert_eq!(sinks.len(), 1);
+        assert_eq!(sinks[0].name, "alsa_output.pci-0000_80_1f.3.analog-stereo");
     }
 
     #[test]

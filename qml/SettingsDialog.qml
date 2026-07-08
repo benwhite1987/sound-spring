@@ -220,6 +220,14 @@ Window {
                             }
                         }
 
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: controller.micSourceCount === 0
+                            color: appTheme.textMuted
+                            text: "No PipeWire microphone sources found. Check that PipeWire is running, then click Refresh."
+                        }
+
                         Label { text: "Monitor output device" }
                         ComboBox {
                             id: monitorCombo
@@ -278,6 +286,14 @@ Window {
                                     monitorCombo.syncSelection()
                                 }
                             }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: controller.audioSinkCount === 0
+                            color: appTheme.textMuted
+                            text: "No physical output devices listed. Playback still uses the system default sink. Click Refresh after plugging in hardware."
                         }
 
                         Label { text: "Latency (ms)" }

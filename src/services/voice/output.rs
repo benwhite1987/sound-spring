@@ -14,6 +14,7 @@ use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 
 use super::{CAPTURE_CHANNELS, CAPTURE_RATE};
+use crate::services::host_audio::host_audio_command;
 
 /// A live playback session. Dropping it aborts the writer task (and its `pw-cat`
 /// child).
@@ -24,7 +25,7 @@ pub struct Output {
 impl Output {
     /// Start a `pw-cat --playback` writer targeting `sink`, fed by `consumer`.
     pub fn start(sink: &str, consumer: Consumer<f32>) -> Result<Self> {
-        let mut command = Command::new("pw-cat");
+        let mut command = host_audio_command("pw-cat");
         command
             .arg("--playback")
             .arg("--raw")
