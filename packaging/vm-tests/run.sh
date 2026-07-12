@@ -57,16 +57,16 @@ guest_install_and_smoke() {
          sudo add-apt-repository -y universe >/dev/null 2>&1 || true; \
          sudo apt-get update -qq"
       vm_ssh "$port" "$user" "$key" "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y '$remote_pkg'"
-      # Ensure host audio tools exist even if Recommends were skipped.
+      # Ensure host audio tools + QML WorkerScript (used by QtQuick.Controls).
       vm_ssh "$port" "$user" "$key" \
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pipewire pipewire-pulse pipewire-bin pulseaudio-utils ffmpeg wireplumber >/dev/null"
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pipewire pipewire-pulse pipewire-bin pulseaudio-utils ffmpeg wireplumber qml6-module-qtqml-workerscript >/dev/null"
       remote_bin=/usr/bin/sound-spring
       ;;
     rpm)
       vm_log "[$GUEST_NAME] dnf install $(basename "$artifact")"
       vm_ssh "$port" "$user" "$key" "sudo dnf install -y '$remote_pkg'"
       vm_ssh "$port" "$user" "$key" \
-        "sudo dnf install -y pipewire pipewire-pulseaudio pipewire-utils pulseaudio-utils ffmpeg wireplumber >/dev/null"
+        "sudo dnf install -y pipewire pipewire-pulseaudio pipewire-utils pulseaudio-utils ffmpeg wireplumber qt6-qtdeclarative >/dev/null"
       remote_bin=/usr/bin/sound-spring
       ;;
     appimage)
@@ -75,7 +75,7 @@ guest_install_and_smoke() {
       # Audio tools still required on the host for AppImage.
       if vm_ssh "$port" "$user" "$key" "command -v apt-get >/dev/null"; then
         vm_ssh "$port" "$user" "$key" \
-          "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pipewire pipewire-pulse pipewire-bin pulseaudio-utils ffmpeg wireplumber >/dev/null"
+          "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pipewire pipewire-pulse pipewire-bin pulseaudio-utils ffmpeg wireplumber qml6-module-qtqml-workerscript >/dev/null"
       else
         vm_ssh "$port" "$user" "$key" \
           "sudo dnf install -y pipewire pipewire-pulseaudio pipewire-utils pulseaudio-utils ffmpeg wireplumber >/dev/null"

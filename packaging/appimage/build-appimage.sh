@@ -48,7 +48,38 @@ export LINUXDEPLOY_PLUGIN_QT="$PLUGIN_QT"
 # QML imports and native Wayland are not inferred reliably from the binary alone.
 export QML_SOURCES_PATHS="$ROOT/qml"
 export EXTRA_QT_MODULES="QtQuick;QtQuick.Controls;QtQuick.Dialogs;QtQuick.Layouts;waylandcompositor"
-export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
+# Qt 6.4+ (Ubuntu 24.04) names the Wayland platform plugins with -egl/-generic suffixes;
+# older trees used a single libqwayland.so. Prefer whichever exists on this host.
+# Always try to ship offscreen for headless smoke tests / CI.
+PLATFORM_PLUGINS=()
+QT_PLUGINS="$("$QMAKE" -query QT_INSTALL_PLUGINS 2>/dev/null || true)"
+find_platform_plugin() {
+  local candidate="$1"
+  if [[ -n "$QT_PLUGINS" && -f "$QT_PLUGINS/platforms/$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  for base in /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib/qt6/plugins; do
+    if [[ -f "$base/platforms/$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+for candidate in libqwayland.so libqwayland-generic.so libqwayland-egl.so libqoffscreen.so; do
+  if plugin=$(find_platform_plugin "$candidate"); then
+    PLATFORM_PLUGINS+=("$plugin")
+  fi
+done
+if [[ ${#PLATFORM_PLUGINS[@]} -eq 0 ]]; then
+  echo "no Wayland/offscreen Qt platform plugins found" >&2
+  exit 1
+fi
+# linuxdeploy-plugin-qt joins EXTRA_PLATFORM_PLUGINS with ';'
+export EXTRA_PLATFORM_PLUGINS
+EXTRA_PLATFORM_PLUGINS="$(IFS=';'; echo "${PLATFORM_PLUGINS[*]}")"
+echo "Extra platform plugins: $EXTRA_PLATFORM_PLUGINS"
 
 ICON="$(find "$APPDIR/usr/share/icons" -name 'io.github.benwhite1987.SoundSpring.png' | head -1)"
 if [[ -z "$ICON" ]]; then
@@ -69,7 +100,6 @@ echo "== linuxdeploy-plugin-qt =="
 "$PLUGIN_QT" --appdir "$APPDIR" --exclude-library 'kimg_*'
 
 for required in \
-  "$APPDIR/usr/plugins/platforms/libqwayland.so" \
   "$APPDIR/usr/qml/QtQuick/libqtquick2plugin.so" \
   "$APPDIR/usr/qml/QtQuick/Controls/libqtquickcontrols2plugin.so"; do
   if [[ ! -f "$required" ]]; then
@@ -77,6 +107,25 @@ for required in \
     exit 1
   fi
 done
+wayland_bundled=0
+offscreen_bundled=0
+for candidate in libqwayland.so libqwayland-generic.so libqwayland-egl.so; do
+  if [[ -f "$APPDIR/usr/plugins/platforms/$candidate" ]]; then
+    wayland_bundled=1
+    break
+  fi
+done
+if [[ -f "$APPDIR/usr/plugins/platforms/libqoffscreen.so" ]]; then
+  offscreen_bundled=1
+fi
+if [[ "$wayland_bundled" -ne 1 ]]; then
+  echo "AppImage bundle missing Wayland platform plugin (libqwayland*.so)" >&2
+  exit 1
+fi
+if [[ "$offscreen_bundled" -ne 1 ]]; then
+  echo "AppImage bundle missing offscreen platform plugin (libqoffscreen.so)" >&2
+  exit 1
+fi
 
 # appimagetool rejects non-X-prefixed extension keys (DesktopNames is KDE-specific).
 DESKTOP_SRC="$APPDIR/usr/share/applications/sound-spring.desktop"
@@ -84,6 +133,20 @@ if [[ -f "$DESKTOP_SRC" ]]; then
   sed -i '/^DesktopNames=/d' "$DESKTOP_SRC"
 fi
 rm -f "$APPDIR/sound-spring.desktop"
+
+# linuxdeploy leaves AppRun as a symlink to the binary. Replace it with a
+# wrapper: Ubuntu Qt 6.4 Wayland-EGL paints a black window on Plasma 6/Mesa.
+# Prefer XWayland (xcb) unless the user already set QT_QPA_PLATFORM.
+rm -f "$APPDIR/AppRun"
+cat >"$APPDIR/AppRun" <<'EOF'
+#!/bin/bash
+HERE="$(dirname "$(readlink -f "$0")")"
+if [[ -z "${QT_QPA_PLATFORM:-}" && "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
+  export QT_QPA_PLATFORM=xcb
+fi
+exec "$HERE/usr/bin/sound-spring" "$@"
+EOF
+chmod +x "$APPDIR/AppRun"
 
 echo "== linuxdeploy (AppImage output) =="
 cd "$ROOT"

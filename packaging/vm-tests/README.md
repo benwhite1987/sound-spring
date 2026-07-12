@@ -21,9 +21,14 @@ Place (or build) these under `dist/`:
 - `sound-spring-*-x86_64.AppImage`
 
 ```bash
+# On Ubuntu 24.04 build hosts:
 make package              # build all three into dist/
-make test-packages        # package + run VM matrix
-make test-packages-quick  # reuse existing dist/
+
+# On CachyOS/Arch (newer glibc than Ubuntu/Fedora guests):
+make package-ubuntu       # Docker ubuntu:24.04 build (matches release.yml)
+
+make test-packages-quick  # run VM matrix against dist/
+# or: make test-packages  # host package + VM matrix (glibc must match guests)
 ```
 
 Or:
@@ -36,10 +41,22 @@ packaging/vm-tests/run.sh
 
 | Guest | Formats | Checks |
 |-------|---------|--------|
-| Ubuntu 24.04 | `.deb`, AppImage | apt/dnf install succeeds; `ldd` clean (native packages); `pactl`/`paplay`/`pw-cat`/`ffmpeg` present; `QT_QPA_PLATFORM=offscreen` launch sees `startup: QML engine loaded` or stays alive ~2s |
-| Fedora 42 | `.rpm`, AppImage | same |
+| Ubuntu 24.04 | `.deb`, AppImage | apt install succeeds; `ldd` clean (native packages); `pactl`/`paplay`/`pw-cat`/`ffmpeg` present; `QT_QPA_PLATFORM=offscreen` launch logs `startup: first frame` |
+| Fedora 42 | `.rpm`, AppImage | same when the guest boots |
 
-AppImages use `APPIMAGE_EXTRACT_AND_RUN=1` (no FUSE required).
+AppImages use `APPIMAGE_EXTRACT_AND_RUN=1` (no FUSE required) and bundle the
+`offscreen` platform plugin for headless smoke tests.
+
+### Known host limitation (Fedora guest)
+
+Fedora Cloud 42 currently page-faults under the extracted Arch QEMU 11 + OVMF
+stack used on CachyOS (`X64 Exception Type - 0E(#PF)` right after GRUB). Ubuntu
+24.04 guests boot fine with the same firmware. Until that hypervisor combo is
+fixed, run Ubuntu-only:
+
+```bash
+VM_GUESTS=ubuntu-24.04 make test-packages-quick
+```
 
 ## Cache and resources
 

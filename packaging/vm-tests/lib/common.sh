@@ -4,7 +4,30 @@
 vm_log() { printf '[vm-tests] %s\n' "$*"; }
 vm_die() { printf '[vm-tests] ERROR: %s\n' "$*" >&2; exit 1; }
 
+vm_activate_local_tools() {
+  # Prefer an extracted Arch-style prefix under .cache/vm-tools/root when
+  # system packages are not installed (no root required on the host).
+  local prefix="${VM_TOOLS_PREFIX:-}"
+  if [[ -z "$prefix" && -x "${ROOT:-}/.cache/vm-tools/root/usr/bin/qemu-system-x86_64" ]]; then
+    prefix="${ROOT}/.cache/vm-tools/root"
+  fi
+  if [[ -z "$prefix" || ! -d "$prefix" ]]; then
+    return 0
+  fi
+  export PATH="${prefix}/usr/bin:${PATH}"
+  if [[ -d "${prefix}/usr/lib" ]]; then
+    export LD_LIBRARY_PATH="${prefix}/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+  # cloud-localds looks for genisoimage; Arch cdrtools ships mkisofs.
+  if [[ ! -x "${prefix}/usr/bin/genisoimage" && -x "${prefix}/usr/bin/mkisofs" ]]; then
+    ln -sfn mkisofs "${prefix}/usr/bin/genisoimage"
+  fi
+  export VM_TOOLS_PREFIX="$prefix"
+  vm_log "using local tools prefix: $prefix"
+}
+
 vm_require_host_tools() {
+  vm_activate_local_tools
   local missing=()
   local cmd
   for cmd in qemu-system-x86_64 qemu-img cloud-localds ssh ssh-keygen curl; do
@@ -17,7 +40,10 @@ vm_require_host_tools() {
 
 vm_find_ovmf_pair() {
   # Prints: CODE_PATH<TAB>VARS_PATH  (matching 4M / non-4M pair)
+  local prefix="${VM_TOOLS_PREFIX:-}"
   local pairs=(
+    "${prefix}/usr/share/edk2/x64/OVMF_CODE.4m.fd|${prefix}/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+    "${prefix}/usr/share/edk2/x64/OVMF_CODE.fd|${prefix}/usr/share/edk2/x64/OVMF_VARS.fd"
     "/usr/share/edk2/x64/OVMF_CODE.4m.fd|/usr/share/edk2/x64/OVMF_VARS.4m.fd"
     "/usr/share/edk2/x64/OVMF_CODE.fd|/usr/share/edk2/x64/OVMF_VARS.fd"
     "/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd|/usr/share/edk2-ovmf/x64/OVMF_VARS.4m.fd"
@@ -30,7 +56,7 @@ vm_find_ovmf_pair() {
   for entry in "${pairs[@]}"; do
     code="${entry%%|*}"
     vars="${entry##*|}"
-    if [[ -f "$code" && -f "$vars" ]]; then
+    if [[ -n "$code" && -n "$vars" && -f "$code" && -f "$vars" ]]; then
       printf '%s\t%s\n' "$code" "$vars"
       return 0
     fi
@@ -106,6 +132,7 @@ local-hostname: ${hostname}
 EOF
 
   cloud-localds "$work/seed.iso" "$work/user-data" "$work/meta-data"
+  [[ -f "$work/seed.iso" ]] || vm_die "cloud-localds failed to create $work/seed.iso (need genisoimage/mkisofs)"
 }
 
 vm_ssh() {
@@ -197,16 +224,27 @@ vm_start_qemu() {
   local accel=() cpu=()
   if [[ -r /dev/kvm ]]; then
     accel=(-accel kvm)
-    cpu=(-cpu host)
+    # Fedora cloud + OVMF has page-faulted with -cpu host on some hosts; max is safer.
+    # la57 (5-level paging) also trips #PF with some OVMF/kernel combos — disable it.
+    if [[ "${VM_CPU_MODEL:-}" == "host" ]]; then
+      cpu=(-cpu host,la57=off)
+    else
+      cpu=(-cpu "${VM_CPU_MODEL:-max}",la57=off)
+    fi
   else
     accel=(-accel tcg)
-    cpu=(-cpu max)
+    cpu=(-cpu max,la57=off)
     vm_log "WARNING: /dev/kvm not available; using TCG (slow)"
+  fi
+
+  local machine="q35"
+  if [[ -n "${VM_MACHINE_OPTS:-}" ]]; then
+    machine="q35,${VM_MACHINE_OPTS}"
   fi
 
   qemu-system-x86_64 \
     -name "sound-spring-vm" \
-    -machine q35 \
+    -machine "$machine" \
     "${accel[@]}" \
     "${cpu[@]}" \
     -m "$mem_mb" \
@@ -217,6 +255,7 @@ vm_start_qemu() {
     -cdrom "$seed" \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${port}-:22" \
     -device virtio-net-pci,netdev=net0 \
+    -vga std \
     -display none \
     -serial "file:${serial_log}" \
     -pidfile "$pidfile" \

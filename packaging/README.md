@@ -53,7 +53,7 @@ chmod +x sound-spring-*-x86_64.AppImage
 ./sound-spring-*-x86_64.AppImage
 ```
 
-Requires PipeWire, `pactl`, `paplay`, `pw-cat`, and `ffmpeg` on the host. The AppImage bundles Qt (including QML modules and native Wayland support). For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
+Requires PipeWire, `pactl`, `paplay`, `pw-cat`, and `ffmpeg` on the host. The AppImage bundles Qt (including QML modules, Wayland plugins, and `offscreen` for headless smoke). On Wayland sessions the AppRun wrapper prefers `xcb` (XWayland) because Ubuntu Qt 6.4 Wayland-EGL often paints a black window on Plasma 6; override with `QT_QPA_PLATFORM=wayland` if you want to force native Wayland. For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
 
 On Arch/CachyOS install host audio tools if missing:
 
@@ -84,6 +84,13 @@ sudo pacman -S qemu-system-x86 qemu-img cloud-utils openssh edk2-ovmf
 make package              # .deb + .rpm + AppImage → dist/
 make test-packages        # package + VM matrix
 make test-packages-quick  # reuse existing dist/
+```
+
+On CachyOS/Arch (glibc newer than Ubuntu 24.04), host-built binaries will fail guest launch with `GLIBC_2.43 not found`. Build packages in Docker instead:
+
+```bash
+make package-ubuntu       # Ubuntu 24.04 container (matches release.yml)
+make test-packages-quick
 ```
 
 ---

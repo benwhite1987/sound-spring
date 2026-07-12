@@ -6,7 +6,7 @@ mod state;
 use anyhow::{Context, Result};
 use config::Config;
 use config::SFX_SINK;
-use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 use qobjects::controller::{
     BackendCommand, BackendEvent, AUDIO_SINKS, BACKEND_EVENT_RX, BACKEND_TX, MIC_SOURCES,
 };
@@ -94,7 +94,13 @@ fn main() -> Result<()> {
 
     let mut engine = QQmlApplicationEngine::new();
 
-    if let Some(engine) = engine.as_mut() {
+    if let Some(mut engine) = engine.as_mut() {
+        // qrc:/qt/qml is a default import path only since Qt 6.5. Ubuntu 24.04
+        // ships 6.4, so without this the module qmldir is not found and C++ types
+        // (SoundboardController, Settings, …) fail to resolve.
+        engine
+            .as_mut()
+            .add_import_path(&QString::from("qrc:/qt/qml"));
         engine.load(&QUrl::from(
             "qrc:/qt/qml/io/github/benwhite1987/soundspring/qml/Main.qml",
         ));

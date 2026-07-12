@@ -104,14 +104,26 @@ if [[ "$CHECK_BINARY" -eq 1 ]]; then
   wait "$APP_PID" 2>/dev/null
   set -e
 
-  if grep -Eq 'startup: QML engine loaded' "$SMOKE_LOG"; then
+  if grep -Eq 'startup: first frame' "$SMOKE_LOG" \
+    && ! grep -Eq 'failed to load component|is not installed|plugin .* not found| is not a type|Type .* unavailable' "$SMOKE_LOG"; then
+    pass "launch: first frame"
+    CHECK_LAUNCH=1
+  elif grep -Eq 'startup: QML engine loaded' "$SMOKE_LOG" \
+    && ! grep -Eq 'failed to load component|is not installed|plugin .* not found| is not a type|Type .* unavailable' "$SMOKE_LOG"; then
     pass "launch: QML engine loaded"
     CHECK_LAUNCH=1
-  elif [[ "$ALIVE" -eq 1 ]]; then
+  elif [[ "$ALIVE" -eq 1 ]] \
+    && ! grep -Eq 'failed to load component|is not installed|plugin .* not found| is not a type|Type .* unavailable|GLIBC_[0-9.]+. not found' "$SMOKE_LOG"; then
     pass "launch: process stayed alive >=2s"
     CHECK_LAUNCH=1
   else
-    fail "launch: early exit without QML engine loaded"
+    fail "launch: early exit without healthy QML startup"
+    if grep -Eq 'GLIBC_[0-9.]+. not found' "$SMOKE_LOG"; then
+      fail "glibc too old for this binary — rebuild with: make package-ubuntu"
+    fi
+    if grep -Eq 'is not installed|failed to load component|plugin .* not found| is not a type|Type .* unavailable' "$SMOKE_LOG"; then
+      fail "QML module missing — check packaging Depends"
+    fi
     echo "----- smoke log -----"
     cat "$SMOKE_LOG" || true
     echo "---------------------"
