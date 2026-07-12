@@ -28,16 +28,29 @@ contents:
 
 overrides:
   deb:
+  # Ubuntu/Debian binary names (qt6-base / qt6-declarative are source-only).
+  # Qt packages live in the universe repo on Ubuntu — enable it before installing.
     depends:
       - pipewire
+      - pipewire-pulse
+      - pipewire-bin
       - pulseaudio-utils
-      - qt6-base
-      - qt6-declarative
-      - qt6-wayland
       - ffmpeg
-    recommends:
+      - libqt6core6t64
+      - libqt6dbus6t64
+      - libqt6gui6t64
+      - libqt6network6t64
+      - libqt6qml6
+      - libqt6widgets6t64
+      - libqt6svg6
+      - qt6-qpa-plugins
+      - qt6-wayland
       - qml6-module-qtquick
       - qml6-module-qtquick-controls
+      - qml6-module-qtquick-dialogs
+      - qml6-module-qtquick-layouts
+    recommends:
+      - wireplumber
   rpm:
     depends:
       - pipewire
