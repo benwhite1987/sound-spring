@@ -110,7 +110,7 @@ See [docs/global-shortcuts.md](docs/global-shortcuts.md) for the full diagnostic
 ## Packaging
 
 - **Distro packages:** `make install DESTDIR=... PREFIX=/usr`
-- **Flatpak:** see [`packaging/flatpak/io.github.benwhite1987.SoundSpring.yml`](packaging/flatpak/io.github.benwhite1987.SoundSpring.yml)
+- **Flatpak (experimental):** see [`packaging/flatpak/io.github.benwhite1987.SoundSpring.yml`](packaging/flatpak/io.github.benwhite1987.SoundSpring.yml). PipeWire host access and portal permissions are incomplete — prefer `.deb` / AppImage until this is finished.
 - **AppImage:** install into an AppDir with the same `make install PREFIX=/usr` pattern
 
 Host dependencies (PipeWire, `paplay`, optional `ffmpeg`) are not bundled in the binary.

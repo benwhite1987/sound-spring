@@ -75,6 +75,14 @@ pub mod qobject {
         fn persist_vad_enabled(self: Pin<&mut VoiceController>, enabled: bool);
 
         #[qinvokable]
+        fn persist_gate_timing(
+            self: Pin<&mut VoiceController>,
+            hangover_ms: i32,
+            release_ms: i32,
+            verification_warmup: bool,
+        );
+
+        #[qinvokable]
         fn toggle_mic_mute(self: Pin<&mut VoiceController>);
 
         #[qinvokable]
@@ -308,7 +316,9 @@ impl qobject::VoiceController {
             _ => &self.rust().shared.spectrum,
         };
         while let Some(frame) = queue.pop() {
-            newest = Some(frame);
+            if let Some(old) = newest.replace(frame) {
+                self.rust().shared.recycle_spectrum_frame(old);
+            }
         }
         if let Some(frame) = newest {
             let (mic_gain, _) = self.rust().shared.spectrum_volume_gains();
@@ -325,7 +335,11 @@ impl qobject::VoiceController {
                 .bar_ballistics
                 .update(&targets);
             self.as_mut().rust_mut().bar_levels = levels;
-            self.as_mut().rust_mut().latest = frame;
+            if self.rust().latest.len() != frame.len() {
+                self.as_mut().rust_mut().latest.resize(frame.len(), 0.0);
+            }
+            self.as_mut().rust_mut().latest.copy_from_slice(&frame);
+            self.rust().shared.recycle_spectrum_frame(frame);
             let next = self.rust().spectrum_version.wrapping_add(1);
             self.as_mut().set_spectrum_version(next);
         } else {
@@ -419,6 +433,26 @@ impl qobject::VoiceController {
         self.rust().shared.set_vad_enabled(enabled);
         self.as_mut().set_vad_enabled(enabled);
         try_send_backend(BackendCommand::SetVoiceVad { enabled });
+    }
+
+    pub fn persist_gate_timing(
+        self: Pin<&mut Self>,
+        hangover_ms: i32,
+        release_ms: i32,
+        verification_warmup: bool,
+    ) {
+        let hangover_ms = hangover_ms.clamp(0, 400) as u32;
+        let release_ms = release_ms.clamp(20, 200) as u32;
+        self.rust().shared.set_gate_hangover_ms(hangover_ms);
+        self.rust().shared.set_gate_release_ms(release_ms);
+        self.rust()
+            .shared
+            .set_verification_warmup_enabled(verification_warmup);
+        try_send_backend(BackendCommand::SetVoiceGate {
+            hangover_ms,
+            release_ms,
+            verification_warmup,
+        });
     }
 
     pub fn toggle_mic_mute(mut self: Pin<&mut Self>) {

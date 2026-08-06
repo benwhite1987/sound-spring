@@ -9,6 +9,7 @@
 
 pub mod capture;
 pub mod denoise;
+pub mod denoise_worker;
 pub mod embed_worker;
 pub mod embedding;
 pub mod mix_spectrum;
@@ -71,6 +72,8 @@ pub struct VoiceShared {
     pub spectrum_filtered: ArrayQueue<Vec<f32>>,
     /// Virtmic monitor mix spectrum frames (mic + soundboard).
     pub spectrum_mixed: ArrayQueue<Vec<f32>>,
+    /// Recycled spectrum frame buffers shared by producers and the UI consumer.
+    pub spectrum_frame_pool: ArrayQueue<Vec<f32>>,
     /// Whether a capture session is currently running.
     pub capturing: AtomicBool,
     /// Latest VAD speech probability (0..1) stored as `f32` bits.
@@ -145,6 +148,7 @@ impl VoiceShared {
             spectrum: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
             spectrum_filtered: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
             spectrum_mixed: ArrayQueue::new(SPECTRUM_QUEUE_CAP),
+            spectrum_frame_pool: ArrayQueue::new(SPECTRUM_QUEUE_CAP * 3),
             capturing: AtomicBool::new(false),
             vad_probability: AtomicU32::new(0),
             speech_active: AtomicBool::new(false),
@@ -455,9 +459,15 @@ impl VoiceShared {
     pub fn clear_spectrum_display(&self) {
         self.bump_spectrum_generation();
         let silent = vec![0.0; SPECTRUM_BINS];
-        while self.spectrum_mixed.pop().is_some() {}
-        while self.spectrum_filtered.pop().is_some() {}
-        while self.spectrum.pop().is_some() {}
+        while let Some(frame) = self.spectrum_mixed.pop() {
+            self.recycle_spectrum_frame(frame);
+        }
+        while let Some(frame) = self.spectrum_filtered.pop() {
+            self.recycle_spectrum_frame(frame);
+        }
+        while let Some(frame) = self.spectrum.pop() {
+            self.recycle_spectrum_frame(frame);
+        }
         let _ = self.spectrum_mixed.force_push(silent.clone());
         let _ = self.spectrum_filtered.force_push(silent.clone());
         let _ = self.spectrum.force_push(silent);
@@ -465,6 +475,25 @@ impl VoiceShared {
         if let Ok(mut latest) = self.latest_filtered.lock() {
             latest.fill(0.0);
         }
+    }
+
+    pub fn take_spectrum_frame_buf(&self) -> Vec<f32> {
+        self.spectrum_frame_pool
+            .pop()
+            .map(|mut buf| {
+                if buf.len() != SPECTRUM_BINS {
+                    buf.resize(SPECTRUM_BINS, 0.0);
+                }
+                buf
+            })
+            .unwrap_or_else(|| vec![0.0; SPECTRUM_BINS])
+    }
+
+    pub fn recycle_spectrum_frame(&self, mut frame: Vec<f32>) {
+        if frame.len() != SPECTRUM_BINS {
+            frame.resize(SPECTRUM_BINS, 0.0);
+        }
+        let _ = self.spectrum_frame_pool.force_push(frame);
     }
 
     pub fn flush_sfx_spectrum_pending(&self, pending: &mut Vec<f32>) {
@@ -634,7 +663,7 @@ impl VoiceSession {
             (None, None)
         };
 
-        // Denoise runs whenever suppression is enabled (including visualization-only).
+        // Denoise runs on a dedicated worker only when routing output with suppression.
         let suppression = params.suppression;
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
         let pipeline = pipeline::VoicePipeline::spawn(
@@ -649,13 +678,17 @@ impl VoiceSession {
         )?;
         let capture = capture::Capture::start(&params.mic_source, producer, Some(shared.clone()))?;
 
-        let mix_spectrum = {
+        // Mix spectrum thread only when the mixed view is selected (lazy).
+        let mix_spectrum = if shared.spectrum_source() == SPECTRUM_SOURCE_MIXED {
             let (sfx_producer, sfx_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
             shared.attach_sfx_spectrum_producer(sfx_producer);
             Some(mix_spectrum::MixSpectrum::spawn(
                 Some(sfx_consumer),
                 shared.clone(),
             )?)
+        } else {
+            shared.detach_sfx_spectrum_producer();
+            None
         };
 
         shared.set_capture_status(true, "");

@@ -17,7 +17,6 @@ Item {
     property int rowSpacing: 8
     property int pendingSlot: -1
     property int moveFromSlot: -1
-    property string lastShownWarning: ""
     readonly property real cellWidth: Math.max(0, (width - columnSpacing) / 2)
     readonly property real cellHeight: Math.max(88, (height - 4 * rowSpacing) / 5)
 
@@ -28,6 +27,16 @@ Item {
             tabWarningDialog.open()
         }
     }
+
+    function showSlotErrorIfNeeded(ok) {
+        if (ok)
+            return
+        var msg = controller.lastError
+        slotErrorDialog.text = msg.length > 0 ? msg : "Slot operation failed."
+        slotErrorDialog.open()
+    }
+
+    property string lastShownWarning: ""
 
     Component.onCompleted: maybeShowTabWarning()
 
@@ -75,23 +84,27 @@ Item {
                 controller.tabVersion
                 return controller.slotEmpty(slotNumber)
             }
+            progress: {
+                controller.progressVersion
+                return controller.slotProgress(slotNumber)
+            }
             playing: {
                 uiTick
                 controller.playingVersion
                 return controller.slotPlaying(slotNumber)
             }
-            progress: {
-                uiTick
-                controller.progressVersion
-                controller.playingVersion
-                return controller.slotProgress(slotNumber)
-            }
             onClicked: {
-                if (!empty)
+                if (empty) {
+                    root.pendingSlot = slotNumber
+                    replaceFileDialog.title = "Add sound"
+                    replaceFileDialog.open()
+                } else {
                     controller.playSlot(slotNumber)
+                }
             }
             onReplaceRequested: (slot) => {
                 root.pendingSlot = slot
+                replaceFileDialog.title = "Replace sound"
                 replaceFileDialog.open()
             }
             onRenameRequested: (slot) => {
@@ -101,7 +114,6 @@ Item {
             }
             onMoveRequested: (slot) => {
                 root.moveFromSlot = slot
-                moveTargetField.text = ""
                 moveSlotDialog.open()
             }
             onRemoveRequested: (slot) => {
@@ -122,7 +134,8 @@ Item {
             var path = selectedFile.toString()
             if (path.startsWith("file://"))
                 path = path.substring(7)
-            controller.replaceSlot(root.pendingSlot, decodeURIComponent(path))
+            root.showSlotErrorIfNeeded(
+                        controller.replaceSlot(root.pendingSlot, decodeURIComponent(path)))
             root.pendingSlot = -1
         }
         onRejected: root.pendingSlot = -1
@@ -140,7 +153,8 @@ Item {
         onAccepted: {
             if (root.pendingSlot < 0)
                 return
-            controller.renameSlot(root.pendingSlot, renameSlotField.text)
+            root.showSlotErrorIfNeeded(
+                        controller.renameSlot(root.pendingSlot, renameSlotField.text))
             root.pendingSlot = -1
         }
         onRejected: root.pendingSlot = -1
@@ -185,23 +199,10 @@ Item {
         title: "Move sound to slot"
         modal: true
         anchors.centerIn: parent
-        width: Math.min(root.width - 80, 360)
+        width: Math.min(root.width - 80, 420)
         padding: 24
         standardButtons: Dialog.NoButton
 
-        onAccepted: {
-            if (root.moveFromSlot < 0)
-                return
-            var text = moveTargetField.text.trim()
-            var target = parseInt(text, 10)
-            if (isNaN(target) || target < 1 || target > 10) {
-                moveSlotDialog.reject()
-                return
-            }
-            var toSlot = target === 10 ? 0 : target
-            controller.moveSlot(root.moveFromSlot, toSlot)
-            root.moveFromSlot = -1
-        }
         onRejected: root.moveFromSlot = -1
 
         ColumnLayout {
@@ -212,21 +213,34 @@ Item {
                 Layout.fillWidth: true
                 text: root.moveFromSlot < 0 ? ""
                       : "Move from slot " + (root.moveFromSlot === 0 ? "10" : String(root.moveFromSlot))
-            }
-            Label {
-                Layout.fillWidth: true
-                text: "Target slot (1–10)"
-            }
-            TextField {
-                id: moveTargetField
-                Layout.fillWidth: true
-                inputMethodHints: Qt.ImhDigitsOnly
-            }
-            Label {
-                Layout.fillWidth: true
+                      + ". Tap a target slot (empty slots are fine)."
                 wrapMode: Text.WordWrap
-                color: appTheme.textMuted
-                text: "Enter 1–10; empty slots are valid targets."
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                rowSpacing: 8
+                columnSpacing: 8
+
+                Repeater {
+                    model: 10
+                    delegate: AppButton {
+                        Layout.fillWidth: true
+                        readonly property int slotNum: index < 9 ? index + 1 : 0
+                        text: slotNum === 0 ? "10" : String(slotNum)
+                        enabled: root.moveFromSlot !== slotNum
+                        role: "secondary"
+                        onClicked: {
+                            if (root.moveFromSlot < 0)
+                                return
+                            root.showSlotErrorIfNeeded(
+                                        controller.moveSlot(root.moveFromSlot, slotNum))
+                            root.moveFromSlot = -1
+                            moveSlotDialog.close()
+                        }
+                    }
+                }
             }
         }
 
@@ -237,11 +251,6 @@ Item {
             AppButton {
                 text: "Cancel"
                 onClicked: moveSlotDialog.reject()
-            }
-            AppButton {
-                text: "OK"
-                role: "primary"
-                onClicked: moveSlotDialog.accept()
             }
         }
     }
@@ -258,7 +267,7 @@ Item {
         onAccepted: {
             if (root.pendingSlot < 0)
                 return
-            controller.removeSlot(root.pendingSlot)
+            root.showSlotErrorIfNeeded(controller.removeSlot(root.pendingSlot))
             root.pendingSlot = -1
         }
         onRejected: root.pendingSlot = -1
@@ -289,6 +298,13 @@ Item {
         id: tabWarningDialog
         title: "Tab folder notice"
         text: controller.tabWarning
+        buttons: MessageDialog.Ok
+    }
+
+    MessageDialog {
+        id: slotErrorDialog
+        title: "Slot operation failed"
+        text: ""
         buttons: MessageDialog.Ok
     }
 }

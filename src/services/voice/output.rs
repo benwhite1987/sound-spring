@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use rtrb::Consumer;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};

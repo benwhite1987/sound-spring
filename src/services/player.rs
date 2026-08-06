@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::warn;
@@ -68,7 +68,7 @@ pub enum PlayerCommand {
 }
 
 struct PlaySession {
-    spectrum_feed: JoinHandle<()>,
+    spectrum_feed: Option<JoinHandle<()>>,
     tab_index: i32,
     slot: i32,
     remote_tag: String,
@@ -197,7 +197,11 @@ impl Player {
             self.volumes.monitor_paplay_volume(),
         )
         .await?;
-        let spectrum_feed = Self::spawn_sfx_spectrum_feed(file.clone());
+        let spectrum_feed = if crate::services::voice::voice_shared().sfx_mix_enabled() {
+            Some(Self::spawn_sfx_spectrum_feed(file.clone()))
+        } else {
+            None
+        };
 
         let remote_index = Arc::new(Mutex::new(None));
         let monitor_index = Arc::new(Mutex::new(None));
@@ -248,7 +252,9 @@ impl Player {
             .collect();
         for id in ids {
             if let Some(session) = children.remove(&id) {
-                session.spectrum_feed.abort();
+                if let Some(feed) = session.spectrum_feed {
+                    feed.abort();
+                }
                 let _ = session.stop.send(true);
             }
         }
@@ -257,7 +263,9 @@ impl Player {
     pub async fn stop_all(&mut self) {
         let mut children = self.children.lock().await;
         for (_, session) in children.drain() {
-            session.spectrum_feed.abort();
+            if let Some(feed) = session.spectrum_feed {
+                feed.abort();
+            }
             let _ = session.stop.send(true);
         }
     }
@@ -502,7 +510,7 @@ impl Player {
             .spawn()
             .context("spawn paplay stdin pipe")?;
 
-        let mut ffmpeg = Command::new("ffmpeg")
+        let mut ffmpeg = host_audio_command("ffmpeg")
             .args([
                 "-nostdin",
                 "-loglevel",
@@ -547,7 +555,7 @@ impl Player {
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
             let path = file.as_os_str().to_str().unwrap_or_default();
-            let mut child = match Command::new("ffmpeg")
+            let mut child = match host_audio_command("ffmpeg")
                 .args([
                     "-nostdin",
                     "-loglevel",

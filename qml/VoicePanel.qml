@@ -7,6 +7,7 @@ Item {
     id: voicePanel
 
     required property SoundboardController controller
+    property var settings
     property var theme
 
     readonly property color textPrimary: theme ? theme.textPrimary : "#ececec"
@@ -75,7 +76,10 @@ Item {
     Component.onCompleted: if (visible) voiceController.setVisualizationActive(true)
 
     Timer {
-        interval: 33
+        interval: {
+            var fps = settings ? settings.spectrumFps : 30
+            return Math.max(16, Math.round(1000 / Math.max(1, fps)))
+        }
         running: voicePanel.visible
         repeat: true
         onTriggered: voiceController.processSpectrum()
@@ -431,6 +435,90 @@ Item {
                                 text: "Open in pavucontrol"
                                 onClicked: voiceController.openPavucontrol()
                             }
+                        }
+                    }
+
+                    SettingsSection {
+                        title: "Gate timing"
+                        description: "Fine-tune voice gating when speaker verification or noise suppression is routing your mic. Leave defaults unless speech feels clipped."
+
+                        Label {
+                            text: "Tail hold (ms)"
+                            color: voicePanel.textSecondary
+                            font.pixelSize: 12
+                        }
+                        SpinBox {
+                            from: 0
+                            to: 400
+                            stepSize: 10
+                            value: settings ? settings.gateHangoverMs : 200
+                            onValueModified: {
+                                if (!settings)
+                                    return
+                                settings.gateHangoverMs = value
+                                voiceController.persistGateTiming(
+                                            settings.gateHangoverMs,
+                                            settings.gateReleaseMs,
+                                            settings.verificationWarmup)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: voicePanel.textMuted
+                            text: "Keeps the gate open briefly after VAD drops, preserving word endings."
+                        }
+
+                        Label {
+                            text: "Fade-out (ms)"
+                            color: voicePanel.textSecondary
+                            font.pixelSize: 12
+                        }
+                        SpinBox {
+                            from: 20
+                            to: 200
+                            stepSize: 5
+                            value: settings ? settings.gateReleaseMs : 100
+                            onValueModified: {
+                                if (!settings)
+                                    return
+                                settings.gateReleaseMs = value
+                                voiceController.persistGateTiming(
+                                            settings.gateHangoverMs,
+                                            settings.gateReleaseMs,
+                                            settings.verificationWarmup)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: voicePanel.textMuted
+                            text: "How long the output gate takes to close after speech ends."
+                        }
+
+                        Switch {
+                            Layout.fillWidth: true
+                            text: "Verification warm-up"
+                            checked: settings ? settings.verificationWarmup : true
+                            palette.windowText: voicePanel.textPrimary
+                            onToggled: {
+                                if (!settings)
+                                    return
+                                settings.verificationWarmup = checked
+                                voiceController.persistGateTiming(
+                                            settings.gateHangoverMs,
+                                            settings.gateReleaseMs,
+                                            settings.verificationWarmup)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: voicePanel.textMuted
+                            text: "Pass audio until the first failed verification check so the first syllable is not clipped."
                         }
                     }
                 }

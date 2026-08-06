@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use super::denoise::Denoiser;
+use super::denoise_worker::DenoiseWorker;
 use super::embed_worker::EmbedJob;
 use super::resample::Resampler;
 use super::spectrum::SpectrumAnalyzer;
@@ -48,6 +48,7 @@ fn hangover_samples(hangover_ms: u32) -> usize {
 pub struct VoicePipeline {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    _denoise: Option<DenoiseWorker>,
 }
 
 impl VoicePipeline {
@@ -65,6 +66,21 @@ impl VoicePipeline {
         let resampler = Resampler::new()?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
+
+        let (denoise_worker, denoise_in, denoise_out, denoise_reset) = if suppression {
+            let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            match DenoiseWorker::spawn(in_cons, out_prod) {
+                Ok((worker, reset)) => (Some(worker), Some(in_prod), Some(out_cons), Some(reset)),
+                Err(err) => {
+                    warn!("voice denoise worker unavailable: {err:#}");
+                    (None, None, None, None)
+                }
+            }
+        } else {
+            (None, None, None, None)
+        };
+
         let handle = std::thread::Builder::new()
             .name("voice-pipeline".into())
             .spawn(move || {
@@ -77,13 +93,16 @@ impl VoicePipeline {
                     job_tx,
                     busy,
                     output,
-                    suppression,
+                    denoise_in,
+                    denoise_out,
+                    denoise_reset,
                     thread_stop,
                 )
             })?;
         Ok(Self {
             stop,
             handle: Some(handle),
+            _denoise: denoise_worker,
         })
     }
 }
@@ -107,22 +126,13 @@ fn run(
     job_tx: Sender<EmbedJob>,
     busy: Arc<AtomicBool>,
     mut output: Option<Producer<f32>>,
-    suppression: bool,
+    mut denoise_in: Option<Producer<f32>>,
+    mut denoise_out: Option<Consumer<f32>>,
+    denoise_reset: Option<Arc<AtomicBool>>,
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
     let mut gate_gain: f32 = 0.0;
-    let mut denoiser = if suppression {
-        match Denoiser::new() {
-            Ok(d) => Some(d),
-            Err(err) => {
-                warn!("voice denoise disabled: {err:#}");
-                None
-            }
-        }
-    } else {
-        None
-    };
     let mut out_scratch: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
     let mut out_pending: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
     let mut denoise_gate_skipped = false;
@@ -147,6 +157,8 @@ fn run(
     let mut raw_spectrum_buf = vec![0.0; SPECTRUM_BINS];
     let mut filtered_spectrum_buf = vec![0.0; SPECTRUM_BINS];
     let mut pop_buf = [0.0f32; 2048];
+    let mut denoise_pop_buf = [0.0f32; 2048];
+    let mut denoise_pending: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -201,7 +213,7 @@ fn run(
             if need_raw_spectrum {
                 let magnitudes = analyzer.analyze(&window[..FFT_SIZE]);
                 raw_spectrum_buf.copy_from_slice(magnitudes);
-                push_spectrum_frame(&shared.spectrum, &raw_spectrum_buf);
+                push_spectrum_frame(&shared, &shared.spectrum, &raw_spectrum_buf);
             }
 
             let vad_on = shared.vad_enabled();
@@ -308,28 +320,37 @@ fn run(
             };
             let target = if gate_open { 1.0 } else { 0.0 };
             let routing_output = output.is_some();
-            let need_denoised_audio = routing_output || need_filtered_spectrum;
+            // DFN only when actually routing to virtmic — filtered viz must not force it.
+            let need_denoised_audio = routing_output && denoise_in.is_some();
             let skip_gate = target == 0.0 && gate_gain == 0.0;
             let skip_unused = !need_denoised_audio;
             let skip_denoise = skip_unused || skip_gate;
 
             out_scratch.clear();
             if skip_denoise {
-                if skip_gate {
+                if skip_gate && denoise_reset.is_some() {
                     denoise_gate_skipped = true;
                 }
                 out_scratch.extend_from_slice(&window[..FFT_HOP]);
             } else {
                 if denoise_gate_skipped {
-                    if let Some(d) = denoiser.as_mut() {
-                        if let Err(err) = d.reset() {
-                            warn!("voice denoise reset failed: {err:#}");
-                        }
+                    if let Some(flag) = denoise_reset.as_ref() {
+                        flag.store(true, Ordering::Relaxed);
                     }
                     denoise_gate_skipped = false;
                 }
-                if let Some(d) = denoiser.as_mut() {
-                    d.process(&window[..FFT_HOP], &mut out_scratch);
+                if let (Some(din), Some(dout)) = (denoise_in.as_mut(), denoise_out.as_mut()) {
+                    denoise_pending.clear();
+                    denoise_pending.extend_from_slice(&window[..FFT_HOP]);
+                    flush_output_samples(&mut denoise_pending, din);
+                    // Keep a hop-sized latency by draining available enhanced audio.
+                    let (filled, _) = dout.pop_partial_slice(&mut denoise_pop_buf);
+                    if filled.is_empty() {
+                        // Warmup / lag: pass through so routing does not underrun.
+                        out_scratch.extend_from_slice(&window[..FFT_HOP]);
+                    } else {
+                        out_scratch.extend_from_slice(filled);
+                    }
                 } else {
                     out_scratch.extend_from_slice(&window[..FFT_HOP]);
                 }
@@ -358,7 +379,7 @@ fn run(
                     let magnitudes = filtered_analyzer.analyze(&filtered_window[..FFT_SIZE]);
                     filtered_spectrum_buf.copy_from_slice(magnitudes);
                     shared.set_latest_filtered(&filtered_spectrum_buf);
-                    push_spectrum_frame(&shared.spectrum_filtered, &filtered_spectrum_buf);
+                    push_spectrum_frame(&shared, &shared.spectrum_filtered, &filtered_spectrum_buf);
                 }
                 filtered_window.drain(..FFT_HOP);
             }
@@ -369,8 +390,14 @@ fn run(
     debug!("voice pipeline thread stopped");
 }
 
-fn push_spectrum_frame(queue: &crossbeam_queue::ArrayQueue<Vec<f32>>, frame: &[f32]) {
-    let mut buf = queue.pop().unwrap_or_else(|| vec![0.0; SPECTRUM_BINS]);
+fn push_spectrum_frame(
+    shared: &VoiceShared,
+    queue: &crossbeam_queue::ArrayQueue<Vec<f32>>,
+    frame: &[f32],
+) {
+    let mut buf = queue
+        .pop()
+        .unwrap_or_else(|| shared.take_spectrum_frame_buf());
     if buf.len() != SPECTRUM_BINS {
         buf.resize(SPECTRUM_BINS, 0.0);
     }

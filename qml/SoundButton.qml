@@ -88,7 +88,7 @@ Button {
             Text {
                 width: parent.width
                 text: root.empty
-                      ? ("Empty (slot " + (root.slotNumber === 0 ? 10 : root.slotNumber) + ")")
+                      ? "Click to add sound"
                       : root.label
                 color: root.enabled ? appTheme.textPrimary : appTheme.textMuted
                 horizontalAlignment: Text.AlignHCenter

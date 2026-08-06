@@ -23,13 +23,11 @@ notify = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "5"
-thiserror = "1"
 anyhow = "1"
 futures-util = "0.3"
 time = { version = "0.3", features = ["formatting"] }
 rubato = "0.16"
 realfft = "3.5.0"
-parking_lot = "0.12.5"
 rtrb = "0.3.4"
 crossbeam-queue = "0.3.12"
 voice_activity_detector = "0.2.1"

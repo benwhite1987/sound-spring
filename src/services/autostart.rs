@@ -13,13 +13,40 @@ pub fn autostart_desktop_path() -> Option<PathBuf> {
     })
 }
 
+/// Resolve a stable Exec= path for autostart (prefer AppImage / install path
+/// over ephemeral `cargo run` / target/debug binaries).
+pub fn resolve_autostart_exec() -> String {
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        let path = PathBuf::from(&appimage);
+        if path.is_file() {
+            return appimage;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_str = exe.to_string_lossy();
+        let looks_ephemeral = exe_str.contains("/target/debug/")
+            || exe_str.contains("/target/release/")
+            || exe_str.contains("/.cache/");
+        if looks_ephemeral {
+            for candidate in [
+                "/usr/bin/sound-spring",
+                "/usr/local/bin/sound-spring",
+            ] {
+                if PathBuf::from(candidate).is_file() {
+                    return candidate.to_string();
+                }
+            }
+        }
+        return exe_str.into_owned();
+    }
+    "sound-spring".into()
+}
+
 /// Writes or removes `~/.config/autostart/sound-spring.desktop`.
 pub fn sync_launch_at_login(enabled: bool) -> Result<()> {
     let path = autostart_desktop_path().context("resolve XDG autostart path")?;
     if enabled {
-        let exec = std::env::current_exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "sound-spring".into());
+        let exec = resolve_autostart_exec();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create autostart dir {}", parent.display()))?;
@@ -76,5 +103,13 @@ mod tests {
         assert!(text.contains("Exec=/usr/bin/sound-spring\n"));
         assert!(text.contains("Icon=io.github.benwhite1987.SoundSpring\n"));
         assert!(text.contains("StartupWMClass=sound-spring"));
+    }
+
+    #[test]
+    fn resolve_autostart_prefers_appimage_env() {
+        std::env::set_var("APPIMAGE", "/tmp/does-not-exist-sound-spring.AppImage");
+        // Missing file falls through; just ensure it does not panic.
+        let _ = resolve_autostart_exec();
+        std::env::remove_var("APPIMAGE");
     }
 }

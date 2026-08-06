@@ -27,6 +27,103 @@ ToolBar {
         + spacing * 6
         + stopAllButton.implicitWidth
 
+    component MuteVolumeChannel: RowLayout {
+        id: channel
+        property string labelText: ""
+        property string unmutedIcon: "audio-volume-high"
+        property bool muted: false
+        property int volume: 0
+        property string muteTooltip: ""
+        property string unmuteTooltip: ""
+
+        signal toggleMuteRequested()
+        signal volumeChanged(int value)
+
+        spacing: volumeBar.spacing
+
+        Label {
+            text: channel.labelText
+            visible: !volumeBar.compactText
+            color: volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc"
+            Layout.rightMargin: 2
+        }
+        ToolButton {
+            focusPolicy: Qt.NoFocus
+            display: volumeBar.compactText ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
+            padding: 6
+            palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
+            icon.width: 20
+            icon.height: 20
+            icon.source: {
+                volumeBar.controller.uiVersion
+                return channel.muted
+                       ? volumeBar.uiIcon("audio-volume-muted")
+                       : volumeBar.uiIcon(channel.unmutedIcon)
+            }
+            icon.color: {
+                volumeBar.controller.uiVersion
+                return volumeBar.uiIconColor(channel.muted)
+            }
+            text: {
+                volumeBar.controller.uiVersion
+                if (volumeBar.compactText || !channel.muted)
+                    return ""
+                return "Muted"
+            }
+            opacity: {
+                volumeBar.controller.uiVersion
+                return channel.muted ? 0.45 : 1.0
+            }
+            background: Rectangle {
+                radius: 4
+                color: parent.hovered
+                       ? (volumeBar.theme ? volumeBar.theme.surfaceHover : "#3d3d44")
+                       : "transparent"
+            }
+            ToolTip.visible: hovered
+            ToolTip.text: channel.muted ? channel.muteTooltip : channel.unmuteTooltip
+            onClicked: channel.toggleMuteRequested()
+        }
+        Slider {
+            id: volumeSlider
+            focusPolicy: Qt.NoFocus
+            Layout.fillWidth: true
+            Layout.minimumWidth: 56
+            Layout.leftMargin: 4
+            from: 0
+            to: 100
+            value: channel.volume
+            live: true
+            enabled: {
+                volumeBar.controller.uiVersion
+                return !channel.muted
+            }
+            opacity: {
+                volumeBar.controller.uiVersion
+                return channel.muted ? 0.4 : 1.0
+            }
+            onMoved: channel.volumeChanged(Math.round(value))
+            onPressedChanged: if (!pressed)
+                channel.volumeChanged(Math.round(value))
+        }
+        Label {
+            visible: !volumeBar.compactText
+            Layout.preferredWidth: 40
+            horizontalAlignment: Text.AlignRight
+            text: Math.round(volumeSlider.value) + "%"
+            color: {
+                volumeBar.controller.uiVersion
+                return channel.muted
+                       ? (volumeBar.theme ? volumeBar.theme.textMuted : "#888892")
+                       : (volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc")
+            }
+            opacity: {
+                volumeBar.controller.uiVersion
+                return channel.muted ? 0.4 : 1.0
+            }
+        }
+    }
+
     padding: 8
     spacing: 8
     background: Rectangle {
@@ -49,88 +146,16 @@ ToolBar {
             Layout.minimumWidth: 3 * 32 + 3 * 56 + volumeBar.spacing * 4
             spacing: volumeBar.spacing
 
-            Label {
-                text: "Remote Output"
-                visible: !volumeBar.compactText
-                color: volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc"
-                Layout.rightMargin: 2
-            }
-            ToolButton {
-                focusPolicy: Qt.NoFocus
-                display: volumeBar.compactText ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
-                padding: 6
-                palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
-                icon.width: 20
-                icon.height: 20
-                icon.source: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted
-                           ? volumeBar.uiIcon("audio-volume-muted")
-                           : volumeBar.uiIcon("audio-volume-high")
-                }
-                icon.color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.uiIconColor(volumeBar.controller.outputMuted)
-                }
-                text: {
-                    volumeBar.controller.uiVersion
-                    if (volumeBar.compactText || !volumeBar.controller.outputMuted)
-                        return ""
-                    return "Muted"
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted ? 0.45 : 1.0
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: parent.hovered
-                           ? (volumeBar.theme ? volumeBar.theme.surfaceHover : "#3d3d44")
-                           : "transparent"
-                }
-                ToolTip.visible: hovered
-                ToolTip.text: volumeBar.controller.outputMuted
-                              ? "Output muted — click to unmute"
-                              : "Output unmuted — click to mute"
-                onClicked: volumeBar.controller.toggleOutputMute()
-            }
-            Slider {
-                id: outVolumeSlider
-                focusPolicy: Qt.NoFocus
+            MuteVolumeChannel {
                 Layout.fillWidth: true
-                Layout.minimumWidth: 56
-                Layout.leftMargin: 4
-                from: 0
-                to: 100
-                value: volumeBar.controller.outputVolume
-                live: true
-                enabled: {
-                    volumeBar.controller.uiVersion
-                    return !volumeBar.controller.outputMuted
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted ? 0.4 : 1.0
-                }
-                onMoved: volumeBar.controller.updateOutputVolume(Math.round(value))
-                onPressedChanged: if (!pressed)
-                    volumeBar.controller.updateOutputVolume(Math.round(value))
-            }
-            Label {
-                visible: !volumeBar.compactText
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-                text: Math.round(outVolumeSlider.value) + "%"
-                color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted
-                           ? (volumeBar.theme ? volumeBar.theme.textMuted : "#888892")
-                           : (volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc")
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.outputMuted ? 0.4 : 1.0
-                }
+                labelText: "Remote Output"
+                unmutedIcon: "audio-volume-high"
+                muted: volumeBar.controller.outputMuted
+                volume: volumeBar.controller.outputVolume
+                muteTooltip: "Output muted — click to unmute"
+                unmuteTooltip: "Output unmuted — click to mute"
+                onToggleMuteRequested: volumeBar.controller.toggleOutputMute()
+                onVolumeChanged: (v) => volumeBar.controller.updateOutputVolume(v)
             }
 
             Rectangle {
@@ -143,88 +168,16 @@ ToolBar {
                 opacity: 0.5
             }
 
-            Label {
-                text: "Local Monitor"
-                visible: !volumeBar.compactText
-                color: volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc"
-                Layout.rightMargin: 2
-            }
-            ToolButton {
-                focusPolicy: Qt.NoFocus
-                display: volumeBar.compactText ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
-                padding: 6
-                palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
-                icon.width: 20
-                icon.height: 20
-                icon.source: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted
-                           ? volumeBar.uiIcon("audio-volume-muted")
-                           : volumeBar.uiIcon("audio-headphones")
-                }
-                icon.color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.uiIconColor(volumeBar.controller.monitorMuted)
-                }
-                text: {
-                    volumeBar.controller.uiVersion
-                    if (volumeBar.compactText || !volumeBar.controller.monitorMuted)
-                        return ""
-                    return "Muted"
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted ? 0.45 : 1.0
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: parent.hovered
-                           ? (volumeBar.theme ? volumeBar.theme.surfaceHover : "#3d3d44")
-                           : "transparent"
-                }
-                ToolTip.visible: hovered
-                ToolTip.text: volumeBar.controller.monitorMuted
-                              ? "Monitor muted — click to unmute"
-                              : "Monitor unmuted — click to mute"
-                onClicked: volumeBar.controller.toggleMonitorMute()
-            }
-            Slider {
-                id: monVolumeSlider
-                focusPolicy: Qt.NoFocus
+            MuteVolumeChannel {
                 Layout.fillWidth: true
-                Layout.minimumWidth: 56
-                Layout.leftMargin: 4
-                from: 0
-                to: 100
-                value: volumeBar.controller.monitorVolume
-                live: true
-                enabled: {
-                    volumeBar.controller.uiVersion
-                    return !volumeBar.controller.monitorMuted
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted ? 0.4 : 1.0
-                }
-                onMoved: volumeBar.controller.updateMonitorVolume(Math.round(value))
-                onPressedChanged: if (!pressed)
-                    volumeBar.controller.updateMonitorVolume(Math.round(value))
-            }
-            Label {
-                visible: !volumeBar.compactText
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-                text: Math.round(monVolumeSlider.value) + "%"
-                color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted
-                           ? (volumeBar.theme ? volumeBar.theme.textMuted : "#888892")
-                           : (volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc")
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.monitorMuted ? 0.4 : 1.0
-                }
+                labelText: "Local Monitor"
+                unmutedIcon: "audio-headphones"
+                muted: volumeBar.controller.monitorMuted
+                volume: volumeBar.controller.monitorVolume
+                muteTooltip: "Monitor muted — click to unmute"
+                unmuteTooltip: "Monitor unmuted — click to mute"
+                onToggleMuteRequested: volumeBar.controller.toggleMonitorMute()
+                onVolumeChanged: (v) => volumeBar.controller.updateMonitorVolume(v)
             }
 
             Rectangle {
@@ -237,88 +190,16 @@ ToolBar {
                 opacity: 0.5
             }
 
-            Label {
-                text: "Mic Output"
-                visible: !volumeBar.compactText
-                color: volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc"
-                Layout.rightMargin: 2
-            }
-            ToolButton {
-                focusPolicy: Qt.NoFocus
-                display: volumeBar.compactText ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
-                padding: 6
-                palette.buttonText: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
-                icon.width: 20
-                icon.height: 20
-                icon.source: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted
-                           ? volumeBar.uiIcon("audio-volume-muted")
-                           : volumeBar.uiIcon("audio-input-microphone")
-                }
-                icon.color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.uiIconColor(volumeBar.controller.micMuted)
-                }
-                text: {
-                    volumeBar.controller.uiVersion
-                    if (volumeBar.compactText || !volumeBar.controller.micMuted)
-                        return ""
-                    return "Muted"
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted ? 0.45 : 1.0
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: parent.hovered
-                           ? (volumeBar.theme ? volumeBar.theme.surfaceHover : "#3d3d44")
-                           : "transparent"
-                }
-                ToolTip.visible: hovered
-                ToolTip.text: volumeBar.controller.micMuted
-                              ? "Mic muted — click to unmute"
-                              : "Mic unmuted — click to mute"
-                onClicked: volumeBar.controller.toggleMicMute()
-            }
-            Slider {
-                id: micVolumeSlider
-                focusPolicy: Qt.NoFocus
+            MuteVolumeChannel {
                 Layout.fillWidth: true
-                Layout.minimumWidth: 56
-                Layout.leftMargin: 4
-                from: 0
-                to: 100
-                value: volumeBar.controller.micVolume
-                live: true
-                enabled: {
-                    volumeBar.controller.uiVersion
-                    return !volumeBar.controller.micMuted
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted ? 0.4 : 1.0
-                }
-                onMoved: volumeBar.controller.updateMicVolume(Math.round(value))
-                onPressedChanged: if (!pressed)
-                    volumeBar.controller.updateMicVolume(Math.round(value))
-            }
-            Label {
-                visible: !volumeBar.compactText
-                Layout.preferredWidth: 40
-                horizontalAlignment: Text.AlignRight
-                text: Math.round(micVolumeSlider.value) + "%"
-                color: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted
-                           ? (volumeBar.theme ? volumeBar.theme.textMuted : "#888892")
-                           : (volumeBar.theme ? volumeBar.theme.textSecondary : "#b3b3bc")
-                }
-                opacity: {
-                    volumeBar.controller.uiVersion
-                    return volumeBar.controller.micMuted ? 0.4 : 1.0
-                }
+                labelText: "Mic Output"
+                unmutedIcon: "audio-input-microphone"
+                muted: volumeBar.controller.micMuted
+                volume: volumeBar.controller.micVolume
+                muteTooltip: "Mic muted — click to unmute"
+                unmuteTooltip: "Mic unmuted — click to mute"
+                onToggleMuteRequested: volumeBar.controller.toggleMicMute()
+                onVolumeChanged: (v) => volumeBar.controller.updateMicVolume(v)
             }
         }
 

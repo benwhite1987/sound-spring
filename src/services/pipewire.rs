@@ -195,18 +195,34 @@ impl PipewireManager {
         Ok(parse_sink_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
-    pub fn spawn_source_watch(notify_tx: TokioSender<()>) {
+    pub fn spawn_source_watch(
+        notify_tx: TokioSender<()>,
+        mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    ) {
         tokio::spawn(async move {
             loop {
-                if let Err(err) = Self::run_source_subscribe(&notify_tx).await {
-                    warn!("pactl source subscribe ended: {err:#}");
-                    sleep(Duration::from_secs(2)).await;
+                if *stop_rx.borrow() {
+                    break;
+                }
+                match Self::run_source_subscribe(&notify_tx, &mut stop_rx).await {
+                    Ok(()) if *stop_rx.borrow() => break,
+                    Ok(()) => {}
+                    Err(err) => {
+                        if *stop_rx.borrow() {
+                            break;
+                        }
+                        warn!("pactl source subscribe ended: {err:#}");
+                        sleep(Duration::from_secs(2)).await;
+                    }
                 }
             }
         });
     }
 
-    async fn run_source_subscribe(notify_tx: &TokioSender<()>) -> Result<()> {
+    async fn run_source_subscribe(
+        notify_tx: &TokioSender<()>,
+        stop_rx: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
         // Subscribe to all PipeWire/Pulse events (not just sources) so device
         // hotplug for both microphones and output sinks triggers a refresh.
         let mut child = host_audio_command("pactl")
@@ -224,10 +240,20 @@ impl PipewireManager {
         let mut deadline = Instant::now() + Duration::from_secs(3600);
         loop {
             tokio::select! {
+                changed = stop_rx.changed() => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    if changed.is_err() || *stop_rx.borrow() {
+                        return Ok(());
+                    }
+                }
                 line = lines.next_line() => {
                     match line.context("read pactl subscribe")? {
                         Some(_) => deadline = Instant::now() + debounce,
-                        None => return Ok(()),
+                        None => {
+                            let _ = child.wait().await;
+                            return Ok(());
+                        }
                     }
                 }
                 _ = sleep_until(deadline) => {
@@ -242,9 +268,11 @@ impl PipewireManager {
         if Self::sinks_ready().await {
             let ids = Self::find_module_ids().await?;
             if !ids.is_empty() {
-                if mic_source.is_empty() {
-                    Self::remove_virtmic_mic_loopbacks().await?;
-                }
+                // Sinks may survive a crash / auto_teardown=false while the mic
+                // loopback still points at a stale source (or is missing). Always
+                // reconcile before reusing the graph.
+                Self::reconcile_mic_loopback(mic_source, latency_ms).await?;
+                let ids = Self::find_module_ids().await?;
                 info!(
                     "reusing {} existing soundboard PipeWire module(s)",
                     ids.len()
@@ -332,6 +360,30 @@ impl PipewireManager {
     pub async fn remove_virtmic_mic_loopbacks() -> Result<()> {
         for id in Self::find_virtmic_mic_loopback_ids().await? {
             Self::unload_module(id).await;
+        }
+        Ok(())
+    }
+
+    /// Ensure the mic→virtmic loopback matches `mic_source` (or is absent when
+    /// empty). Removes loopbacks from other sources first.
+    pub async fn reconcile_mic_loopback(mic_source: &str, latency_ms: u32) -> Result<()> {
+        if mic_source.is_empty() {
+            return Self::remove_virtmic_mic_loopbacks().await;
+        }
+        let existing = Self::find_virtmic_mic_loopback_ids().await?;
+        let matching = Self::find_mic_loopback_ids(mic_source).await?;
+        for id in existing {
+            if !matching.contains(&id) {
+                Self::unload_module(id).await;
+            }
+        }
+        if Self::find_mic_loopback_ids(mic_source).await?.is_empty()
+            && Self::sink_exists(VIRTMIC_SINK).await
+        {
+            Self::load_loopback(mic_source, VIRTMIC_SINK, latency_ms)
+                .await
+                .with_context(|| format!("reconcile mic loopback {mic_source}"))?;
+            info!("reconciled mic loopback for {mic_source}");
         }
         Ok(())
     }
@@ -932,6 +984,12 @@ Sink #12
         assert_eq!(sinks.len(), 2);
         assert_eq!(sinks[0].description, "Built-in Speakers");
         assert_eq!(sinks[1].name, "alsa_output.usb-headset");
+    }
+
+    #[tokio::test]
+    async fn reconcile_mic_loopback_empty_source_ok() {
+        // Empty mic_source clears stale mic→virtmic loops (or no-ops).
+        let _ = PipewireManager::reconcile_mic_loopback("", 20).await;
     }
 
     #[tokio::test]

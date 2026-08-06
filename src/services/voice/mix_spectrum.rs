@@ -124,7 +124,7 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
                     mic_g,
                     out_g,
                 );
-                push_spectrum_frame(&shared.spectrum_mixed, &mixed_buf);
+                push_spectrum_frame(&shared, &shared.spectrum_mixed, &mixed_buf);
                 window.drain(..FFT_HOP);
             }
         } else if want_mix {
@@ -159,7 +159,7 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
                 } else {
                     compose_mic_only_into(&mut mixed_buf, &filtered_buf, mic_g);
                 }
-                push_spectrum_frame(&shared.spectrum_mixed, &mixed_buf);
+                push_spectrum_frame(&shared, &shared.spectrum_mixed, &mixed_buf);
             }
             if !got_any {
                 std::thread::sleep(Duration::from_millis(2));
@@ -171,8 +171,14 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
     debug!("mix spectrum thread stopped");
 }
 
-fn push_spectrum_frame(queue: &crossbeam_queue::ArrayQueue<Vec<f32>>, frame: &[f32]) {
-    let mut buf = queue.pop().unwrap_or_else(|| vec![0.0; SPECTRUM_BINS]);
+fn push_spectrum_frame(
+    shared: &crate::services::voice::VoiceShared,
+    queue: &crossbeam_queue::ArrayQueue<Vec<f32>>,
+    frame: &[f32],
+) {
+    let mut buf = queue
+        .pop()
+        .unwrap_or_else(|| shared.take_spectrum_frame_buf());
     if buf.len() != SPECTRUM_BINS {
         buf.resize(SPECTRUM_BINS, 0.0);
     }

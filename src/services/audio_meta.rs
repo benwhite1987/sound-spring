@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
+
+use crate::services::host_audio::host_audio_std_command;
 
 type DurationCache = HashMap<PathBuf, (u64, u64, u64)>;
 
@@ -37,7 +38,7 @@ pub fn probe_duration_ms(path: &Path) -> Option<u64> {
 }
 
 fn probe_duration_ms_uncached(path: &Path) -> Option<u64> {
-    let output = Command::new("ffprobe")
+    let output = host_audio_std_command("ffprobe")
         .args([
             "-v",
             "error",

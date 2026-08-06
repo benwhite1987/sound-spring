@@ -27,6 +27,7 @@ pub mod qobject {
         #[qproperty(i32, gate_hangover_ms)]
         #[qproperty(i32, gate_release_ms)]
         #[qproperty(bool, verification_warmup)]
+        #[qproperty(i32, spectrum_fps)]
         type Settings = super::SettingsRust;
 
         #[qinvokable]
@@ -105,6 +106,7 @@ pub struct SettingsRust {
     gate_hangover_ms: i32,
     gate_release_ms: i32,
     verification_warmup: bool,
+    spectrum_fps: i32,
     custom_tabs: Vec<TabEntry>,
     shortcuts: Vec<ShortcutDef>,
 }
@@ -147,6 +149,7 @@ impl SettingsRust {
         config.voice.gate_hangover_ms = self.gate_hangover_ms.clamp(0, 400) as u32;
         config.voice.gate_release_ms = self.gate_release_ms.clamp(20, 200) as u32;
         config.voice.verification_warmup = self.verification_warmup;
+        config.voice.spectrum_fps = self.spectrum_fps.clamp(1, 60) as u32;
         config.tabs = self.custom_tabs.clone();
         config::normalize_shortcuts_config(&mut config);
         config
@@ -168,6 +171,7 @@ impl SettingsRust {
         self.gate_hangover_ms = config.voice.gate_hangover_ms as i32;
         self.gate_release_ms = config.voice.gate_release_ms as i32;
         self.verification_warmup = config.voice.verification_warmup;
+        self.spectrum_fps = config.voice.spectrum_fps as i32;
         self.custom_tabs = config.tabs.clone();
         self.custom_tab_count = self.custom_tabs.len() as i32;
         self.shortcuts = ShortcutsManager::resolve_bindings(&config.shortcuts);
@@ -199,6 +203,7 @@ mod properties {
         let gate_hangover_ms = settings.as_ref().rust().gate_hangover_ms;
         let gate_release_ms = settings.as_ref().rust().gate_release_ms;
         let verification_warmup = settings.as_ref().rust().verification_warmup;
+        let spectrum_fps = settings.as_ref().rust().spectrum_fps;
         settings.as_mut().set_mic_source(mic_source);
         settings.as_mut().set_monitor_sink(monitor_sink);
         settings.as_mut().set_latency_ms(latency_ms);
@@ -221,6 +226,7 @@ mod properties {
         settings
             .as_mut()
             .set_verification_warmup(verification_warmup);
+        settings.as_mut().set_spectrum_fps(spectrum_fps);
     }
 }
 
@@ -236,25 +242,15 @@ impl qobject::Settings {
     pub fn apply(mut self: Pin<&mut Self>) {
         let shortcuts = self.rust().shortcuts.clone();
         SoundboardControllerRust::sync_shortcut_bindings(&shortcuts);
-        let mut config = self.rust().build_config();
-        match config::ensure_default_layout(&mut config).and_then(|_| config::save_config(&config))
-        {
-            Ok(()) => {
-                let mut status = "Settings saved. Audio and shortcuts will reload.".to_string();
-                if let Err(err) = autostart::sync_launch_at_login(config.ui.launch_at_login) {
-                    status = format!("Settings saved, but autostart update failed: {err:#}");
-                }
-                send_backend(BackendCommand::ApplyConfig(Box::new(config)));
-                self.as_mut().rust_mut().set_status(&status);
-                properties::sync_settings_properties(self.as_mut());
-            }
-            Err(err) => {
-                self.as_mut()
-                    .rust_mut()
-                    .set_status(&format!("Failed to save settings: {err:#}"));
-                properties::sync_settings_properties(self.as_mut());
-            }
+        let config = self.rust().build_config();
+        // Backend owns disk writes to avoid racing volume/voice persists.
+        send_backend(BackendCommand::ApplyConfig(Box::new(config.clone())));
+        let mut status = "Settings saved. Audio and shortcuts will reload.".to_string();
+        if let Err(err) = autostart::sync_launch_at_login(config.ui.launch_at_login) {
+            status = format!("Settings applied, but autostart update failed: {err:#}");
         }
+        self.as_mut().rust_mut().set_status(&status);
+        properties::sync_settings_properties(self.as_mut());
     }
 
     pub fn custom_tab_path_at(&self, index: i32) -> QString {

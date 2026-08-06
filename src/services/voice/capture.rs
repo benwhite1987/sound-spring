@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 

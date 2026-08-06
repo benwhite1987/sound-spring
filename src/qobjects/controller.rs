@@ -29,6 +29,8 @@ pub mod qobject {
         #[qproperty(bool, mic_muted)]
         #[qproperty(QString, global_shortcuts_status)]
         #[qproperty(QString, tab_warning)]
+        #[qproperty(QString, last_error)]
+        #[qproperty(bool, has_active_playback)]
         type SoundboardController = super::SoundboardControllerRust;
 
         #[qinvokable]
@@ -294,6 +296,14 @@ pub enum BackendCommand {
     RefreshAudioSinks,
     RestartTabWatch,
     ApplyVolumes(VolumeState),
+    PersistVolumes {
+        output_percent: u8,
+        monitor_percent: u8,
+        mic_percent: u8,
+        output_muted: bool,
+        monitor_muted: bool,
+        mic_muted: bool,
+    },
     StartVoiceCapture,
     StopVoiceCapture,
     SetVoiceVerification { enabled: bool, threshold: f32 },
@@ -301,6 +311,11 @@ pub enum BackendCommand {
     SetVoiceVad { enabled: bool },
     SetMicVolume { percent: u8, muted: bool },
     SetSpectrumSource { source: String },
+    SetVoiceGate {
+        hangover_ms: u32,
+        release_ms: u32,
+        verification_warmup: bool,
+    },
     Shutdown,
 }
 
@@ -323,6 +338,9 @@ pub enum BackendEvent {
     VoiceCaptureStatus {
         active: bool,
         error: String,
+    },
+    PersistFailed {
+        message: String,
     },
 }
 
@@ -400,6 +418,8 @@ pub struct SoundboardControllerRust {
     mic_muted: bool,
     global_shortcuts_status: QString,
     tab_warning: QString,
+    last_error: QString,
+    has_active_playback: bool,
     tabs: Vec<Tab>,
     active_playbacks: HashMap<SessionKey, ActivePlayback>,
     play_coalesce: Option<PlayCoalesce>,
@@ -467,21 +487,13 @@ impl SoundboardControllerRust {
     }
 
     fn persist_volumes(&self) {
-        let output_volume = self.output_volume.clamp(0, 100) as u8;
-        let monitor_volume = self.monitor_volume.clamp(0, 100) as u8;
-        let mic_volume = self.mic_volume.clamp(0, 100) as u8;
-        let output_muted = self.output_muted;
-        let monitor_muted = self.monitor_muted;
-        let mic_muted = self.mic_muted;
-        std::thread::spawn(move || {
-            let mut config = crate::config::load_config().unwrap_or_default();
-            config.audio.output_volume = output_volume;
-            config.audio.monitor_volume = monitor_volume;
-            config.audio.mic_volume = mic_volume;
-            config.audio.output_muted = output_muted;
-            config.audio.monitor_muted = monitor_muted;
-            config.audio.mic_muted = mic_muted;
-            let _ = crate::config::save_config(&config);
+        try_send_backend(BackendCommand::PersistVolumes {
+            output_percent: self.output_volume.clamp(0, 100) as u8,
+            monitor_percent: self.monitor_volume.clamp(0, 100) as u8,
+            mic_percent: self.mic_volume.clamp(0, 100) as u8,
+            output_muted: self.output_muted,
+            monitor_muted: self.monitor_muted,
+            mic_muted: self.mic_muted,
         });
     }
 
@@ -819,6 +831,7 @@ impl SoundboardControllerRust {
 
     fn bump_playing_version(&mut self) {
         self.playing_version += 1;
+        self.has_active_playback = !self.active_playbacks.is_empty();
     }
 
     fn play_slot_internal(&mut self, slot: i32) -> Option<PlaySlotOutcome> {
@@ -1126,6 +1139,8 @@ impl qobject::SoundboardController {
     pub fn play_slot(mut self: Pin<&mut Self>, slot: i32) {
         let outcome = self.as_mut().rust_mut().play_slot_internal(slot);
         Self::emit_play_slot_outcome(self.as_mut(), outcome);
+        let active = self.as_ref().rust().has_active_playback;
+        self.as_mut().set_has_active_playback(active);
         self.as_mut().playing_state_changed();
     }
 
@@ -1152,6 +1167,8 @@ impl qobject::SoundboardController {
 
     pub fn stop_all(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().stop_all_internal();
+        let active = self.as_ref().rust().has_active_playback;
+        self.as_mut().set_has_active_playback(active);
         self.as_mut().playing_state_changed();
     }
 
@@ -1168,6 +1185,8 @@ impl qobject::SoundboardController {
             self.as_mut().rust_mut().bump_playing_version();
         }
         Self::emit_play_slot_outcome(self.as_mut(), result.play_outcome);
+        let active = self.as_ref().rust().has_active_playback;
+        self.as_mut().set_has_active_playback(active);
         self.as_mut().playing_state_changed();
     }
 
@@ -1302,17 +1321,17 @@ impl qobject::SoundboardController {
             rx.try_iter().collect()
         };
 
-        let mut playback_changed = progress_dirty;
-        let mut tab_changed = false;
-
         if events.is_empty() {
-            if playback_changed {
-                self.as_mut().rust_mut().bump_playing_version();
-                self.as_mut().playing_state_changed();
+            if progress_dirty {
+                let version = self.as_ref().rust().progress_version;
+                self.as_mut().set_progress_version(version);
             }
             return;
         }
 
+        let mut playback_changed = false;
+        let mut tab_changed = false;
+        // progress_dirty alone must not force a full board rebind.
         for event in events {
             match event {
                 BackendEvent::PlaybackEnded { tab_index, slot } => {
@@ -1405,12 +1424,17 @@ impl qobject::SoundboardController {
                 BackendEvent::VoiceCaptureStatus { active, error } => {
                     crate::services::voice::voice_shared().set_capture_status(active, &error);
                 }
+                BackendEvent::PersistFailed { message } => {
+                    self.as_mut().set_last_error(QString::from(message.as_str()));
+                }
             }
         }
 
         if tab_changed || playback_changed {
             if playback_changed {
                 self.as_mut().rust_mut().bump_playing_version();
+                let active = self.as_ref().rust().has_active_playback;
+                self.as_mut().set_has_active_playback(active);
             }
             if tab_changed {
                 properties::sync_tab_properties(self.as_mut());
@@ -1418,6 +1442,9 @@ impl qobject::SoundboardController {
                 self.as_mut().current_tab_changed();
             }
             self.as_mut().playing_state_changed();
+        } else if progress_dirty {
+            let version = self.as_ref().rust().progress_version;
+            self.as_mut().set_progress_version(version);
         }
     }
 
@@ -1736,14 +1763,17 @@ impl qobject::SoundboardController {
 
     pub fn replace_slot(mut self: Pin<&mut Self>, slot: i32, path: QString) -> bool {
         let Some(index) = normalize_slot(slot) else {
+            self.as_mut().set_slot_error("Invalid slot");
             return false;
         };
         let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            self.as_mut().set_slot_error("No active tab");
             return false;
         };
         let source = PathBuf::from(String::from(path));
         match TabsRepository::replace_slot_file(&tab_dir, index, &source) {
             Ok(_) => {
+                self.as_mut().clear_slot_error();
                 self.as_mut().rust_mut().refresh_active_tab_slots();
                 properties::sync_tab_properties(self.as_mut());
                 self.as_mut().tabs_changed();
@@ -1752,6 +1782,7 @@ impl qobject::SoundboardController {
             }
             Err(err) => {
                 tracing::warn!("replace slot {slot}: {err:#}");
+                self.as_mut().set_slot_error(&format!("{err:#}"));
                 false
             }
         }
@@ -1759,14 +1790,17 @@ impl qobject::SoundboardController {
 
     pub fn remove_slot(mut self: Pin<&mut Self>, slot: i32) -> bool {
         let Some(index) = normalize_slot(slot) else {
+            self.as_mut().set_slot_error("Invalid slot");
             return false;
         };
         let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            self.as_mut().set_slot_error("No active tab");
             return false;
         };
         let tab_index = self.rust().current_tab_index;
         match TabsRepository::remove_slot_file(&tab_dir, index) {
             Ok(()) => {
+                self.as_mut().clear_slot_error();
                 self.as_mut()
                     .rust_mut()
                     .stop_session_internal(tab_index, slot);
@@ -1778,6 +1812,7 @@ impl qobject::SoundboardController {
             }
             Err(err) => {
                 tracing::warn!("remove slot {slot}: {err:#}");
+                self.as_mut().set_slot_error(&format!("{err:#}"));
                 false
             }
         }
@@ -1785,14 +1820,17 @@ impl qobject::SoundboardController {
 
     pub fn rename_slot(mut self: Pin<&mut Self>, slot: i32, name: QString) -> bool {
         let Some(index) = normalize_slot(slot) else {
+            self.as_mut().set_slot_error("Invalid slot");
             return false;
         };
         let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            self.as_mut().set_slot_error("No active tab");
             return false;
         };
         let name = String::from(name);
         match TabsRepository::rename_slot_file(&tab_dir, index, &name) {
             Ok(_) => {
+                self.as_mut().clear_slot_error();
                 self.as_mut().rust_mut().refresh_active_tab_slots();
                 properties::sync_tab_properties(self.as_mut());
                 self.as_mut().tabs_changed();
@@ -1801,24 +1839,37 @@ impl qobject::SoundboardController {
             }
             Err(err) => {
                 tracing::warn!("rename slot {slot}: {err:#}");
+                self.as_mut().set_slot_error(&format!("{err:#}"));
                 false
             }
         }
     }
 
+    fn set_slot_error(mut self: Pin<&mut Self>, message: &str) {
+        self.as_mut().set_last_error(QString::from(message));
+    }
+
+    fn clear_slot_error(mut self: Pin<&mut Self>) {
+        self.as_mut().set_last_error(QString::default());
+    }
+
     pub fn move_slot(mut self: Pin<&mut Self>, from_slot: i32, to_slot: i32) -> bool {
         let Some(from_index) = normalize_slot(from_slot) else {
+            self.as_mut().set_slot_error("Invalid source slot");
             return false;
         };
         let Some(to_index) = normalize_slot(to_slot) else {
+            self.as_mut().set_slot_error("Invalid target slot");
             return false;
         };
         let Some(tab_dir) = self.rust().active_tab().map(|tab| tab.path.clone()) else {
+            self.as_mut().set_slot_error("No active tab");
             return false;
         };
         let tab_index = self.rust().current_tab_index;
         match TabsRepository::move_slot_file(&tab_dir, from_index, to_index) {
             Ok(()) => {
+                self.as_mut().clear_slot_error();
                 self.as_mut()
                     .rust_mut()
                     .stop_session_internal(tab_index, from_slot);
@@ -1835,6 +1886,7 @@ impl qobject::SoundboardController {
             }
             Err(err) => {
                 tracing::warn!("move slot {from_slot} -> {to_slot}: {err:#}");
+                self.as_mut().set_slot_error(&format!("{err:#}"));
                 false
             }
         }

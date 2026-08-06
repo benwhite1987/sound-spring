@@ -150,7 +150,8 @@ async fn sync_mic_mute_for_playback(config: &Config, active_sessions: usize) {
 fn sync_sfx_mix_for_playback(active_sessions: usize) {
     let shared = voice_shared();
     let want_mix = shared.capturing.load(Ordering::Relaxed)
-        && (active_sessions > 0 || shared.spectrum_source() == SPECTRUM_SOURCE_MIXED);
+        && shared.spectrum_source() == SPECTRUM_SOURCE_MIXED
+        && (active_sessions > 0 || shared.spectrum_panel_visible());
     shared.set_sfx_mix_enabled(want_mix);
 }
 
@@ -436,6 +437,29 @@ fn sync_spectrum_panel_visible(visible: bool) {
     voice_shared().set_spectrum_panel_visible(visible);
 }
 
+fn format_voice_start_restore_failure(
+    start_error: &str,
+    restore_err: &impl std::fmt::Display,
+) -> String {
+    format!("{start_error}; also failed to restore mic passthrough: {restore_err:#}")
+}
+
+#[cfg(test)]
+mod voice_fail_closed_tests {
+    use super::format_voice_start_restore_failure;
+
+    #[test]
+    fn restore_failure_is_surfaced_in_status() {
+        let msg = format_voice_start_restore_failure(
+            "Voice capture failed: boom",
+            &anyhow::anyhow!("no loopback"),
+        );
+        assert!(msg.contains("Voice capture failed: boom"));
+        assert!(msg.contains("restore mic passthrough"));
+        assert!(msg.contains("no loopback"));
+    }
+}
+
 async fn reconcile_voice(
     config: &Config,
     session: &mut Option<VoiceSession>,
@@ -443,17 +467,19 @@ async fn reconcile_voice(
     panel_visible: bool,
     event_tx: &std::sync::mpsc::Sender<BackendEvent>,
 ) {
-    if config.audio.mic_source.is_empty() {
+    let want_verify =
+        config.voice.verification_enabled && config::voiceprint_path(config).is_file();
+    let want_routing = want_verify || config.voice.suppression_enabled;
+    let want_on = panel_visible || want_routing;
+
+    // Routing needs an explicit PipeWire source. Visualization-only capture can
+    // use pw-cat's default input when mic_source is unset.
+    if config.audio.mic_source.is_empty() && want_routing {
         if session.is_some() {
             stop_voice_session(config, session, current_routing, event_tx).await;
         }
         return;
     }
-
-    let want_verify =
-        config.voice.verification_enabled && config::voiceprint_path(config).is_file();
-    let want_routing = want_verify || config.voice.suppression_enabled;
-    let want_on = panel_visible || want_routing;
 
     // Tear down when no longer wanted, or when the mode must change.
     if session.is_some() && (!want_on || *current_routing != want_routing) {
@@ -508,18 +534,23 @@ async fn reconcile_voice(
         }
         Err(err) => {
             warn!("voice session start failed: {err:#}");
-            let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
-                active: false,
-                error: format!("Voice capture failed: {err:#}"),
-            });
+            let mut error = format!("Voice capture failed: {err:#}");
             if want_routing {
-                let _ = PipewireManager::set_mic_passthrough(
+                if let Err(restore_err) = PipewireManager::set_mic_passthrough(
                     true,
                     &config.audio.mic_source,
                     config.audio.latency_ms,
                 )
-                .await;
+                .await
+                {
+                    warn!("failed to restore mic loopback after voice start failure: {restore_err:#}");
+                    error = format_voice_start_restore_failure(&error, &restore_err);
+                }
             }
+            let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
+                active: false,
+                error,
+            });
         }
     }
 }
@@ -551,7 +582,8 @@ fn run_backend(
         apply_runtime_config(&active_config, &backend_event_tx, &mut modules, None).await;
 
         let (source_watch_tx, mut source_watch_rx) = tokio::sync::mpsc::channel(8);
-        PipewireManager::spawn_source_watch(source_watch_tx);
+        let (source_watch_stop_tx, source_watch_stop_rx) = tokio::sync::watch::channel(false);
+        PipewireManager::spawn_source_watch(source_watch_tx, source_watch_stop_rx);
 
         let (tab_watch_tx, mut tab_watch_rx) = tokio::sync::mpsc::channel(8);
         let mut tab_watch = TabFilesystemWatch::new();
@@ -602,7 +634,13 @@ fn run_backend(
                 command = backend_cmd_rx.recv() => {
                     match command {
                         Some(BackendCommand::ApplyConfig(new_config)) => {
-                            let new_config = *new_config;
+                            let mut new_config = *new_config;
+                            if let Err(err) = config::ensure_default_layout(&mut new_config) {
+                                warn!("failed to ensure config layout on apply: {err:#}");
+                            }
+                            if let Err(err) = config::save_config(&new_config) {
+                                warn!("failed to persist applied settings: {err:#}");
+                            }
                             let previous = active_config.clone();
                             // A routing change tears down and rebuilds all
                             // modules (re-adding the raw mic loopback), so stop
@@ -730,6 +768,19 @@ fn run_backend(
                             }
                             voice_shared().set_vad_enabled(enabled);
                         }
+                        Some(BackendCommand::SetVoiceGate {
+                            hangover_ms,
+                            release_ms,
+                            verification_warmup,
+                        }) => {
+                            active_config.voice.gate_hangover_ms = hangover_ms;
+                            active_config.voice.gate_release_ms = release_ms;
+                            active_config.voice.verification_warmup = verification_warmup;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist voice gate settings: {err:#}");
+                            }
+                            sync_voice_gate_config(&active_config);
+                        }
                         Some(BackendCommand::SetMicVolume { percent, muted }) => {
                             active_config.audio.mic_muted = muted;
                             active_config.audio.mic_volume = percent;
@@ -759,11 +810,36 @@ fn run_backend(
                             sync_spectrum_display_volumes(&active_config);
                         }
                         Some(BackendCommand::SetSpectrumSource { source }) => {
+                            let prev = spectrum_source_from_str(
+                                &active_config.voice.spectrum_source,
+                            );
+                            let next = spectrum_source_from_str(&source);
                             active_config.voice.spectrum_source = source.clone();
                             if let Err(err) = config::save_config(&active_config) {
                                 warn!("failed to persist spectrum source: {err:#}");
                             }
-                            voice_shared().set_spectrum_source(spectrum_source_from_str(&source));
+                            voice_shared().set_spectrum_source(next);
+                            // Restart capture when mix-thread need flips so the
+                            // lazy MixSpectrum worker is created/destroyed.
+                            let mix_flip = (prev == SPECTRUM_SOURCE_MIXED)
+                                != (next == SPECTRUM_SOURCE_MIXED);
+                            if mix_flip && voice_session.is_some() {
+                                stop_voice_session(
+                                    &active_config,
+                                    &mut voice_session,
+                                    &mut voice_routing,
+                                    &backend_event_tx,
+                                )
+                                .await;
+                                reconcile_voice(
+                                    &active_config,
+                                    &mut voice_session,
+                                    &mut voice_routing,
+                                    voice_panel_visible,
+                                    &backend_event_tx,
+                                )
+                                .await;
+                            }
                             sync_sfx_mix_for_playback(player.active_session_count().await);
                         }
                         Some(BackendCommand::ApplyVolumes(volumes)) => {
@@ -780,6 +856,27 @@ fn run_backend(
                                 volumes.output_percent,
                                 volumes.output_muted,
                             );
+                        }
+                        Some(BackendCommand::PersistVolumes {
+                            output_percent,
+                            monitor_percent,
+                            mic_percent,
+                            output_muted,
+                            monitor_muted,
+                            mic_muted,
+                        }) => {
+                            active_config.audio.output_volume = output_percent;
+                            active_config.audio.monitor_volume = monitor_percent;
+                            active_config.audio.mic_volume = mic_percent;
+                            active_config.audio.output_muted = output_muted;
+                            active_config.audio.monitor_muted = monitor_muted;
+                            active_config.audio.mic_muted = mic_muted;
+                            if let Err(err) = config::save_config(&active_config) {
+                                warn!("failed to persist volumes: {err:#}");
+                                let _ = backend_event_tx.send(BackendEvent::PersistFailed {
+                                    message: format!("Failed to save volumes: {err:#}"),
+                                });
+                            }
                         }
                         Some(BackendCommand::Player(cmd)) => {
                             let play_target = match &cmd {
@@ -831,6 +928,7 @@ fn run_backend(
                             }
                         }
                         Some(BackendCommand::Shutdown) => {
+                            let _ = source_watch_stop_tx.send(true);
                             stop_voice_session(
                                 &active_config,
                                 &mut voice_session,

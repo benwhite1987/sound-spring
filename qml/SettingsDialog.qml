@@ -49,9 +49,41 @@ Window {
     required property var settings
     property var ownerWindow: null
     property int activeCaptureIndex: -1
+    property bool dirty: false
+    property bool allowClose: false
+    property string applyStatusKind: "" // "" | "ok" | "warn" | "error"
 
     onOwnerWindowChanged: if (ownerWindow)
         transientParent = ownerWindow
+
+    function touch() {
+        dirty = true
+    }
+
+    function clearApplyStatusSoon() {
+        applyStatusClearTimer.restart()
+    }
+
+    function classifyApplyStatus(message) {
+        if (!message || message.length === 0)
+            return ""
+        var lower = message.toLowerCase()
+        if (lower.indexOf("failed") >= 0 || lower.indexOf("error") >= 0)
+            return "error"
+        if (lower.indexOf("but") >= 0 || lower.indexOf("partial") >= 0)
+            return "warn"
+        return "ok"
+    }
+
+    function applyStatusColor() {
+        if (applyStatusKind === "error")
+            return appTheme.danger
+        if (applyStatusKind === "warn")
+            return appTheme.warningAccent
+        if (applyStatusKind === "ok")
+            return appTheme.accent
+        return "transparent"
+    }
 
     function handleKey(key, modifiers, nativeScanCode) {
         if (activeCaptureIndex < 0)
@@ -65,20 +97,56 @@ Window {
             return
         settings.setShortcutTriggerAt(activeCaptureIndex, trigger)
         activeCaptureIndex = -1
+        dirty = true
         controller.refreshShortcutBindings()
     }
 
-    function openSettings() {
+    function openSettings(options) {
+        allowClose = false
+        dirty = false
+        applyStatusKind = ""
         if (settings)
             settings.loadFromConfig()
         controller.refreshAudioDevices()
         controller.syncGlobalShortcutsStatus()
+        if (options && options.tab === "shortcuts")
+            tabBar.currentIndex = 2
+        else
+            tabBar.currentIndex = 0
         show()
         raise()
         requestActivate()
+        if (options && options.applyPortal && settings
+                && settings.shortcutMode === "portal") {
+            controller.refreshPortalParentWindow()
+            settings.apply()
+            applyStatusKind = classifyApplyStatus(settings.statusMessage)
+            dirty = false
+            clearApplyStatusSoon()
+        }
     }
 
-    onClosing: activeCaptureIndex = -1
+    function performClose() {
+        allowClose = true
+        activeCaptureIndex = -1
+        close()
+    }
+
+    onClosing: (close) => {
+        if (allowClose || !dirty) {
+            activeCaptureIndex = -1
+            allowClose = false
+            return
+        }
+        close.accepted = false
+        unsavedDialog.open()
+    }
+
+    Timer {
+        id: applyStatusClearTimer
+        interval: 4000
+        onTriggered: applyStatusKind = ""
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -116,7 +184,10 @@ Window {
                         CheckBox {
                             text: "Minimize to tray"
                             checked: settings ? settings.minimizeToTray : true
-                            onCheckedChanged: if (settings) settings.minimizeToTray = checked
+                            onCheckedChanged: if (settings) {
+                                settings.minimizeToTray = checked
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -128,7 +199,10 @@ Window {
                         CheckBox {
                             text: "Launch at login"
                             checked: settings ? settings.launchAtLogin : false
-                            onCheckedChanged: if (settings) settings.launchAtLogin = checked
+                            onCheckedChanged: if (settings) {
+                                settings.launchAtLogin = checked
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -184,6 +258,7 @@ Window {
                                 }
                                 onActivated: if (settings) {
                                     settings.micSource = controller.micSourceIdAt(currentIndex)
+                                    root.touch()
                                 }
                                 function selectedDescription() {
                                     if (!settings) return ""
@@ -252,6 +327,7 @@ Window {
                                 settings.monitorSink = currentIndex <= 0
                                     ? ""
                                     : controller.audioSinkIdAt(currentIndex - 1)
+                                root.touch()
                             }
                             function selectedDescription() {
                                 if (!settings) return "Default output device"
@@ -301,7 +377,10 @@ Window {
                             from: 10
                             to: 100
                             value: settings ? settings.latencyMs : 20
-                            onValueChanged: if (settings) settings.latencyMs = value
+                            onValueChanged: if (settings) {
+                                settings.latencyMs = value
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -313,7 +392,10 @@ Window {
                         CheckBox {
                             text: "Unload PipeWire modules on quit"
                             checked: settings ? settings.autoTeardown : true
-                            onCheckedChanged: if (settings) settings.autoTeardown = checked
+                            onCheckedChanged: if (settings) {
+                                settings.autoTeardown = checked
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -329,14 +411,26 @@ Window {
 
                         Label { text: "Interruption mode" }
                         ComboBox {
+                            id: interruptionCombo
                             Layout.fillWidth: true
-                            model: ["overlap", "interrupt"]
+                            textRole: "label"
+                            valueRole: "value"
+                            model: [
+                                { label: "Overlap (play together)", value: "overlap" },
+                                { label: "Interrupt previous", value: "interrupt" }
+                            ]
                             currentIndex: {
                                 if (!settings) return 0
-                                var idx = model.indexOf(settings.interruptionMode)
-                                return idx >= 0 ? idx : 0
+                                for (var i = 0; i < model.length; ++i) {
+                                    if (model[i].value === settings.interruptionMode)
+                                        return i
+                                }
+                                return 0
                             }
-                            onActivated: if (settings) settings.interruptionMode = model[currentIndex]
+                            onActivated: if (settings) {
+                                settings.interruptionMode = model[currentIndex].value
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -348,60 +442,16 @@ Window {
                         CheckBox {
                             text: "Mute real microphone during playback"
                             checked: settings ? settings.muteMicDuringPlayback : false
-                            onCheckedChanged: if (settings) settings.muteMicDuringPlayback = checked
+                            onCheckedChanged: if (settings) {
+                                settings.muteMicDuringPlayback = checked
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             color: appTheme.textMuted
                             text: "Temporarily mutes your physical microphone while a sound is playing."
-                        }
-                    }
-
-                    SettingsSection {
-                        title: "Gate timing"
-                        description: "Fine-tune voice gating when speaker verification or noise suppression is routing your mic. Leave defaults unless speech feels clipped."
-
-                        Label { text: "Tail hold (ms)" }
-                        SpinBox {
-                            from: 0
-                            to: 400
-                            stepSize: 10
-                            value: settings ? settings.gateHangoverMs : 200
-                            onValueChanged: if (settings) settings.gateHangoverMs = value
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: appTheme.textMuted
-                            text: "Keeps the gate open briefly after VAD drops, preserving word endings."
-                        }
-
-                        Label { text: "Fade-out (ms)" }
-                        SpinBox {
-                            from: 20
-                            to: 200
-                            stepSize: 5
-                            value: settings ? settings.gateReleaseMs : 100
-                            onValueChanged: if (settings) settings.gateReleaseMs = value
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: appTheme.textMuted
-                            text: "How long the output gate takes to close after speech ends."
-                        }
-
-                        CheckBox {
-                            text: "Verification warm-up (pass audio until first failed check)"
-                            checked: settings ? settings.verificationWarmup : true
-                            onCheckedChanged: if (settings) settings.verificationWarmup = checked
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: appTheme.textMuted
-                            text: "Avoids silencing the first syllable while the speaker model warms up. Disable for stricter gating from the first sample."
                         }
                     }
                 }
@@ -422,14 +472,26 @@ Window {
                         description: "Portal registers shortcuts with KDE System Settings (requires Apply). Local handles shortcuts only while Sound Spring is focused."
 
                         ComboBox {
+                            id: shortcutModeCombo
                             Layout.fillWidth: true
-                            model: ["portal", "local"]
+                            textRole: "label"
+                            valueRole: "value"
+                            model: [
+                                { label: "Portal (global / KDE)", value: "portal" },
+                                { label: "Local (focused window only)", value: "local" }
+                            ]
                             currentIndex: {
                                 if (!settings) return 0
-                                var idx = model.indexOf(settings.shortcutMode)
-                                return idx >= 0 ? idx : 0
+                                for (var i = 0; i < model.length; ++i) {
+                                    if (model[i].value === settings.shortcutMode)
+                                        return i
+                                }
+                                return 0
                             }
-                            onActivated: if (settings) settings.shortcutMode = model[currentIndex]
+                            onActivated: if (settings) {
+                                settings.shortcutMode = model[currentIndex].value
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -504,7 +566,10 @@ Window {
                                     Layout.fillWidth: true
                                     text: "Ignore NumLock state (also register navigation-cluster keysyms)"
                                     checked: settings ? settings.ignoreNumlock : false
-                                    onToggled: if (settings) settings.ignoreNumlock = checked
+                                    onToggled: if (settings) {
+                                        settings.ignoreNumlock = checked
+                                        root.touch()
+                                    }
                                 }
                                 Label {
                                     Layout.fillWidth: true
@@ -565,7 +630,10 @@ Window {
                         TextField {
                             Layout.fillWidth: true
                             text: settings ? settings.tabsRoot : ""
-                            onTextChanged: if (settings) settings.tabsRoot = text
+                            onTextChanged: if (settings) {
+                                settings.tabsRoot = text
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -578,7 +646,10 @@ Window {
                         TextField {
                             Layout.fillWidth: true
                             text: settings ? settings.stateDir : ""
-                            onTextChanged: if (settings) settings.stateDir = text
+                            onTextChanged: if (settings) {
+                                settings.stateDir = text
+                                root.touch()
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -589,49 +660,12 @@ Window {
                     }
 
                     SettingsSection {
-                        title: "Custom tab folders"
-                        description: "Additional tab folders listed in the [[tabs]] section of config.toml."
+                        title: "Current tab folder"
+                        description: "Open the active tab’s folder in your file manager. Use the + button on the main window to add tabs."
 
-                        Repeater {
-                            model: settings ? settings.customTabCount : 0
-                            delegate: RowLayout {
-                                Layout.fillWidth: true
-                                Label {
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
-                                    text: settings.customTabPathAt(index)
-                                        + (settings.customTabNameAt(index).length > 0
-                                           ? " (" + settings.customTabNameAt(index) + ")"
-                                           : "")
-                                }
-                                AppButton {
-                                    text: "Remove"
-                                    padding: 6
-                                    onClicked: settings.removeCustomTab(index)
-                                }
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            TextField {
-                                id: newTabPath
-                                Layout.fillWidth: true
-                                placeholderText: "/path/to/tab/folder"
-                            }
-                            TextField {
-                                id: newTabName
-                                Layout.preferredWidth: 120
-                                placeholderText: "Display name"
-                            }
-                            AppButton {
-                                text: "Add"
-                                onClicked: {
-                                    if (!settings || newTabPath.text.length === 0) return
-                                    settings.addCustomTab(newTabPath.text, newTabName.text)
-                                    newTabPath.text = ""
-                                    newTabName.text = ""
-                                }
-                            }
+                        AppButton {
+                            text: "Open current tab folder"
+                            onClicked: controller.openTabFolder()
                         }
                     }
                 }
@@ -641,7 +675,8 @@ Window {
         Label {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            color: settings && settings.statusMessage.length > 0 ? appTheme.accent : "transparent"
+            visible: applyStatusKind.length > 0
+            color: root.applyStatusColor()
             text: settings ? settings.statusMessage : ""
         }
 
@@ -651,7 +686,12 @@ Window {
             Item { Layout.fillWidth: true }
             AppButton {
                 text: "Close"
-                onClicked: root.close()
+                onClicked: {
+                    if (root.dirty)
+                        unsavedDialog.open()
+                    else
+                        root.performClose()
+                }
             }
             AppButton {
                 text: "Apply"
@@ -660,9 +700,61 @@ Window {
                     if (settings) {
                         controller.refreshPortalParentWindow()
                         settings.apply()
+                        root.dirty = false
+                        root.applyStatusKind = root.classifyApplyStatus(settings.statusMessage)
+                        root.clearApplyStatusSoon()
                         if (ownerWindow && ownerWindow.syncTray)
                             ownerWindow.syncTray()
                     }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: unsavedDialog
+        title: "Unsaved settings"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width - 80, 420)
+        padding: 24
+        standardButtons: Dialog.NoButton
+
+        Label {
+            width: unsavedDialog.availableWidth
+            wrapMode: Text.WordWrap
+            text: "You have unsaved settings changes. Save before closing?"
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            width: unsavedDialog.availableWidth
+            Item { Layout.fillWidth: true }
+            AppButton {
+                text: "Cancel"
+                onClicked: unsavedDialog.close()
+            }
+            AppButton {
+                text: "Discard"
+                onClicked: {
+                    unsavedDialog.close()
+                    root.performClose()
+                }
+            }
+            AppButton {
+                text: "Save"
+                role: "primary"
+                onClicked: {
+                    if (settings) {
+                        controller.refreshPortalParentWindow()
+                        settings.apply()
+                        root.dirty = false
+                        root.applyStatusKind = root.classifyApplyStatus(settings.statusMessage)
+                        if (ownerWindow && ownerWindow.syncTray)
+                            ownerWindow.syncTray()
+                    }
+                    unsavedDialog.close()
+                    root.performClose()
                 }
             }
         }

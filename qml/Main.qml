@@ -209,7 +209,7 @@ ApplicationWindow {
     }
 
     Timer {
-        interval: 50
+        interval: controller.hasActivePlayback ? 50 : 200
         running: true
         repeat: true
         onTriggered: controller.processEvents()
@@ -469,6 +469,7 @@ ApplicationWindow {
 
         VoicePanel {
             controller: controller
+            settings: settings
             theme: appTheme
         }
     }
@@ -658,7 +659,7 @@ ApplicationWindow {
               "Open Settings → Shortcuts and click Apply, or relaunch Sound Spring " +
               "from the application launcher (not from inside an IDE terminal)."
         buttons: MessageDialog.Ok | MessageDialog.Cancel
-        onAccepted: settingsDialog.openSettings()
+        onAccepted: settingsDialog.openSettings({ tab: "shortcuts", applyPortal: true })
         onRejected: controller.dismissGlobalShortcutsPrompt()
     }
 

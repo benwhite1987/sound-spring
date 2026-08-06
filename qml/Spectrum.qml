@@ -32,30 +32,11 @@ Item {
 
     readonly property int version: controller.spectrumVersion
     readonly property real chartHeight: Math.max(1, height - labelHeight - chartMargin * 2)
-    readonly property real slotWidth: Math.max(
-        1,
-        (chartArea.width - (barCount + 1) * barGap) / barCount)
 
-    function segmentDbAt(index) {
-        return controller.spectrumSegmentDbAt(index)
-    }
-
-    function segmentYFracAt(index) {
-        return controller.spectrumSegmentYFracAt(index)
-    }
-
-    function segmentYOffset(index, chartH) {
-        var usable = chartH - (segmentCount - 1) * segmentGap
-        var above = 0
-        for (var j = 0; j < index; j++)
-            above += segmentYFracAt(j) * usable + segmentGap
-        return chartH - above - segmentYFracAt(index) * usable
-    }
-
-    function segmentPixelHeight(index, chartH) {
-        var usable = chartH - (segmentCount - 1) * segmentGap
-        return Math.max(1, segmentYFracAt(index) * usable)
-    }
+    onVersionChanged: canvas.requestPaint()
+    onWidthChanged: canvas.requestPaint()
+    onHeightChanged: canvas.requestPaint()
+    onActiveChanged: canvas.requestPaint()
 
     function segmentColor(dbTick) {
         if (dbTick <= -2)
@@ -69,11 +50,6 @@ Item {
         return dbTick <= -2 ? ghostGreen : ghostRed
     }
 
-    function barLevelAt(index) {
-        var _ = version
-        return controller.barLevelAt(index)
-    }
-
     Rectangle {
         anchors.fill: parent
         radius: 6
@@ -82,52 +58,51 @@ Item {
         border.width: 1
     }
 
-    Item {
-        id: chartArea
+    Canvas {
+        id: canvas
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: chartMargin
         height: chartHeight
 
-        Repeater {
-            model: barCount
-            delegate: Item {
-                required property int index
-                readonly property real level: spectrum.barLevelAt(index)
-                readonly property int litCount: controller.litSegmentCountAt(level)
+        onPaint: {
+            var ctx = getContext("2d")
+            ctx.reset()
+            ctx.clearRect(0, 0, width, height)
 
-                x: spectrum.barGap + index * (spectrum.slotWidth + spectrum.barGap)
-                width: spectrum.slotWidth
-                height: chartArea.height
+            var bars = spectrum.barCount
+            var segs = spectrum.segmentCount
+            if (bars <= 0 || segs <= 0 || width <= 0 || height <= 0)
+                return
 
-                Repeater {
-                    model: spectrum.segmentCount
-                    delegate: Item {
-                        required property int index
-                        readonly property real dbTick: spectrum.segmentDbAt(index)
-                        readonly property bool isLit: index < litCount
+            var slot = Math.max(1, (width - (bars + 1) * spectrum.barGap) / bars)
+            var usable = height - (segs - 1) * spectrum.segmentGap
 
-                        y: spectrum.segmentYOffset(index, chartArea.height)
-                        width: parent.width
-                        height: spectrum.segmentPixelHeight(index, chartArea.height)
+            for (var b = 0; b < bars; b++) {
+                var level = spectrum.controller.barLevelAt(b)
+                var lit = spectrum.controller.litSegmentCountAt(level)
+                var x = spectrum.barGap + b * (slot + spectrum.barGap)
+                var above = 0
+                for (var s = 0; s < segs; s++) {
+                    var yFrac = spectrum.controller.spectrumSegmentYFracAt(s)
+                    var segH = Math.max(1, yFrac * usable)
+                    var y = height - above - segH
+                    above += segH + spectrum.segmentGap
+                    var dbTick = spectrum.controller.spectrumSegmentDbAt(s)
 
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: Math.min(2, width / 3)
-                            color: spectrum.ghostColor(dbTick)
-                            opacity: 0.14
-                        }
+                    ctx.globalAlpha = 0.14
+                    ctx.fillStyle = spectrum.ghostColor(dbTick)
+                    ctx.fillRect(x, y, slot, segH)
 
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: Math.min(2, width / 3)
-                            color: spectrum.segmentColor(dbTick)
-                            opacity: isLit ? (spectrum.active ? 1.0 : 0.45) : 0
-                        }
+                    if (s < lit) {
+                        ctx.globalAlpha = spectrum.active ? 1.0 : 0.45
+                        ctx.fillStyle = spectrum.segmentColor(dbTick)
+                        ctx.fillRect(x, y, slot, segH)
                     }
                 }
             }
+            ctx.globalAlpha = 1.0
         }
     }
 
@@ -150,9 +125,12 @@ Item {
                         n += spectrum.bands[b].subdivisions
                     return n
                 }
+                readonly property real slotWidth: Math.max(
+                    1,
+                    (canvas.width - (spectrum.barCount + 1) * spectrum.barGap) / spectrum.barCount)
 
-                x: spectrum.barGap + barStart * (spectrum.slotWidth + spectrum.barGap)
-                width: modelData.subdivisions * spectrum.slotWidth
+                x: spectrum.barGap + barStart * (slotWidth + spectrum.barGap)
+                width: modelData.subdivisions * slotWidth
                     + (modelData.subdivisions - 1) * spectrum.barGap
                 anchors.bottom: parent.bottom
                 horizontalAlignment: Text.AlignHCenter
