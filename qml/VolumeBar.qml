@@ -37,7 +37,7 @@ ToolBar {
         property string unmuteTooltip: ""
 
         signal toggleMuteRequested()
-        signal volumeChanged(int value)
+        signal volumeEdited(int value)
 
         spacing: volumeBar.spacing
 
@@ -102,9 +102,9 @@ ToolBar {
                 volumeBar.controller.uiVersion
                 return channel.muted ? 0.4 : 1.0
             }
-            onMoved: channel.volumeChanged(Math.round(value))
+            onMoved: channel.volumeEdited(Math.round(value))
             onPressedChanged: if (!pressed)
-                channel.volumeChanged(Math.round(value))
+                channel.volumeEdited(Math.round(value))
         }
         Label {
             visible: !volumeBar.compactText
@@ -155,7 +155,7 @@ ToolBar {
                 muteTooltip: "Output muted — click to unmute"
                 unmuteTooltip: "Output unmuted — click to mute"
                 onToggleMuteRequested: volumeBar.controller.toggleOutputMute()
-                onVolumeChanged: (v) => volumeBar.controller.updateOutputVolume(v)
+                onVolumeEdited: (v) => volumeBar.controller.updateOutputVolume(v)
             }
 
             Rectangle {
@@ -177,7 +177,7 @@ ToolBar {
                 muteTooltip: "Monitor muted — click to unmute"
                 unmuteTooltip: "Monitor unmuted — click to mute"
                 onToggleMuteRequested: volumeBar.controller.toggleMonitorMute()
-                onVolumeChanged: (v) => volumeBar.controller.updateMonitorVolume(v)
+                onVolumeEdited: (v) => volumeBar.controller.updateMonitorVolume(v)
             }
 
             Rectangle {
@@ -199,7 +199,7 @@ ToolBar {
                 muteTooltip: "Mic muted — click to unmute"
                 unmuteTooltip: "Mic unmuted — click to mute"
                 onToggleMuteRequested: volumeBar.controller.toggleMicMute()
-                onVolumeChanged: (v) => volumeBar.controller.updateMicVolume(v)
+                onVolumeEdited: (v) => volumeBar.controller.updateMicVolume(v)
             }
         }
 
