@@ -101,7 +101,7 @@ On Ubuntu 24.04:
 
 ```bash
 sudo apt install -y qt6-base-dev qt6-declarative-dev qt6-tools-dev \
-  libpulse-dev pkg-config curl rpm
+  libqt6svg6-dev libpulse-dev pkg-config curl rpm
 curl -fsSL -o /tmp/nfpm.tgz \
   https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
 sudo tar -C /usr/local/bin -xzf /tmp/nfpm.tgz nfpm

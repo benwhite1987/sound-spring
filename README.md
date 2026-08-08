@@ -14,7 +14,7 @@ Sounds play through a dedicated virtual sink and are mixed with your real microp
 
 ```bash
 # Build dependencies (Debian/Ubuntu example):
-#   rustup, qt6-base-dev, qt6-declarative-dev, pkg-config, libpulse-dev
+#   rustup, qt6-base-dev, qt6-declarative-dev, libqt6svg6-dev, pkg-config, libpulse-dev
 
 QMAKE=/usr/bin/qmake6 make build
 sudo make install PREFIX=/usr/local   # installs sound-spring + .desktop entry
