@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo "== cargo test =="
-/usr/bin/cargo test --quiet
+cargo test --quiet
 
 echo "== QML binding pattern =="
 if command -v qml6 >/dev/null; then
