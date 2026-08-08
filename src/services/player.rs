@@ -215,14 +215,7 @@ impl Player {
             .context("playback done notifier not configured")?;
         let children = self.children.clone();
         let reaper = tokio::spawn(Self::reap_playback(
-            id,
-            remote,
-            monitor,
-            tab_index,
-            slot,
-            stop_rx,
-            done_tx,
-            children,
+            id, remote, monitor, tab_index, slot, stop_rx, done_tx, children,
         ));
 
         self.children.lock().await.insert(
@@ -270,6 +263,7 @@ impl Player {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn reap_playback(
         id: u64,
         mut remote: Child,
@@ -376,7 +370,10 @@ impl Player {
         volume: u32,
     ) -> Result<()> {
         if let Some(index) = cached.lock().await.clone() {
-            if Self::set_sink_input_volume_by_index(&index, volume).await.is_ok() {
+            if Self::set_sink_input_volume_by_index(&index, volume)
+                .await
+                .is_ok()
+            {
                 return Ok(());
             }
         }
@@ -387,7 +384,10 @@ impl Player {
                 return Ok(());
             }
         }
-        if Self::set_stream_volume_by_media_name(name, volume).await.is_ok() {
+        if Self::set_stream_volume_by_media_name(name, volume)
+            .await
+            .is_ok()
+        {
             if let Ok(map) = Self::list_sink_input_indices().await {
                 if let Some(index) = map.get(name) {
                     *cached.lock().await = Some(index.clone());
@@ -422,7 +422,9 @@ impl Player {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        Ok(parse_sink_input_indices(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_sink_input_indices(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     async fn set_stream_volume_by_media_name(name: &str, volume: u32) -> Result<()> {
@@ -669,8 +671,14 @@ Sink Input #43
 	media.name = "sound-spring-monitor-1"
 "#;
         let map = super::parse_sink_input_indices(text);
-        assert_eq!(map.get("sound-spring-remote-1").map(String::as_str), Some("42"));
-        assert_eq!(map.get("sound-spring-monitor-1").map(String::as_str), Some("43"));
+        assert_eq!(
+            map.get("sound-spring-remote-1").map(String::as_str),
+            Some("42")
+        );
+        assert_eq!(
+            map.get("sound-spring-monitor-1").map(String::as_str),
+            Some("43")
+        );
     }
 
     #[test]

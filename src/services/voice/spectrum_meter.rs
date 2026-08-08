@@ -1,9 +1,7 @@
 //! Post-fader spectrum metering: dB-domain fader taps, mixed compose, bar mapping.
 
 use super::spectrum::analysis_level_apply_gain;
-use super::spectrum_bars::{
-    compute_bar_levels_from_magnitudes, BarBallistics, SPECTRUM_BAR_COUNT,
-};
+use super::spectrum_bars::{compute_bar_levels_from_magnitudes, BarBallistics, SPECTRUM_BAR_COUNT};
 
 /// Apply a post-fader gain in the analysis dB domain (0..1 fader → dB attenuation).
 pub fn apply_fader_db(magnitudes: &[f32], gain: f32, out: &mut [f32]) {
@@ -41,6 +39,7 @@ pub fn map_to_bar_targets(magnitudes: &[f32]) -> [f32; SPECTRUM_BAR_COUNT] {
 }
 
 /// Map magnitudes to display bar levels with VU-style ballistics.
+#[allow(dead_code)]
 pub fn map_to_bar_levels(
     magnitudes: &[f32],
     ballistics: &mut BarBallistics,
@@ -86,7 +85,10 @@ mod tests {
         let full_db = level_to_display_db(full_peak);
         let half_db = level_to_display_db(half_peak);
         assert!(half_peak < full_peak);
-        assert!((full_db - half_db - 6.0).abs() < 1.5, "full_db={full_db} half_db={half_db}");
+        assert!(
+            (full_db - half_db - 6.0).abs() < 1.5,
+            "full_db={full_db} half_db={half_db}"
+        );
     }
 
     #[test]

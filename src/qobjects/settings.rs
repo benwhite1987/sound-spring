@@ -82,7 +82,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{self, Config, TabEntry};
-use crate::qobjects::controller::{BackendCommand, send_backend, SoundboardControllerRust};
+use crate::qobjects::controller::{send_backend, BackendCommand, SoundboardControllerRust};
 use crate::services::autostart;
 use crate::services::shortcuts::{trigger_display, trigger_from_qt, ShortcutDef, ShortcutsManager};
 

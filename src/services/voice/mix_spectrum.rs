@@ -49,11 +49,13 @@ pub fn combine_magnitude_spectra(filtered: &[f32], sfx: &[f32]) -> Vec<f32> {
 }
 
 /// In-place energy-sum of two normalized magnitude spectra.
+#[allow(dead_code)]
 pub fn combine_magnitude_spectra_into(out: &mut [f32], filtered: &[f32], sfx: &[f32]) {
     compose_mixed_into(out, filtered, sfx, 1.0, 1.0);
 }
 
 /// In-place energy-sum with per-leg post-fader dB gains.
+#[allow(dead_code)]
 pub fn combine_magnitude_spectra_with_gains_into(
     out: &mut [f32],
     filtered: &[f32],
@@ -117,21 +119,14 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
                     filtered_buf.fill(0.0);
                 }
                 let (mic_g, out_g) = shared.spectrum_volume_gains();
-                compose_mixed_into(
-                    &mut mixed_buf,
-                    &filtered_buf,
-                    sfx_magnitudes,
-                    mic_g,
-                    out_g,
-                );
+                compose_mixed_into(&mut mixed_buf, &filtered_buf, sfx_magnitudes, mic_g, out_g);
                 push_spectrum_frame(&shared, &shared.spectrum_mixed, &mixed_buf);
                 window.drain(..FFT_HOP);
             }
         } else if want_mix {
             let seq = shared.filtered_seq();
             let idle = !sfx_playing;
-            let heartbeat_due =
-                idle && last_idle_push.elapsed() >= Duration::from_millis(33);
+            let heartbeat_due = idle && last_idle_push.elapsed() >= Duration::from_millis(33);
             if seq != last_filtered_seq || heartbeat_due {
                 last_filtered_seq = seq;
                 if heartbeat_due {
@@ -143,8 +138,7 @@ fn run(mut sfx: Option<Consumer<f32>>, shared: Arc<VoiceShared>, stop: Arc<Atomi
                 }
                 let (mic_g, out_g) = shared.spectrum_volume_gains();
                 if sfx_playing {
-                    let last_sfx_peak =
-                        last_sfx_magnitudes.iter().cloned().fold(0.0_f32, f32::max);
+                    let last_sfx_peak = last_sfx_magnitudes.iter().cloned().fold(0.0_f32, f32::max);
                     if last_sfx_peak > 1e-4 {
                         compose_mixed_into(
                             &mut mixed_buf,

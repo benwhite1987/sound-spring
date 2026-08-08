@@ -306,11 +306,23 @@ pub enum BackendCommand {
     },
     StartVoiceCapture,
     StopVoiceCapture,
-    SetVoiceVerification { enabled: bool, threshold: f32 },
-    SetVoiceSuppression { enabled: bool },
-    SetVoiceVad { enabled: bool },
-    SetMicVolume { percent: u8, muted: bool },
-    SetSpectrumSource { source: String },
+    SetVoiceVerification {
+        enabled: bool,
+        threshold: f32,
+    },
+    SetVoiceSuppression {
+        enabled: bool,
+    },
+    SetVoiceVad {
+        enabled: bool,
+    },
+    SetMicVolume {
+        percent: u8,
+        muted: bool,
+    },
+    SetSpectrumSource {
+        source: String,
+    },
     SetVoiceGate {
         hangover_ms: u32,
         release_ms: u32,
@@ -864,16 +876,10 @@ impl SoundboardControllerRust {
             self.bump_playing_version();
         }
 
-        let Some(index) = normalize_slot(slot) else {
-            return None;
-        };
+        let index = normalize_slot(slot)?;
         let (path, cached_duration) = {
-            let Some(tab) = self.active_tab() else {
-                return None;
-            };
-            let Some(path) = tab.slot(index).cloned() else {
-                return None;
-            };
+            let tab = self.active_tab()?;
+            let path = tab.slot(index).cloned()?;
             let cached = tab
                 .sound_at_slot(index)
                 .map(|sound| sound.duration_ms)
@@ -1379,8 +1385,7 @@ impl qobject::SoundboardController {
                         &saved.current_tab,
                         &tabs_root,
                     ) {
-                        if let Some(index) = tabs_snapshot.iter().position(|t| t.path == tab.path)
-                        {
+                        if let Some(index) = tabs_snapshot.iter().position(|t| t.path == tab.path) {
                             rust.current_tab_index = index as i32;
                             rust.current_tab_name = QString::from(tab.display_name());
                         }
@@ -1425,7 +1430,8 @@ impl qobject::SoundboardController {
                     crate::services::voice::voice_shared().set_capture_status(active, &error);
                 }
                 BackendEvent::PersistFailed { message } => {
-                    self.as_mut().set_last_error(QString::from(message.as_str()));
+                    self.as_mut()
+                        .set_last_error(QString::from(message.as_str()));
                 }
             }
         }

@@ -1,6 +1,6 @@
 //! Precomputed bar levels for the Voice panel spectrum (matches `qml/Spectrum.qml`).
 
-use super::spectrum::{analysis_level_to_db, ANALYSIS_DB_MAX, ANALYSIS_DB_MIN};
+use super::spectrum::analysis_level_to_db;
 use super::SPECTRUM_BINS;
 
 pub const SPECTRUM_BAR_COUNT: usize = 21;
@@ -73,6 +73,7 @@ pub fn lit_segment_count_for_level(level: f32) -> usize {
 }
 
 /// How many LED segments (bottom-up) are lit for a 0..1 bar level.
+#[allow(dead_code)]
 pub fn lit_segment_count(level: f32) -> usize {
     lit_segment_count_for_level(level)
 }
@@ -159,6 +160,7 @@ impl BarBallistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::voice::spectrum::{ANALYSIS_DB_MAX, ANALYSIS_DB_MIN};
 
     #[test]
     fn bar_count_matches_qml() {
@@ -212,11 +214,14 @@ mod tests {
 
     #[test]
     fn speech_like_peak_stays_mid_scale() {
-        let analysis_level = ((-10.0 - ANALYSIS_DB_MIN) / (ANALYSIS_DB_MAX - ANALYSIS_DB_MIN))
-            .clamp(0.0, 1.0);
+        let analysis_level =
+            ((-10.0 - ANALYSIS_DB_MIN) / (ANALYSIS_DB_MAX - ANALYSIS_DB_MIN)).clamp(0.0, 1.0);
         let level = raw_peak_to_display_level(analysis_level);
         let db = level_to_display_db(level);
-        assert!(db < 2.0, "speech-like peak should stay below red tier, got {db} dB");
+        assert!(
+            db < 2.0,
+            "speech-like peak should stay below red tier, got {db} dB"
+        );
         assert!(lit_segment_count(level) < SEGMENT_COUNT - 1);
     }
 

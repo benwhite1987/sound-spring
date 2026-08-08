@@ -81,14 +81,9 @@ fn run(
         }
 
         let mut got_any = false;
-        loop {
-            match input.pop() {
-                Ok(sample) => {
-                    in_scratch.push(sample);
-                    got_any = true;
-                }
-                Err(_) => break,
-            }
+        while let Ok(sample) = input.pop() {
+            in_scratch.push(sample);
+            got_any = true;
             if in_scratch.len() >= 4096 {
                 break;
             }

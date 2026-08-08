@@ -28,10 +28,7 @@ pub fn resolve_autostart_exec() -> String {
             || exe_str.contains("/target/release/")
             || exe_str.contains("/.cache/");
         if looks_ephemeral {
-            for candidate in [
-                "/usr/bin/sound-spring",
-                "/usr/local/bin/sound-spring",
-            ] {
+            for candidate in ["/usr/bin/sound-spring", "/usr/local/bin/sound-spring"] {
                 if PathBuf::from(candidate).is_file() {
                     return candidate.to_string();
                 }

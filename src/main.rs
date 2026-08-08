@@ -383,8 +383,8 @@ async fn apply_runtime_config(
         let _ = event_tx.send(BackendEvent::GlobalShortcutStatusChanged);
     }
 
-    let tabs_changed = initial
-        || previous.is_some_and(|prev| prev.paths.tabs_root != config.paths.tabs_root);
+    let tabs_changed =
+        initial || previous.is_some_and(|prev| prev.paths.tabs_root != config.paths.tabs_root);
     if tabs_changed {
         let tabs = TabsRepository::scan(config).unwrap_or_default();
         info!("loaded {} tabs", tabs.len());
@@ -442,22 +442,6 @@ fn format_voice_start_restore_failure(
     restore_err: &impl std::fmt::Display,
 ) -> String {
     format!("{start_error}; also failed to restore mic passthrough: {restore_err:#}")
-}
-
-#[cfg(test)]
-mod voice_fail_closed_tests {
-    use super::format_voice_start_restore_failure;
-
-    #[test]
-    fn restore_failure_is_surfaced_in_status() {
-        let msg = format_voice_start_restore_failure(
-            "Voice capture failed: boom",
-            &anyhow::anyhow!("no loopback"),
-        );
-        assert!(msg.contains("Voice capture failed: boom"));
-        assert!(msg.contains("restore mic passthrough"));
-        assert!(msg.contains("no loopback"));
-    }
 }
 
 async fn reconcile_voice(
@@ -543,7 +527,9 @@ async fn reconcile_voice(
                 )
                 .await
                 {
-                    warn!("failed to restore mic loopback after voice start failure: {restore_err:#}");
+                    warn!(
+                        "failed to restore mic loopback after voice start failure: {restore_err:#}"
+                    );
                     error = format_voice_start_restore_failure(&error, &restore_err);
                 }
             }
@@ -996,4 +982,20 @@ fn run_backend(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod voice_fail_closed_tests {
+    use super::format_voice_start_restore_failure;
+
+    #[test]
+    fn restore_failure_is_surfaced_in_status() {
+        let msg = format_voice_start_restore_failure(
+            "Voice capture failed: boom",
+            &anyhow::anyhow!("no loopback"),
+        );
+        assert!(msg.contains("Voice capture failed: boom"));
+        assert!(msg.contains("restore mic passthrough"));
+        assert!(msg.contains("no loopback"));
+    }
 }

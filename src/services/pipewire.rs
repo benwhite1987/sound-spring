@@ -64,7 +64,10 @@ impl PipewireManager {
         if sources.is_empty() {
             if let Ok(verbose) = Self::fetch_sources_verbose().await {
                 if !verbose.is_empty() {
-                    info!("listed {} mic source(s) via pactl verbose fallback", verbose.len());
+                    info!(
+                        "listed {} mic source(s) via pactl verbose fallback",
+                        verbose.len()
+                    );
                     return Ok(verbose);
                 }
             }
@@ -94,7 +97,10 @@ impl PipewireManager {
         if sinks.is_empty() {
             if let Ok(verbose) = Self::fetch_sinks_verbose().await {
                 if !verbose.is_empty() {
-                    info!("listed {} output sink(s) via pactl verbose fallback", verbose.len());
+                    info!(
+                        "listed {} output sink(s) via pactl verbose fallback",
+                        verbose.len()
+                    );
                     return Ok(verbose);
                 }
             }
@@ -695,7 +701,8 @@ impl PipewireManager {
 }
 
 fn parse_source_json(text: &str) -> Result<Vec<MicSource>> {
-    let entries: Vec<PactlJsonEntry> = serde_json::from_str(text).context("parse pactl JSON sources")?;
+    let entries: Vec<PactlJsonEntry> =
+        serde_json::from_str(text).context("parse pactl JSON sources")?;
     let mut sources = entries
         .into_iter()
         .filter(|entry| is_user_mic_source(&entry.name))
@@ -709,7 +716,8 @@ fn parse_source_json(text: &str) -> Result<Vec<MicSource>> {
 }
 
 fn parse_sink_json(text: &str) -> Result<Vec<AudioSink>> {
-    let entries: Vec<PactlJsonEntry> = serde_json::from_str(text).context("parse pactl JSON sinks")?;
+    let entries: Vec<PactlJsonEntry> =
+        serde_json::from_str(text).context("parse pactl JSON sinks")?;
     let mut sinks = entries
         .into_iter()
         .filter(|entry| is_user_sink(&entry.name))

@@ -116,7 +116,7 @@ use cxx_qt_lib::QString;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::qobjects::controller::{BackendCommand, send_backend, try_send_backend};
+use crate::qobjects::controller::{send_backend, try_send_backend, BackendCommand};
 use crate::services::voice::{
     spectrum_bars::{
         lit_segment_count_for_level, BarBallistics, DB_MAX, DB_MIN, SEGMENT_COUNT, SEGMENT_DB,
@@ -329,11 +329,7 @@ impl qobject::VoiceController {
                 apply_fader_db(&frame, mic_gain, &mut self.as_mut().rust_mut().scaled_buf);
                 map_to_bar_targets(&self.rust().scaled_buf)
             };
-            let levels = self
-                .as_mut()
-                .rust_mut()
-                .bar_ballistics
-                .update(&targets);
+            let levels = self.as_mut().rust_mut().bar_ballistics.update(&targets);
             self.as_mut().rust_mut().bar_levels = levels;
             if self.rust().latest.len() != frame.len() {
                 self.as_mut().rust_mut().latest.resize(frame.len(), 0.0);
@@ -344,11 +340,7 @@ impl qobject::VoiceController {
             self.as_mut().set_spectrum_version(next);
         } else {
             let silent = [0.0f32; SPECTRUM_BAR_COUNT];
-            let decayed = self
-                .as_mut()
-                .rust_mut()
-                .bar_ballistics
-                .update(&silent);
+            let decayed = self.as_mut().rust_mut().bar_ballistics.update(&silent);
             if decayed != self.rust().bar_levels {
                 self.as_mut().rust_mut().bar_levels = decayed;
                 let next = self.rust().spectrum_version.wrapping_add(1);
@@ -374,17 +366,11 @@ impl qobject::VoiceController {
     }
 
     pub fn spectrum_segment_db_at(&self, index: i32) -> f64 {
-        SEGMENT_DB
-            .get(index as usize)
-            .copied()
-            .unwrap_or(DB_MIN) as f64
+        SEGMENT_DB.get(index as usize).copied().unwrap_or(DB_MIN) as f64
     }
 
     pub fn spectrum_segment_y_frac_at(&self, index: i32) -> f64 {
-        SEGMENT_Y_FRAC
-            .get(index as usize)
-            .copied()
-            .unwrap_or(0.0) as f64
+        SEGMENT_Y_FRAC.get(index as usize).copied().unwrap_or(0.0) as f64
     }
 
     pub fn spectrum_value_at(&self, index: i32) -> f64 {
@@ -478,7 +464,8 @@ impl qobject::VoiceController {
         self.as_mut().rust_mut().latest = vec![0.0; SPECTRUM_BINS];
         self.as_mut().rust_mut().bar_levels = [0.0; SPECTRUM_BAR_COUNT];
         self.as_mut().rust_mut().bar_ballistics.clear();
-        self.as_mut().rust_mut().last_spectrum_generation = self.rust().shared.spectrum_generation();
+        self.as_mut().rust_mut().last_spectrum_generation =
+            self.rust().shared.spectrum_generation();
         let next = self.rust().spectrum_version.wrapping_add(1);
         self.as_mut().set_spectrum_version(next);
         try_send_backend(BackendCommand::SetSpectrumSource { source: source_str });

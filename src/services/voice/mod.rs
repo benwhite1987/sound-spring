@@ -314,10 +314,7 @@ impl VoiceShared {
 
     /// Read the capture error without blocking the audio thread.
     pub fn read_capture_error(&self) -> Option<String> {
-        self.capture_error
-            .try_lock()
-            .ok()
-            .map(|msg| msg.clone())
+        self.capture_error.try_lock().ok().map(|msg| msg.clone())
     }
 
     pub fn set_vad_thresholds(&self, open: f32, close: f32) {
@@ -421,8 +418,7 @@ impl VoiceShared {
     ) {
         self.spectrum_mic_percent
             .store(mic_percent, Ordering::Relaxed);
-        self.spectrum_mic_muted
-            .store(mic_muted, Ordering::Relaxed);
+        self.spectrum_mic_muted.store(mic_muted, Ordering::Relaxed);
         self.spectrum_output_percent
             .store(output_percent, Ordering::Relaxed);
         self.spectrum_output_muted
