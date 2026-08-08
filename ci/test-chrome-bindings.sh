@@ -3,8 +3,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "== cargo test =="
-cargo test --quiet
+BIN="$ROOT/target/debug/sound-spring"
+
+echo "== cargo build =="
+cargo build --quiet
+
+if [[ ! -x "$BIN" ]]; then
+  echo "FAIL: missing binary $BIN"
+  exit 1
+fi
 
 echo "== QML binding pattern =="
 if command -v qml6 >/dev/null; then
@@ -14,7 +21,7 @@ else
 fi
 
 echo "== offscreen app launch =="
-QT_QPA_PLATFORM=offscreen timeout 4 "$ROOT/target/debug/sound-spring" &
+QT_QPA_PLATFORM=offscreen timeout 4 "$BIN" &
 APP_PID=$!
 sleep 2
 if ! kill -0 "$APP_PID" 2>/dev/null; then

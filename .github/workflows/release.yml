@@ -10,6 +10,7 @@ permissions:
 
 env:
   QMAKE: /usr/bin/qmake6
+  RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
 jobs:
   release:
@@ -35,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-tools-dev \
-            libqt6svg6-dev qt6-wayland-dev libpulse-dev pkg-config curl file rpm libfuse2
+            libqt6svg6-dev qt6-wayland-dev libpulse-dev pkg-config curl file rpm libfuse2 lld
 
       - name: Install nfpm
         run: |
