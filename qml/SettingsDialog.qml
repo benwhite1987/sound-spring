@@ -244,8 +244,12 @@ Window {
                                 id: micCombo
                                 theme: appTheme
                                 Layout.fillWidth: true
-                                model: controller.micSourceCount
+                                model: {
+                                    controller.uiVersion
+                                    return controller.micSourceCount
+                                }
                                 displayText: {
+                                    controller.uiVersion
                                     controller.micSourcesVersion
                                     if (micCombo.currentIndex >= 0
                                             && micCombo.currentIndex < controller.micSourceCount) {
@@ -257,6 +261,7 @@ Window {
                                     required property int index
                                     width: micCombo.width
                                     text: {
+                                        controller.uiVersion
                                         controller.micSourcesVersion
                                         return controller.micSourceDescriptionAt(index)
                                     }
@@ -306,6 +311,8 @@ Window {
                                 Connections {
                                     target: controller
                                     function onMicSourcesVersionChanged() {
+                                        if (root.visible && settings && !root.dirty)
+                                            settings.loadFromConfig()
                                         micCombo.syncSelection()
                                     }
                                 }
@@ -319,7 +326,10 @@ Window {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            visible: controller.micSourceCount === 0
+                            visible: {
+                                controller.uiVersion
+                                return controller.micSourceCount === 0
+                            }
                             color: appTheme.textMuted
                             text: "No PipeWire microphone sources found. Check that PipeWire is running, then click Refresh."
                         }
@@ -329,17 +339,24 @@ Window {
                             id: monitorCombo
                             theme: appTheme
                             Layout.fillWidth: true
-                            model: controller.audioSinkCount + 1
+                            model: {
+                                controller.uiVersion
+                                return controller.audioSinkCount + 1
+                            }
                             displayText: {
+                                controller.uiVersion
                                 controller.audioSinksVersion
                                 return monitorCombo.selectedDescription()
                             }
                             delegate: ItemDelegate {
                                 required property int index
                                 width: monitorCombo.width
-                                text: index === 0
-                                      ? "Default output device"
-                                      : controller.audioSinkDescriptionAt(index - 1)
+                                text: {
+                                    controller.uiVersion
+                                    return index === 0
+                                          ? "Default output device"
+                                          : controller.audioSinkDescriptionAt(index - 1)
+                                }
                                 highlighted: monitorCombo.highlightedIndex === index
                                 palette {
                                     text: appTheme.textPrimary
@@ -393,6 +410,8 @@ Window {
                             Connections {
                                 target: controller
                                 function onAudioSinksVersionChanged() {
+                                    if (root.visible && settings && !root.dirty)
+                                        settings.loadFromConfig()
                                     monitorCombo.syncSelection()
                                 }
                             }
@@ -401,7 +420,10 @@ Window {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            visible: controller.audioSinkCount === 0
+                            visible: {
+                                controller.uiVersion
+                                return controller.audioSinkCount === 0
+                            }
                             color: appTheme.textMuted
                             text: "No physical output devices listed. Playback still uses the system default sink. Click Refresh after plugging in hardware."
                         }

@@ -21,13 +21,13 @@ pub struct Modules {
     pub ids: Vec<u32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MicSource {
     pub name: String,
     pub description: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSink {
     pub name: String,
     pub description: String,
@@ -116,14 +116,14 @@ impl PipewireManager {
         if sources.is_empty() {
             if let Ok(verbose) = Self::fetch_sources_verbose().await {
                 if !verbose.is_empty() {
-                    info!(
+                    debug!(
                         "listed {} mic source(s) via pactl verbose fallback",
                         verbose.len()
                     );
                     return Ok(verbose);
                 }
             }
-            warn!("pactl returned no user microphone sources");
+            debug!("pactl returned no user microphone sources");
         } else {
             let needs_enrich = sources
                 .iter()
@@ -135,7 +135,7 @@ impl PipewireManager {
                 }
             }
             sources.sort_by(|a, b| a.description.cmp(&b.description));
-            info!("listed {} mic source(s)", sources.len());
+            debug!("listed {} mic source(s)", sources.len());
         }
         Ok(sources)
     }
@@ -159,14 +159,14 @@ impl PipewireManager {
         if sinks.is_empty() {
             if let Ok(verbose) = Self::fetch_sinks_verbose().await {
                 if !verbose.is_empty() {
-                    info!(
+                    debug!(
                         "listed {} output sink(s) via pactl verbose fallback",
                         verbose.len()
                     );
                     return Ok(verbose);
                 }
             }
-            warn!("pactl returned no user output sinks");
+            debug!("pactl returned no user output sinks");
         } else {
             let needs_enrich = sinks
                 .iter()
@@ -178,7 +178,7 @@ impl PipewireManager {
                 }
             }
             sinks.sort_by(|a, b| a.description.cmp(&b.description));
-            info!("listed {} output sink(s)", sinks.len());
+            debug!("listed {} output sink(s)", sinks.len());
         }
         Ok(sinks)
     }
@@ -327,7 +327,11 @@ impl PipewireManager {
                 }
                 line = lines.next_line() => {
                     match line.context("read pactl subscribe")? {
-                        Some(_) => deadline = Instant::now() + debounce,
+                        Some(line) => {
+                            if subscribe_event_relevant(&line) {
+                                deadline = Instant::now() + debounce;
+                            }
+                        }
                         None => {
                             let _ = child.wait().await;
                             return Ok(());
@@ -893,6 +897,43 @@ fn is_user_mic_source(name: &str) -> bool {
         && !name.contains("loopback")
 }
 
+/// Whether a `pactl subscribe` line should trigger a device list refresh.
+///
+/// Ignore stream/client churn (`source-output`, `sink-input`, volume `change`
+/// on existing nodes). Hotplug and profile switches show up as `new`/`remove`
+/// on sources/sinks, or `change` on cards/server.
+fn subscribe_event_relevant(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if lower.is_empty()
+        || lower.contains("source-output")
+        || lower.contains("sink-input")
+    {
+        return false;
+    }
+    let on_source = lower.contains(" on source #");
+    let on_sink = lower.contains(" on sink #");
+    let on_card = lower.contains(" on card #");
+    let on_server = lower.contains(" on server");
+    let is_new = lower.contains("event 'new'");
+    let is_remove = lower.contains("event 'remove'");
+    let is_change = lower.contains("event 'change'");
+
+    ((on_source || on_sink) && (is_new || is_remove))
+        || ((on_card || on_server) && (is_new || is_remove || is_change))
+}
+
+/// Pick a mic when unset, or replace a configured mic that disappeared.
+/// Returns `None` when the current selection should be kept.
+pub fn resolve_mic_source(current: &str, available: &[MicSource]) -> Option<String> {
+    if available.is_empty() {
+        return None;
+    }
+    if !current.is_empty() && available.iter().any(|source| source.name == current) {
+        return None;
+    }
+    Some(available[0].name.clone())
+}
+
 fn parse_sink_list(text: &str) -> Vec<AudioSink> {
     let mut sinks = Vec::new();
     let mut name = String::new();
@@ -958,6 +999,49 @@ fn module_matches_soundboard(rest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_ignores_stream_and_node_change_noise() {
+        assert!(!subscribe_event_relevant(
+            "Event 'change' on source #52"
+        ));
+        assert!(!subscribe_event_relevant(
+            "Event 'new' on source-output #9"
+        ));
+        assert!(!subscribe_event_relevant(
+            "Event 'change' on sink-input #3"
+        ));
+        assert!(subscribe_event_relevant("Event 'new' on source #52"));
+        assert!(subscribe_event_relevant("Event 'remove' on sink #11"));
+        assert!(subscribe_event_relevant("Event 'change' on card #0"));
+    }
+
+    #[test]
+    fn resolve_mic_picks_first_when_unset_or_stale() {
+        let available = vec![
+            MicSource {
+                name: "alsa_input.built_in".into(),
+                description: "Built-in".into(),
+            },
+            MicSource {
+                name: "alsa_input.usb".into(),
+                description: "USB".into(),
+            },
+        ];
+        assert_eq!(
+            resolve_mic_source("", &available).as_deref(),
+            Some("alsa_input.built_in")
+        );
+        assert_eq!(
+            resolve_mic_source("alsa_input.usb", &available).as_deref(),
+            None
+        );
+        assert_eq!(
+            resolve_mic_source("alsa_input.missing", &available).as_deref(),
+            Some("alsa_input.built_in")
+        );
+        assert_eq!(resolve_mic_source("alsa_input.built_in", &[]), None);
+    }
 
     #[test]
     fn parse_sources_skips_loopback_nodes() {

@@ -645,15 +645,6 @@ impl SoundboardControllerRust {
         tab.slot(index).cloned()
     }
 
-    fn refresh_mic_source_count(&mut self) {
-        self.mic_source_count = MIC_SOURCES
-            .get()
-            .and_then(|sources| sources.lock().ok())
-            .map(|sources| sources.len() as i32)
-            .unwrap_or(0);
-        self.mic_sources_version += 1;
-    }
-
     fn mic_source_at(&self, index: i32) -> Option<MicSource> {
         MIC_SOURCES.get().and_then(|store| {
             store
@@ -661,15 +652,6 @@ impl SoundboardControllerRust {
                 .ok()
                 .and_then(|sources| sources.get(index as usize).cloned())
         })
-    }
-
-    fn refresh_audio_sink_count(&mut self) {
-        self.audio_sink_count = AUDIO_SINKS
-            .get()
-            .and_then(|sinks| sinks.lock().ok())
-            .map(|sinks| sinks.len() as i32)
-            .unwrap_or(0);
-        self.audio_sinks_version += 1;
     }
 
     fn audio_sink_at(&self, index: i32) -> Option<AudioSink> {
@@ -1391,10 +1373,10 @@ impl qobject::SoundboardController {
                         }
                     }
                     rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
-                    rust.refresh_mic_source_count();
-                    rust.refresh_audio_sink_count();
                     SoundboardControllerRust::reload_shortcut_bindings();
                     self.as_mut().rust_mut().bump_shortcut_version();
+                    properties::sync_mic_properties(self.as_mut());
+                    properties::sync_audio_sink_properties(self.as_mut());
                     properties::sync_volume_properties(self.as_mut());
                     playback_changed = true;
                     tab_changed = true;
@@ -1416,11 +1398,9 @@ impl qobject::SoundboardController {
                     tab_changed = true;
                 }
                 BackendEvent::MicSourcesUpdated => {
-                    self.as_mut().rust_mut().refresh_mic_source_count();
                     properties::sync_mic_properties(self.as_mut());
                 }
                 BackendEvent::AudioSinksUpdated => {
-                    self.as_mut().rust_mut().refresh_audio_sink_count();
                     properties::sync_audio_sink_properties(self.as_mut());
                 }
                 BackendEvent::GlobalShortcutStatusChanged => {
@@ -1465,8 +1445,6 @@ impl qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
-        rust.refresh_mic_source_count();
-        rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
         properties::sync_mic_properties(self.as_mut());
         properties::sync_audio_sink_properties(self.as_mut());
@@ -2050,8 +2028,6 @@ impl Constructor<()> for qobject::SoundboardController {
         let tabs = TabsRepository::scan(&config).unwrap_or_default();
         rust.replace_tabs(tabs, Some(&saved.current_tab));
         rust.set_tab_warning(&SoundboardControllerRust::collect_tab_warnings(&config));
-        rust.refresh_mic_source_count();
-        rust.refresh_audio_sink_count();
         properties::sync_tab_properties(self.as_mut());
         properties::sync_mic_properties(self.as_mut());
         properties::sync_audio_sink_properties(self.as_mut());
@@ -2092,17 +2068,35 @@ pub(crate) mod properties {
     }
 
     pub fn sync_mic_properties(mut controller: Pin<&mut SoundboardController>) {
-        let count = controller.as_ref().rust().mic_source_count;
-        let version = controller.as_ref().rust().mic_sources_version;
+        let count = super::MIC_SOURCES
+            .get()
+            .and_then(|sources| sources.lock().ok())
+            .map(|sources| sources.len() as i32)
+            .unwrap_or(0);
+        let prev_count = controller.as_ref().rust().mic_source_count;
+        let version = controller.as_ref().rust().mic_sources_version + 1;
         controller.as_mut().set_mic_source_count(count);
+        // Always bump version: caller only invokes this when the list changed
+        // (or the user forced a Refresh), so QML must refresh labels too.
         controller.as_mut().set_mic_sources_version(version);
+        if count != prev_count {
+            bump_ui_version(controller);
+        }
     }
 
     pub fn sync_audio_sink_properties(mut controller: Pin<&mut SoundboardController>) {
-        let count = controller.as_ref().rust().audio_sink_count;
-        let version = controller.as_ref().rust().audio_sinks_version;
+        let count = super::AUDIO_SINKS
+            .get()
+            .and_then(|sinks| sinks.lock().ok())
+            .map(|sinks| sinks.len() as i32)
+            .unwrap_or(0);
+        let prev_count = controller.as_ref().rust().audio_sink_count;
+        let version = controller.as_ref().rust().audio_sinks_version + 1;
         controller.as_mut().set_audio_sink_count(count);
         controller.as_mut().set_audio_sinks_version(version);
+        if count != prev_count {
+            bump_ui_version(controller);
+        }
     }
 
     pub fn sync_volume_properties(mut controller: Pin<&mut SoundboardController>) {

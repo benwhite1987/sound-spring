@@ -171,32 +171,129 @@ fn sync_spectrum_display_volumes(config: &Config) {
     );
 }
 
-async fn publish_mic_sources(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
+async fn publish_mic_sources(
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+    force: bool,
+) -> Vec<services::pipewire::MicSource> {
     match PipewireManager::available_sources().await {
         Ok(sources) => {
-            if let Some(store) = MIC_SOURCES.get() {
+            let changed = if let Some(store) = MIC_SOURCES.get() {
                 if let Ok(mut guard) = store.lock() {
-                    *guard = sources;
+                    let content_changed = *guard != sources;
+                    let changed = force || content_changed;
+                    if changed {
+                        if content_changed {
+                            info!(
+                                "microphone sources updated ({} available)",
+                                sources.len()
+                            );
+                        }
+                        *guard = sources.clone();
+                    }
+                    changed
+                } else {
+                    true
                 }
+            } else {
+                true
+            };
+            if changed {
+                let _ = event_tx.send(BackendEvent::MicSourcesUpdated);
             }
-            let _ = event_tx.send(BackendEvent::MicSourcesUpdated);
+            sources
         }
-        Err(err) => warn!("failed to list mic sources: {err:#}"),
+        Err(err) => {
+            warn!("failed to list mic sources: {err:#}");
+            Vec::new()
+        }
     }
 }
 
-async fn publish_audio_sinks(event_tx: &std::sync::mpsc::Sender<BackendEvent>) {
+async fn publish_audio_sinks(
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+    force: bool,
+) -> Vec<services::pipewire::AudioSink> {
     match PipewireManager::available_sinks().await {
         Ok(sinks) => {
-            if let Some(store) = AUDIO_SINKS.get() {
+            let changed = if let Some(store) = AUDIO_SINKS.get() {
                 if let Ok(mut guard) = store.lock() {
-                    *guard = sinks;
+                    let content_changed = *guard != sinks;
+                    let changed = force || content_changed;
+                    if changed {
+                        if content_changed {
+                            info!("output sinks updated ({} available)", sinks.len());
+                        }
+                        *guard = sinks.clone();
+                    }
+                    changed
+                } else {
+                    true
                 }
+            } else {
+                true
+            };
+            if changed {
+                let _ = event_tx.send(BackendEvent::AudioSinksUpdated);
             }
-            let _ = event_tx.send(BackendEvent::AudioSinksUpdated);
+            sinks
         }
-        Err(err) => warn!("failed to list output devices: {err:#}"),
+        Err(err) => {
+            warn!("failed to list output devices: {err:#}");
+            Vec::new()
+        }
     }
+}
+
+/// Auto-select the first hardware mic when unset, or replace a vanished source.
+/// Persists config. Does not touch PipeWire routing — caller applies that.
+async fn maybe_autoselect_mic(config: &mut Config) -> bool {
+    let sources = MIC_SOURCES
+        .get()
+        .and_then(|store| store.lock().ok())
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    let Some(chosen) = services::pipewire::resolve_mic_source(&config.audio.mic_source, &sources)
+    else {
+        return false;
+    };
+    let previous = config.audio.mic_source.clone();
+    info!(
+        "auto-selected microphone '{}' (was '{}')",
+        chosen,
+        if previous.is_empty() {
+            "(none)"
+        } else {
+            previous.as_str()
+        }
+    );
+    config.audio.mic_source = chosen;
+    if let Err(err) = config::save_config(config) {
+        warn!("failed to persist auto-selected mic: {err:#}");
+    }
+    true
+}
+
+async fn apply_autoselected_mic_routing(
+    config: &Config,
+    modules: &mut Modules,
+    event_tx: &std::sync::mpsc::Sender<BackendEvent>,
+) {
+    if let Err(err) =
+        PipewireManager::reconcile_mic_loopback(&config.audio.mic_source, config.audio.latency_ms)
+            .await
+    {
+        warn!("failed to apply auto-selected mic loopback: {err:#}");
+        if let Err(err) = PipewireManager::ensure_routing_for_playback(
+            &config.audio.mic_source,
+            config.audio.latency_ms,
+            modules,
+        )
+        .await
+        {
+            warn!("failed to rebuild routing for auto-selected mic: {err:#}");
+        }
+    }
+    let _ = event_tx.send(BackendEvent::ConfigApplied);
 }
 
 async fn bind_shortcuts(
@@ -287,7 +384,7 @@ async fn ensure_playback_routing(
                 monitor_muted: config.audio.monitor_muted,
             })
             .await;
-            publish_mic_sources(event_tx).await;
+            publish_mic_sources(event_tx, false).await;
             true
         }
         Err(err) => {
@@ -298,13 +395,20 @@ async fn ensure_playback_routing(
 }
 
 async fn apply_runtime_config(
-    config: &Config,
+    config: &mut Config,
     event_tx: &std::sync::mpsc::Sender<BackendEvent>,
     modules: &mut Modules,
     previous: Option<&Config>,
 ) {
     let initial = previous.is_none();
+
+    // Refresh device lists before routing so auto-select sees current hardware.
+    publish_mic_sources(event_tx, false).await;
+    publish_audio_sinks(event_tx, false).await;
+    let auto_selected = maybe_autoselect_mic(config).await;
+
     let audio_routing_changed = initial
+        || auto_selected
         || previous.is_some_and(|prev| {
             prev.audio.mic_source != config.audio.mic_source
                 || prev.audio.latency_ms != config.audio.latency_ms
@@ -325,12 +429,10 @@ async fn apply_runtime_config(
             Ok(new_modules) => *modules = new_modules,
             Err(err) => warn!("PipeWire setup failed: {err:#}"),
         }
-        publish_mic_sources(event_tx).await;
+        // Setup creates/removes nodes; refresh once more so the UI matches.
+        publish_mic_sources(event_tx, false).await;
+        publish_audio_sinks(event_tx, false).await;
     }
-
-    // Output devices don't depend on audio routing; refresh on every apply so
-    // the monitor-device picker reflects the current sink list.
-    publish_audio_sinks(event_tx).await;
 
     if volume_changed {
         apply_volumes(VolumeState {
@@ -569,7 +671,7 @@ fn run_backend(
 
         let mut modules = Modules::default();
         let mut active_config = config.clone();
-        apply_runtime_config(&active_config, &backend_event_tx, &mut modules, None).await;
+        apply_runtime_config(&mut active_config, &backend_event_tx, &mut modules, None).await;
 
         let (source_watch_tx, mut source_watch_rx) = tokio::sync::mpsc::channel(8);
         let (source_watch_stop_tx, source_watch_stop_rx) = tokio::sync::watch::channel(false);
@@ -649,7 +751,7 @@ fn run_backend(
                                 .await;
                             }
                             apply_runtime_config(
-                                &new_config,
+                                &mut new_config,
                                 &backend_event_tx,
                                 &mut modules,
                                 Some(&previous),
@@ -688,10 +790,18 @@ fn run_backend(
                             ShortcutsManager::configure_global_shortcuts().await;
                         }
                         Some(BackendCommand::RefreshMicSources) => {
-                            publish_mic_sources(&backend_event_tx).await;
+                            publish_mic_sources(&backend_event_tx, true).await;
+                            if maybe_autoselect_mic(&mut active_config).await {
+                                apply_autoselected_mic_routing(
+                                    &active_config,
+                                    &mut modules,
+                                    &backend_event_tx,
+                                )
+                                .await;
+                            }
                         }
                         Some(BackendCommand::RefreshAudioSinks) => {
-                            publish_audio_sinks(&backend_event_tx).await;
+                            publish_audio_sinks(&backend_event_tx, true).await;
                         }
                         Some(BackendCommand::RestartTabWatch) => {
                             let config = config::load_config().unwrap_or_default();
@@ -940,8 +1050,17 @@ fn run_backend(
                     }
                 }
                 _ = source_watch_rx.recv() => {
-                    publish_mic_sources(&backend_event_tx).await;
-                    publish_audio_sinks(&backend_event_tx).await;
+                    while source_watch_rx.try_recv().is_ok() {}
+                    publish_mic_sources(&backend_event_tx, false).await;
+                    publish_audio_sinks(&backend_event_tx, false).await;
+                    if maybe_autoselect_mic(&mut active_config).await {
+                        apply_autoselected_mic_routing(
+                            &active_config,
+                            &mut modules,
+                            &backend_event_tx,
+                        )
+                        .await;
+                    }
                 }
                 _ = tab_watch_rx.recv() => {
                     while tab_watch_rx.try_recv().is_ok() {}
