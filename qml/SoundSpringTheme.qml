@@ -23,4 +23,15 @@ QtObject {
     readonly property color warningDetail: "#a89567"
     readonly property color warningAccent: "#ffb74d"
     readonly property color infoAccent: "#5b9bd5"
+    // Spectrum chart well (darker than windowBg).
+    readonly property color spectrumBg: "#101013"
+    // Fusion palette roles that fall back to light system defaults if unset.
+    readonly property color mid: "#2c2c31"
+    readonly property color midlight: "#3a3a40"
+    readonly property color light: "#4a4a52"
+    readonly property color dark: "#121215"
+    readonly property color shadow: "#000000"
+    readonly property color placeholderText: "#888892"
+    readonly property color link: "#6abf69"
+    readonly property color brightText: "#ffffff"
 }

@@ -101,12 +101,44 @@ echo "== linuxdeploy-plugin-qt =="
 
 for required in \
   "$APPDIR/usr/qml/QtQuick/libqtquick2plugin.so" \
-  "$APPDIR/usr/qml/QtQuick/Controls/libqtquickcontrols2plugin.so"; do
+  "$APPDIR/usr/qml/QtQuick/Controls/libqtquickcontrols2plugin.so" \
+  "$APPDIR/usr/qml/QtQuick/Controls/Fusion/libqtquickcontrols2fusionstyleplugin.so"; do
   if [[ ! -f "$required" ]]; then
+    # Fusion may ship as a directory of QML without a single well-known .so name
+    # across Qt versions; accept either the plugin or the Fusion style tree.
+    if [[ "$required" == *Fusion* && -d "$APPDIR/usr/qml/QtQuick/Controls/Fusion" ]]; then
+      continue
+    fi
     echo "AppImage bundle missing required Qt file: $required" >&2
     exit 1
   fi
 done
+if [[ ! -d "$APPDIR/usr/qml/QtQuick/Controls/Fusion" ]]; then
+  echo "AppImage bundle missing QtQuick.Controls.Fusion style" >&2
+  exit 1
+fi
+
+# Optional plugins that improve icons/dialogs without pulling Plasma Breeze.
+copy_qt_plugin() {
+  local subdir="$1"
+  local name="$2"
+  local dest_dir="$APPDIR/usr/plugins/$subdir"
+  mkdir -p "$dest_dir"
+  if [[ -n "$QT_PLUGINS" && -f "$QT_PLUGINS/$subdir/$name" ]]; then
+    cp -n "$QT_PLUGINS/$subdir/$name" "$dest_dir/" 2>/dev/null || true
+    return 0
+  fi
+  for base in /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib/qt6/plugins; do
+    if [[ -f "$base/$subdir/$name" ]]; then
+      cp -n "$base/$subdir/$name" "$dest_dir/" 2>/dev/null || true
+      return 0
+    fi
+  done
+  return 1
+}
+copy_qt_plugin iconengines libqsvgicon.so || true
+copy_qt_plugin platformthemes libqxdgdesktopportal.so || true
+
 wayland_bundled=0
 offscreen_bundled=0
 for candidate in libqwayland.so libqwayland-generic.so libqwayland-egl.so; do
@@ -137,10 +169,14 @@ rm -f "$APPDIR/sound-spring.desktop"
 # linuxdeploy leaves AppRun as a symlink to the binary. Replace it with a
 # wrapper: Ubuntu Qt 6.4 Wayland-EGL paints a black window on Plasma 6/Mesa.
 # Prefer XWayland (xcb) unless the user already set QT_QPA_PLATFORM.
+# Pin Fusion + bundled plugin/QML paths so host Plasma themes cannot leak in.
 rm -f "$APPDIR/AppRun"
 cat >"$APPDIR/AppRun" <<'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
+export QT_PLUGIN_PATH="${QT_PLUGIN_PATH:-$HERE/usr/plugins}"
+export QML2_IMPORT_PATH="${QML2_IMPORT_PATH:-$HERE/usr/qml}"
+export QT_QUICK_CONTROLS_STYLE="${QT_QUICK_CONTROLS_STYLE:-Fusion}"
 if [[ -z "${QT_QPA_PLATFORM:-}" && "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
   export QT_QPA_PLATFORM=xcb
 fi

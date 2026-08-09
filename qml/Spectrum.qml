@@ -53,7 +53,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: 6
-        color: "#101013"
+        color: spectrum.theme ? spectrum.theme.spectrumBg : "#101013"
         border.color: spectrum.theme ? spectrum.theme.border : "#5a5a62"
         border.width: 1
     }

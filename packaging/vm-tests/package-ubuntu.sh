@@ -80,11 +80,14 @@ VERSION="$VERSION" nfpm package -f packaging/nfpm/nfpm.yaml -p deb --target dist
 VERSION="$VERSION" nfpm package -f packaging/nfpm/nfpm.yaml -p rpm --target dist
 ls -lh dist/
 # Docker runs as root; hand ownership back even if a later step fails.
-trap 'if [[ -n "${HOST_UID:-}" && -n "${HOST_GID:-}" ]]; then
-  chown -R "${HOST_UID}:${HOST_GID}" \
-    staging AppDir dist target/release/sound-spring target-ubuntu \
-    .cache/appimage-tools 2>/dev/null || true
-fi' EXIT
+restore_owner() {
+  if [[ -n "${HOST_UID:-}" && -n "${HOST_GID:-}" ]]; then
+    chown -R "${HOST_UID}:${HOST_GID}" \
+      staging AppDir dist target/release/sound-spring target-ubuntu \
+      .cache/appimage-tools 2>/dev/null || true
+  fi
+}
+trap restore_owner EXIT
 VERSION="$VERSION" QMAKE=/usr/bin/qmake6 packaging/appimage/build-appimage.sh
 echo "=== ldd (should not require GLIBC > 2.39) ==="
 ldd target/release/sound-spring | head -20 || true

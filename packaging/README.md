@@ -53,7 +53,7 @@ chmod +x sound-spring-*-x86_64.AppImage
 ./sound-spring-*-x86_64.AppImage
 ```
 
-Requires PipeWire, `pactl`, `paplay`, `pw-cat`, and `ffmpeg` on the host. The AppImage bundles Qt (including QML modules, Wayland plugins, and `offscreen` for headless smoke). On Wayland sessions the AppRun wrapper prefers `xcb` (XWayland) because Ubuntu Qt 6.4 Wayland-EGL often paints a black window on Plasma 6; override with `QT_QPA_PLATFORM=wayland` if you want to force native Wayland (may need a newer Qt build for reliable GL). For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
+Requires PipeWire, `pactl`, `paplay`, `pw-cat`, and `ffmpeg` on the host. The AppImage bundles Qt (including QML modules, **Fusion** Quick Controls, Wayland plugins, and `offscreen` for headless smoke). UI chrome uses the app’s dark **SoundSpringTheme** + Fusion — not the host Plasma/Breeze theme — so look-and-feel matches across distros. On Wayland sessions the AppRun wrapper prefers `xcb` (XWayland) because Ubuntu Qt 6.4 Wayland-EGL often paints a black window on Plasma 6; override with `QT_QPA_PLATFORM=wayland` if you want to force native Wayland (may need a newer Qt build for reliable GL). For global shortcuts, launch from KRunner or the app menu — not from a terminal inside Cursor/VS Code/Chromium. See [docs/global-shortcuts.md](../docs/global-shortcuts.md).
 
 On Arch/CachyOS install host audio tools if missing:
 

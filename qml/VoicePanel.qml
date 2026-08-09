@@ -124,6 +124,12 @@ Item {
                         height: 28
                         ButtonGroup.group: spectrumSourceGroup
                         checked: voiceController.spectrumSource === "raw"
+                        palette {
+                            windowText: voicePanel.textPrimary
+                            text: voicePanel.textPrimary
+                            highlight: voicePanel.accent
+                            button: voicePanel.surface
+                        }
                         onClicked: voiceController.persistSpectrumSource("raw")
                     }
                     RadioButton {
@@ -131,6 +137,12 @@ Item {
                         height: 28
                         ButtonGroup.group: spectrumSourceGroup
                         checked: voiceController.spectrumSource === "filtered"
+                        palette {
+                            windowText: voicePanel.textPrimary
+                            text: voicePanel.textPrimary
+                            highlight: voicePanel.accent
+                            button: voicePanel.surface
+                        }
                         onClicked: voiceController.persistSpectrumSource("filtered")
                     }
                     RadioButton {
@@ -138,6 +150,12 @@ Item {
                         height: 28
                         ButtonGroup.group: spectrumSourceGroup
                         checked: voiceController.spectrumSource === "mixed"
+                        palette {
+                            windowText: voicePanel.textPrimary
+                            text: voicePanel.textPrimary
+                            highlight: voicePanel.accent
+                            button: voicePanel.surface
+                        }
                         onClicked: voiceController.persistSpectrumSource("mixed")
                     }
                 }
@@ -216,7 +234,16 @@ Item {
                             Layout.fillWidth: true
                             text: "Voice activity detection"
                             checked: voiceController.vadEnabled
-                            palette.windowText: voicePanel.textPrimary
+                            palette {
+                                windowText: voicePanel.textPrimary
+                                text: voicePanel.textPrimary
+                                highlight: voicePanel.accent
+                                highlightedText: voicePanel.textPrimary
+                                button: voicePanel.surface
+                                mid: theme ? theme.mid : "#2c2c31"
+                                light: theme ? theme.light : "#4a4a52"
+                                dark: theme ? theme.dark : "#121215"
+                            }
                             onToggled: voiceController.persistVadEnabled(checked)
                         }
 
@@ -273,6 +300,13 @@ Item {
                                 from: 0.05
                                 to: 0.95
                                 value: voiceController.vadOpenThreshold
+                                palette {
+                                    highlight: voicePanel.accent
+                                    button: voicePanel.surface
+                                    mid: theme ? theme.mid : "#2c2c31"
+                                    light: theme ? theme.light : "#4a4a52"
+                                    dark: theme ? theme.dark : "#121215"
+                                }
                                 onMoved: voiceController.setVadThreshold(value)
                             }
 
@@ -375,7 +409,16 @@ Item {
                             text: "Speaker verification"
                             enabled: voiceController.isEnrolled
                             checked: voiceController.verificationEnabled
-                            palette.windowText: voicePanel.textPrimary
+                            palette {
+                                windowText: voicePanel.textPrimary
+                                text: voicePanel.textPrimary
+                                highlight: voicePanel.accent
+                                highlightedText: voicePanel.textPrimary
+                                button: voicePanel.surface
+                                mid: theme ? theme.mid : "#2c2c31"
+                                light: theme ? theme.light : "#4a4a52"
+                                dark: theme ? theme.dark : "#121215"
+                            }
                             onToggled: voiceController.setVerification(checked)
                         }
 
@@ -397,6 +440,13 @@ Item {
                                 from: 0.0
                                 to: 1.0
                                 value: voiceController.matchThreshold
+                                palette {
+                                    highlight: voicePanel.accent
+                                    button: voicePanel.surface
+                                    mid: theme ? theme.mid : "#2c2c31"
+                                    light: theme ? theme.light : "#4a4a52"
+                                    dark: theme ? theme.dark : "#121215"
+                                }
                                 onMoved: voiceController.setThreshold(value)
                             }
 
@@ -417,7 +467,16 @@ Item {
                             Layout.fillWidth: true
                             text: "Noise suppression (DeepFilterNet3)"
                             checked: voiceController.suppressionEnabled
-                            palette.windowText: voicePanel.textPrimary
+                            palette {
+                                windowText: voicePanel.textPrimary
+                                text: voicePanel.textPrimary
+                                highlight: voicePanel.accent
+                                highlightedText: voicePanel.textPrimary
+                                button: voicePanel.surface
+                                mid: theme ? theme.mid : "#2c2c31"
+                                light: theme ? theme.light : "#4a4a52"
+                                dark: theme ? theme.dark : "#121215"
+                            }
                             onToggled: voiceController.setSuppression(checked)
                         }
 
@@ -502,7 +561,16 @@ Item {
                             Layout.fillWidth: true
                             text: "Verification warm-up"
                             checked: settings ? settings.verificationWarmup : true
-                            palette.windowText: voicePanel.textPrimary
+                            palette {
+                                windowText: voicePanel.textPrimary
+                                text: voicePanel.textPrimary
+                                highlight: voicePanel.accent
+                                highlightedText: voicePanel.textPrimary
+                                button: voicePanel.surface
+                                mid: theme ? theme.mid : "#2c2c31"
+                                light: theme ? theme.light : "#4a4a52"
+                                dark: theme ? theme.dark : "#121215"
+                            }
                             onToggled: {
                                 if (!settings)
                                     return

@@ -94,6 +94,15 @@ ToolBar {
             to: 100
             value: channel.volume
             live: true
+            palette {
+                highlight: volumeBar.theme ? volumeBar.theme.accent : "#6abf69"
+                window: volumeBar.theme ? volumeBar.theme.windowBg : "#1b1b1f"
+                button: volumeBar.theme ? volumeBar.theme.surface : "#333338"
+                mid: volumeBar.theme ? volumeBar.theme.mid : "#2c2c31"
+                light: volumeBar.theme ? volumeBar.theme.light : "#4a4a52"
+                dark: volumeBar.theme ? volumeBar.theme.dark : "#121215"
+                text: volumeBar.theme ? volumeBar.theme.textPrimary : "#ececec"
+            }
             enabled: {
                 volumeBar.controller.uiVersion
                 return !channel.muted

@@ -462,6 +462,10 @@ async fn reconcile_voice(
         if session.is_some() {
             stop_voice_session(config, session, current_routing, event_tx).await;
         }
+        let _ = event_tx.send(BackendEvent::VoiceCaptureStatus {
+            active: false,
+            error: "Select a microphone in Settings".to_string(),
+        });
         return;
     }
 

@@ -23,8 +23,16 @@ ApplicationWindow {
         base: appTheme.surface
         button: appTheme.surface
         buttonText: appTheme.textPrimary
+        brightText: appTheme.brightText
+        dark: appTheme.dark
         highlight: appTheme.accent
         highlightedText: appTheme.textPrimary
+        light: appTheme.light
+        link: appTheme.link
+        mid: appTheme.mid
+        midlight: appTheme.midlight
+        placeholderText: appTheme.placeholderText
+        shadow: appTheme.shadow
         text: appTheme.textPrimary
         window: appTheme.windowBg
         windowText: appTheme.textPrimary
@@ -490,7 +498,18 @@ ApplicationWindow {
     Menu {
         id: tabContextMenu
         property int tabIndex: -1
-
+        palette {
+            window: appTheme.windowBg
+            base: appTheme.surface
+            text: appTheme.textPrimary
+            buttonText: appTheme.textPrimary
+            highlight: appTheme.accent
+            highlightedText: appTheme.textPrimary
+            button: appTheme.surface
+            mid: appTheme.mid
+            dark: appTheme.dark
+            light: appTheme.light
+        }
         MenuItem {
             text: "Rename…"
             onTriggered: {

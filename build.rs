@@ -58,6 +58,7 @@ fn main() {
                 "qml/VoicePanel.qml",
                 "qml/Spectrum.qml",
                 "qml/EnrollmentDialog.qml",
+                "qml/ThemedComboBox.qml",
             ],
             ..Default::default()
         })

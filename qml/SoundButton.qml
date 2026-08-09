@@ -122,6 +122,15 @@ Button {
 
     Menu {
         id: slotMenu
+        palette {
+            window: appTheme.windowBg
+            base: appTheme.surface
+            text: appTheme.textPrimary
+            buttonText: appTheme.textPrimary
+            highlight: appTheme.accent
+            highlightedText: appTheme.textPrimary
+            button: appTheme.surface
+        }
 
         MenuItem {
             text: "Replace…"

@@ -23,8 +23,16 @@ Window {
         base: appTheme.surface
         button: appTheme.surface
         buttonText: appTheme.textPrimary
+        brightText: appTheme.brightText
+        dark: appTheme.dark
         highlight: appTheme.accent
         highlightedText: appTheme.textPrimary
+        light: appTheme.light
+        link: appTheme.link
+        mid: appTheme.mid
+        midlight: appTheme.midlight
+        placeholderText: appTheme.placeholderText
+        shadow: appTheme.shadow
         text: appTheme.textPrimary
         window: appTheme.windowBg
         windowText: appTheme.textPrimary
@@ -232,29 +240,42 @@ Window {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
-                            ComboBox {
+                            ThemedComboBox {
                                 id: micCombo
+                                theme: appTheme
                                 Layout.fillWidth: true
                                 model: controller.micSourceCount
+                                displayText: {
+                                    controller.micSourcesVersion
+                                    if (micCombo.currentIndex >= 0
+                                            && micCombo.currentIndex < controller.micSourceCount) {
+                                        return controller.micSourceDescriptionAt(micCombo.currentIndex)
+                                    }
+                                    return micCombo.selectedDescription()
+                                }
                                 delegate: ItemDelegate {
                                     required property int index
+                                    width: micCombo.width
                                     text: {
                                         controller.micSourcesVersion
                                         return controller.micSourceDescriptionAt(index)
                                     }
-                                }
-                                contentItem: Text {
-                                    text: {
-                                        controller.micSourcesVersion
-                                        if (micCombo.currentIndex >= 0
-                                                && micCombo.currentIndex < controller.micSourceCount) {
-                                            return controller.micSourceDescriptionAt(micCombo.currentIndex)
-                                        }
-                                        return micCombo.selectedDescription()
+                                    highlighted: micCombo.highlightedIndex === index
+                                    palette {
+                                        text: appTheme.textPrimary
+                                        highlightedText: appTheme.textPrimary
+                                        highlight: appTheme.accent
                                     }
-                                    elide: Text.ElideRight
-                                    verticalAlignment: Text.AlignVCenter
-                                    leftPadding: 8
+                                    background: Rectangle {
+                                        color: parent.highlighted ? appTheme.surfaceHover : "transparent"
+                                    }
+                                    contentItem: Text {
+                                        text: parent.text
+                                        color: appTheme.textPrimary
+                                        elide: Text.ElideRight
+                                        verticalAlignment: Text.AlignVCenter
+                                        leftPadding: 8
+                                    }
                                 }
                                 onActivated: if (settings) {
                                     settings.micSource = controller.micSourceIdAt(currentIndex)
@@ -304,24 +325,37 @@ Window {
                         }
 
                         Label { text: "Monitor output device" }
-                        ComboBox {
+                        ThemedComboBox {
                             id: monitorCombo
+                            theme: appTheme
                             Layout.fillWidth: true
                             model: controller.audioSinkCount + 1
+                            displayText: {
+                                controller.audioSinksVersion
+                                return monitorCombo.selectedDescription()
+                            }
                             delegate: ItemDelegate {
                                 required property int index
+                                width: monitorCombo.width
                                 text: index === 0
                                       ? "Default output device"
                                       : controller.audioSinkDescriptionAt(index - 1)
-                            }
-                            contentItem: Text {
-                                text: {
-                                    controller.audioSinksVersion
-                                    return monitorCombo.selectedDescription()
+                                highlighted: monitorCombo.highlightedIndex === index
+                                palette {
+                                    text: appTheme.textPrimary
+                                    highlightedText: appTheme.textPrimary
+                                    highlight: appTheme.accent
                                 }
-                                elide: Text.ElideRight
-                                verticalAlignment: Text.AlignVCenter
-                                leftPadding: 8
+                                background: Rectangle {
+                                    color: parent.highlighted ? appTheme.surfaceHover : "transparent"
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: appTheme.textPrimary
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: 8
+                                }
                             }
                             onActivated: if (settings) {
                                 settings.monitorSink = currentIndex <= 0
@@ -410,8 +444,9 @@ Window {
                         description: "How sounds behave when you trigger a new one while others are playing."
 
                         Label { text: "Interruption mode" }
-                        ComboBox {
+                        ThemedComboBox {
                             id: interruptionCombo
+                            theme: appTheme
                             Layout.fillWidth: true
                             textRole: "label"
                             valueRole: "value"
@@ -471,8 +506,9 @@ Window {
                         title: "Global shortcut backend"
                         description: "Portal registers shortcuts with KDE System Settings (requires Apply). Local handles shortcuts only while Sound Spring is focused."
 
-                        ComboBox {
+                        ThemedComboBox {
                             id: shortcutModeCombo
+                            theme: appTheme
                             Layout.fillWidth: true
                             textRole: "label"
                             valueRole: "value"

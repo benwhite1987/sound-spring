@@ -41,12 +41,64 @@ const LOOPBACK_STREAM_PROPS: &str =
 #[derive(Debug, Deserialize)]
 struct PactlJsonEntry {
     name: String,
+    #[serde(default)]
     description: String,
+    #[serde(default)]
+    properties: serde_json::Map<String, serde_json::Value>,
+}
+
+fn json_entry_description(entry: &PactlJsonEntry) -> String {
+    if !entry.description.is_empty() {
+        return entry.description.clone();
+    }
+    for key in [
+        "device.description",
+        "node.description",
+        "node.nick",
+        "device.product.name",
+    ] {
+        if let Some(serde_json::Value::String(value)) = entry.properties.get(key) {
+            if !value.is_empty() {
+                return value.clone();
+            }
+        }
+    }
+    entry.name.clone()
+}
+
+fn needs_description_enrichment(name: &str, description: &str) -> bool {
+    description.is_empty() || description == name
+}
+
+fn enrich_mic_descriptions(sources: &mut [MicSource], verbose: &[MicSource]) {
+    for source in sources.iter_mut() {
+        if !needs_description_enrichment(&source.name, &source.description) {
+            continue;
+        }
+        if let Some(match_) = verbose.iter().find(|v| v.name == source.name) {
+            if !needs_description_enrichment(&match_.name, &match_.description) {
+                source.description = match_.description.clone();
+            }
+        }
+    }
+}
+
+fn enrich_sink_descriptions(sinks: &mut [AudioSink], verbose: &[AudioSink]) {
+    for sink in sinks.iter_mut() {
+        if !needs_description_enrichment(&sink.name, &sink.description) {
+            continue;
+        }
+        if let Some(match_) = verbose.iter().find(|v| v.name == sink.name) {
+            if !needs_description_enrichment(&match_.name, &match_.description) {
+                sink.description = match_.description.clone();
+            }
+        }
+    }
 }
 
 impl PipewireManager {
     pub async fn available_sources() -> Result<Vec<MicSource>> {
-        let sources = match Self::fetch_sources_json().await {
+        let mut sources = match Self::fetch_sources_json().await {
             Ok(sources) if !sources.is_empty() => {
                 debug!("listed mic sources via pactl JSON");
                 sources
@@ -73,13 +125,23 @@ impl PipewireManager {
             }
             warn!("pactl returned no user microphone sources");
         } else {
+            let needs_enrich = sources
+                .iter()
+                .any(|s| needs_description_enrichment(&s.name, &s.description));
+            if needs_enrich {
+                if let Ok(verbose) = Self::fetch_sources_verbose().await {
+                    enrich_mic_descriptions(&mut sources, &verbose);
+                    debug!("enriched mic source descriptions from pactl verbose");
+                }
+            }
+            sources.sort_by(|a, b| a.description.cmp(&b.description));
             info!("listed {} mic source(s)", sources.len());
         }
         Ok(sources)
     }
 
     pub async fn available_sinks() -> Result<Vec<AudioSink>> {
-        let sinks = match Self::fetch_sinks_json().await {
+        let mut sinks = match Self::fetch_sinks_json().await {
             Ok(sinks) if !sinks.is_empty() => {
                 debug!("listed output sinks via pactl JSON");
                 sinks
@@ -106,6 +168,16 @@ impl PipewireManager {
             }
             warn!("pactl returned no user output sinks");
         } else {
+            let needs_enrich = sinks
+                .iter()
+                .any(|s| needs_description_enrichment(&s.name, &s.description));
+            if needs_enrich {
+                if let Ok(verbose) = Self::fetch_sinks_verbose().await {
+                    enrich_sink_descriptions(&mut sinks, &verbose);
+                    debug!("enriched sink descriptions from pactl verbose");
+                }
+            }
+            sinks.sort_by(|a, b| a.description.cmp(&b.description));
             info!("listed {} output sink(s)", sinks.len());
         }
         Ok(sinks)
@@ -706,9 +778,12 @@ fn parse_source_json(text: &str) -> Result<Vec<MicSource>> {
     let mut sources = entries
         .into_iter()
         .filter(|entry| is_user_mic_source(&entry.name))
-        .map(|entry| MicSource {
-            name: entry.name,
-            description: entry.description,
+        .map(|entry| {
+            let description = json_entry_description(&entry);
+            MicSource {
+                name: entry.name,
+                description,
+            }
         })
         .collect::<Vec<_>>();
     sources.sort_by(|a, b| a.description.cmp(&b.description));
@@ -721,9 +796,12 @@ fn parse_sink_json(text: &str) -> Result<Vec<AudioSink>> {
     let mut sinks = entries
         .into_iter()
         .filter(|entry| is_user_sink(&entry.name))
-        .map(|entry| AudioSink {
-            name: entry.name,
-            description: entry.description,
+        .map(|entry| {
+            let description = json_entry_description(&entry);
+            AudioSink {
+                name: entry.name,
+                description,
+            }
         })
         .collect::<Vec<_>>();
     sinks.sort_by(|a, b| a.description.cmp(&b.description));
@@ -949,6 +1027,55 @@ Source #2
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name, "alsa_input.pci-0000_80_1f.3.analog-stereo");
         assert_eq!(sources[0].description, "Built-in Mic");
+    }
+
+    #[test]
+    fn parse_source_json_blank_description_uses_properties() {
+        let text = r#"[
+            {
+                "name":"alsa_input.pci-builtin",
+                "description":"",
+                "properties":{"device.description":"Built-in Audio Analog Stereo"}
+            }
+        ]"#;
+        let sources = parse_source_json(text).expect("json sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].description, "Built-in Audio Analog Stereo");
+    }
+
+    #[test]
+    fn enrich_short_mic_list_from_verbose_descriptions() {
+        let mut short = parse_source_short(
+            "56\talsa_input.pci-0000_80_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+        );
+        assert_eq!(short.len(), 1);
+        assert_eq!(short[0].description, short[0].name);
+
+        let verbose = parse_source_list(
+            "\
+Source #1
+\tName: alsa_input.pci-0000_80_1f.3.analog-stereo
+\tDescription: Built-in Audio Analog Stereo
+",
+        );
+        enrich_mic_descriptions(&mut short, &verbose);
+        assert_eq!(short[0].description, "Built-in Audio Analog Stereo");
+    }
+
+    #[test]
+    fn enrich_short_sink_list_from_verbose_descriptions() {
+        let mut short = parse_sink_short(
+            "55\talsa_output.pci-0000_80_1f.3.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n",
+        );
+        let verbose = parse_sink_list(
+            "\
+Sink #1
+\tName: alsa_output.pci-0000_80_1f.3.analog-stereo
+\tDescription: Built-in Speakers
+",
+        );
+        enrich_sink_descriptions(&mut short, &verbose);
+        assert_eq!(short[0].description, "Built-in Speakers");
     }
 
     #[test]
