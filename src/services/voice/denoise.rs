@@ -23,7 +23,9 @@ pub struct Denoiser {
 impl Denoiser {
     /// Build a denoiser from the bundled DeepFilterNet3 model.
     pub fn new() -> Result<Self> {
-        let params = RuntimeParams::default_with_ch(1);
+        // Cap suppression so residual noise mixes back (~30 dB), avoiding hard
+        // musical/pumping artifacts from uncapped attenuation.
+        let params = RuntimeParams::default_with_ch(1).with_atten_lim(30.0);
         let df = DfTract::new(DfParams::default(), &params)?;
         let hop = df.hop_size;
         Ok(Self {
@@ -34,7 +36,8 @@ impl Denoiser {
         })
     }
 
-    /// Reset streaming state after a long gate-closed skip.
+    /// Reset streaming state (e.g. session restart). Not used for gate closes —
+    /// the pipeline keeps DFN warm across muted periods.
     pub fn reset(&mut self) -> Result<()> {
         self.in_buf.clear();
         self.df

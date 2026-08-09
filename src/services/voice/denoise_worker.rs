@@ -2,7 +2,8 @@
 //!
 //! DFN inference is too heavy for the hard-real-time pipeline hop loop, so hops
 //! are handed over an SPSC ring (mirroring the ECAPA embed worker pattern). The
-//! pipeline applies gate/attack on the delayed enhanced stream.
+//! pipeline keeps a fixed delay FIFO of enhanced samples and applies the output
+//! gate on that delayed stream — never splicing raw over DFN.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

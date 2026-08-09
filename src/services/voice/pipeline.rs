@@ -8,6 +8,7 @@
 use anyhow::Result;
 use rtrb::chunks::ChunkError;
 use rtrb::{Consumer, Producer};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -29,8 +30,12 @@ use super::{
 /// Voiced 16 kHz samples accumulated before running one verification embedding (~0.75 s).
 const VERIFY_WINDOW: usize = TARGET_RATE as usize * 3 / 4;
 
-/// Output gate attack (~3 ms at 48 kHz).
-const GATE_ATTACK_MS: f32 = 3.0;
+/// Output gate attack (~15 ms at 48 kHz) — soft enough to avoid clicks on reopen.
+const GATE_ATTACK_MS: f32 = 15.0;
+
+/// Samples of enhanced audio to buffer before emitting (DFN lookahead + worker slack).
+/// ~2 hops of DFN (480) plus one pipeline hop, rounded up to pipeline hops.
+const DENOISE_STARTUP_SAMPLES: usize = FFT_HOP * 2;
 
 fn gate_ramp_steps(release_ms: u32) -> (f32, f32) {
     let attack_samples = CAPTURE_RATE as f32 * GATE_ATTACK_MS / 1000.0;
@@ -67,7 +72,7 @@ impl VoicePipeline {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
 
-        let (denoise_worker, denoise_in, denoise_out, denoise_reset) = if suppression {
+        let (denoise_worker, denoise_in, denoise_out, _denoise_reset) = if suppression {
             let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
             let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
             match DenoiseWorker::spawn(in_cons, out_prod) {
@@ -95,7 +100,6 @@ impl VoicePipeline {
                     output,
                     denoise_in,
                     denoise_out,
-                    denoise_reset,
                     thread_stop,
                 )
             })?;
@@ -128,14 +132,12 @@ fn run(
     mut output: Option<Producer<f32>>,
     mut denoise_in: Option<Producer<f32>>,
     mut denoise_out: Option<Consumer<f32>>,
-    denoise_reset: Option<Arc<AtomicBool>>,
     stop: Arc<AtomicBool>,
 ) {
     let mut analyzer = SpectrumAnalyzer::new();
     let mut gate_gain: f32 = 0.0;
     let mut out_scratch: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
     let mut out_pending: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
-    let mut denoise_gate_skipped = false;
     let mut filtered_analyzer = SpectrumAnalyzer::new();
     let mut filtered_window: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
     let mut vad = match Vad::new(vad_open, vad_close) {
@@ -154,11 +156,14 @@ fn run(
     let mut enroll_buf: Vec<f32> = Vec::new();
     let mut verify_buf: Vec<f32> = Vec::with_capacity(VERIFY_WINDOW + FFT_SIZE);
     let mut hangover_remaining: usize = 0;
+    let mut match_hold_remaining: usize = 0;
     let mut raw_spectrum_buf = vec![0.0; SPECTRUM_BINS];
     let mut filtered_spectrum_buf = vec![0.0; SPECTRUM_BINS];
     let mut pop_buf = [0.0f32; 2048];
     let mut denoise_pop_buf = [0.0f32; 2048];
     let mut denoise_pending: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
+    let mut denoise_delay: VecDeque<f32> = VecDeque::with_capacity(DENOISE_STARTUP_SAMPLES + FFT_HOP);
+    let mut denoise_primed = false;
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -301,7 +306,17 @@ fn run(
             };
 
             let verifying = verifying_path;
-            let matched = shared.speaker_state().1;
+            let matched_live = shared.speaker_state().1;
+            // Hold last match briefly so ECAPA window gaps / consonants do not hard-close.
+            let matched = if matched_live {
+                match_hold_remaining = hangover_samples(shared.gate_hangover_ms());
+                true
+            } else if match_hold_remaining > 0 {
+                match_hold_remaining = match_hold_remaining.saturating_sub(FFT_HOP);
+                true
+            } else {
+                false
+            };
             let passing = if verifying {
                 effective_voiced && (matched || shared.verify_warmup())
             } else {
@@ -321,39 +336,48 @@ fn run(
             let target = if gate_open { 1.0 } else { 0.0 };
             let routing_output = output.is_some();
             // DFN only when actually routing to virtmic — filtered viz must not force it.
+            // Always feed DFN while routing+suppression (never skip on a closed gate).
             let need_denoised_audio = routing_output && denoise_in.is_some();
-            let skip_gate = target == 0.0 && gate_gain == 0.0;
-            let skip_unused = !need_denoised_audio;
-            let skip_denoise = skip_unused || skip_gate;
 
             out_scratch.clear();
-            if skip_denoise {
-                if skip_gate && denoise_reset.is_some() {
-                    denoise_gate_skipped = true;
-                }
-                out_scratch.extend_from_slice(&window[..FFT_HOP]);
-            } else {
-                if denoise_gate_skipped {
-                    if let Some(flag) = denoise_reset.as_ref() {
-                        flag.store(true, Ordering::Relaxed);
-                    }
-                    denoise_gate_skipped = false;
-                }
+            if need_denoised_audio {
                 if let (Some(din), Some(dout)) = (denoise_in.as_mut(), denoise_out.as_mut()) {
                     denoise_pending.clear();
                     denoise_pending.extend_from_slice(&window[..FFT_HOP]);
                     flush_output_samples(&mut denoise_pending, din);
-                    // Keep a hop-sized latency by draining available enhanced audio.
-                    let (filled, _) = dout.pop_partial_slice(&mut denoise_pop_buf);
-                    if filled.is_empty() {
-                        // Warmup / lag: pass through so routing does not underrun.
-                        out_scratch.extend_from_slice(&window[..FFT_HOP]);
+
+                    // Drain enhanced samples into a fixed delay line.
+                    loop {
+                        let (filled, _) = dout.pop_partial_slice(&mut denoise_pop_buf);
+                        if filled.is_empty() {
+                            break;
+                        }
+                        denoise_delay.extend(filled.iter().copied());
+                    }
+
+                    if !denoise_primed && denoise_delay.len() >= DENOISE_STARTUP_SAMPLES {
+                        denoise_primed = true;
+                    }
+
+                    if denoise_primed && denoise_delay.len() >= FFT_HOP {
+                        for _ in 0..FFT_HOP {
+                            out_scratch.push(denoise_delay.pop_front().unwrap_or(0.0));
+                        }
                     } else {
-                        out_scratch.extend_from_slice(filled);
+                        // Warmup / underrun: emit silence — never splice raw over delayed DFN.
+                        out_scratch.resize(FFT_HOP, 0.0);
+                    }
+
+                    // Bound latency if the worker bursts ahead.
+                    let max_delay = DENOISE_STARTUP_SAMPLES + FFT_HOP * 2;
+                    while denoise_delay.len() > max_delay {
+                        denoise_delay.pop_front();
                     }
                 } else {
                     out_scratch.extend_from_slice(&window[..FFT_HOP]);
                 }
+            } else {
+                out_scratch.extend_from_slice(&window[..FFT_HOP]);
             }
 
             for &sample in &out_scratch {
