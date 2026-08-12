@@ -101,6 +101,16 @@ RUST_LOG=sound_spring=info ./target/release/sound-spring
 
 On first launch, the log line `startup: first frame in N ms` reports time from process start to main-window `Component.onCompleted`.
 
+### Routed mic scratchiness A/B
+
+With suppression (and/or verification) routing through `Sound-Spring-Virtual-Microphone`, listen remotely while watching delay timeline logs:
+
+```bash
+RUST_LOG=sound_spring=warn ./target/release/sound-spring 2>&1 | grep -E 'denoise delay underrun|delay trim|denoise_in backpressure'
+```
+
+Expect rare/zero lines during clean speech. If audio is still sandy with **zero** underrun/trim warnings, DFN attenuation is the next knob (`atten_lim_db`) — not the timeline.
+
 ### Testing global shortcuts — must run outside Cursor / Electron / Chromium
 
 `xdg-desktop-portal` identifies the calling application by walking the caller's systemd cgroup scope. Launch via the app menu, KRunner, or `gtk-launch sound-spring` — not from a terminal embedded inside Cursor, VS Code, or Chromium.

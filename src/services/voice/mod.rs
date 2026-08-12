@@ -608,6 +608,8 @@ pub struct VoiceParams {
     pub gate_hangover_ms: u32,
     pub gate_release_ms: u32,
     pub verification_warmup: bool,
+    /// PipeWire / pw-cat latency hint (ms) for the routed playback path.
+    pub latency_ms: u32,
 }
 
 /// A running capture + processing session. Dropping it tears everything down:
@@ -651,9 +653,24 @@ impl VoiceSession {
 
         // When gating, the pipeline emits processed samples into a second ring
         // that a `pw-cat --playback` writer feeds into the output sink.
+        let latency_ms = if params.gating && !params.output_sink.is_empty() {
+            params.latency_ms.max(40).clamp(40, 100)
+        } else {
+            params.latency_ms.clamp(20, 100)
+        };
         let (out_producer, output) = if params.gating && !params.output_sink.is_empty() {
-            let (out_producer, out_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
-            let output = output::Output::start(&params.output_sink, out_consumer)?;
+            let (mut out_producer, out_consumer) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            // Pre-fill silence so pw-cat never starts with an empty stdin buffer.
+            let primer = (CAPTURE_RATE as usize)
+                .saturating_mul(latency_ms as usize)
+                .saturating_div(1000)
+                .min(RING_CAPACITY / 2);
+            for _ in 0..primer {
+                if out_producer.push(0.0).is_err() {
+                    break;
+                }
+            }
+            let output = output::Output::start(&params.output_sink, out_consumer, latency_ms)?;
             (Some(out_producer), Some(output))
         } else {
             (None, None)

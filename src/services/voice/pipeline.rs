@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use super::denoise_worker::DenoiseWorker;
@@ -33,9 +33,23 @@ const VERIFY_WINDOW: usize = TARGET_RATE as usize * 3 / 4;
 /// Output gate attack (~15 ms at 48 kHz) — soft enough to avoid clicks on reopen.
 const GATE_ATTACK_MS: f32 = 15.0;
 
-/// Samples of enhanced audio to buffer before emitting (DFN lookahead + worker slack).
-/// ~2 hops of DFN (480) plus one pipeline hop, rounded up to pipeline hops.
-const DENOISE_STARTUP_SAMPLES: usize = FFT_HOP * 2;
+/// Stable delay cushion (~100 ms at 48 kHz) before emitting enhanced audio.
+const DENOISE_TARGET_DELAY: usize = 4_800;
+
+/// Soft cap: target plus one pipeline hop (burst absorb only).
+const DENOISE_MAX_DELAY: usize = DENOISE_TARGET_DELAY + FFT_HOP;
+
+/// Fade length when padding an underrun shortfall (never full-hop DC hold).
+const UNDERRUN_FADE_SAMPLES: usize = 128;
+
+/// Bounded wait when the delay cushion runs short after priming.
+const DENOISE_UNDERRUN_WAIT: Duration = Duration::from_millis(10);
+
+/// Brief retry when denoise_in cannot accept a full hop.
+const DENOISE_INPUT_RETRY: Duration = Duration::from_millis(8);
+
+/// Extra headroom on denoise SPSC rings vs capture/output.
+const DENOISE_RING_CAPACITY: usize = RING_CAPACITY * 2;
 
 fn gate_ramp_steps(release_ms: u32) -> (f32, f32) {
     let attack_samples = CAPTURE_RATE as f32 * GATE_ATTACK_MS / 1000.0;
@@ -73,8 +87,8 @@ impl VoicePipeline {
         let thread_stop = stop.clone();
 
         let (denoise_worker, denoise_in, denoise_out, _denoise_reset) = if suppression {
-            let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
-            let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(RING_CAPACITY);
+            let (in_prod, in_cons) = rtrb::RingBuffer::<f32>::new(DENOISE_RING_CAPACITY);
+            let (out_prod, out_cons) = rtrb::RingBuffer::<f32>::new(DENOISE_RING_CAPACITY);
             match DenoiseWorker::spawn(in_cons, out_prod) {
                 Ok((worker, reset)) => (Some(worker), Some(in_prod), Some(out_cons), Some(reset)),
                 Err(err) => {
@@ -162,8 +176,12 @@ fn run(
     let mut pop_buf = [0.0f32; 2048];
     let mut denoise_pop_buf = [0.0f32; 2048];
     let mut denoise_pending: Vec<f32> = Vec::with_capacity(FFT_HOP * 2);
-    let mut denoise_delay: VecDeque<f32> = VecDeque::with_capacity(DENOISE_STARTUP_SAMPLES + FFT_HOP);
+    let mut denoise_delay: VecDeque<f32> = VecDeque::with_capacity(DENOISE_MAX_DELAY);
     let mut denoise_primed = false;
+    let mut denoise_last_sample: f32 = 0.0;
+    let mut denoise_underruns: u64 = 0;
+    let mut denoise_trims: u64 = 0;
+    let mut denoise_backpressure: u64 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         match shared.take_enroll_command() {
@@ -344,34 +362,85 @@ fn run(
                 if let (Some(din), Some(dout)) = (denoise_in.as_mut(), denoise_out.as_mut()) {
                     denoise_pending.clear();
                     denoise_pending.extend_from_slice(&window[..FFT_HOP]);
-                    flush_output_samples(&mut denoise_pending, din);
-
-                    // Drain enhanced samples into a fixed delay line.
-                    loop {
-                        let (filled, _) = dout.pop_partial_slice(&mut denoise_pop_buf);
-                        if filled.is_empty() {
-                            break;
+                    let mut pushed = flush_denoise_input(&mut denoise_pending, din);
+                    if !pushed {
+                        let deadline = Instant::now() + DENOISE_INPUT_RETRY;
+                        while Instant::now() < deadline && !pushed {
+                            drain_denoise_out(dout, &mut denoise_delay, &mut denoise_pop_buf);
+                            pushed = flush_denoise_input(&mut denoise_pending, din);
+                            if !pushed {
+                                std::thread::sleep(Duration::from_micros(200));
+                            }
                         }
-                        denoise_delay.extend(filled.iter().copied());
                     }
-
-                    if !denoise_primed && denoise_delay.len() >= DENOISE_STARTUP_SAMPLES {
-                        denoise_primed = true;
-                    }
-
-                    if denoise_primed && denoise_delay.len() >= FFT_HOP {
-                        for _ in 0..FFT_HOP {
-                            out_scratch.push(denoise_delay.pop_front().unwrap_or(0.0));
+                    if !pushed {
+                        denoise_backpressure = denoise_backpressure.saturating_add(1);
+                        if denoise_backpressure == 1 || denoise_backpressure.is_multiple_of(50) {
+                            warn!(
+                                count = denoise_backpressure,
+                                "denoise_in backpressure; dropping newest hop"
+                            );
                         }
-                    } else {
-                        // Warmup / underrun: emit silence — never splice raw over delayed DFN.
-                        out_scratch.resize(FFT_HOP, 0.0);
+                        denoise_pending.clear();
                     }
 
-                    // Bound latency if the worker bursts ahead.
-                    let max_delay = DENOISE_STARTUP_SAMPLES + FFT_HOP * 2;
-                    while denoise_delay.len() > max_delay {
+                    drain_denoise_out(dout, &mut denoise_delay, &mut denoise_pop_buf);
+
+                    if !denoise_primed {
+                        if denoise_delay.len() >= DENOISE_TARGET_DELAY {
+                            denoise_primed = true;
+                        } else {
+                            // Warmup: silence only — never splice raw over delayed DFN.
+                            out_scratch.resize(FFT_HOP, 0.0);
+                        }
+                    }
+
+                    if denoise_primed {
+                        let want = DENOISE_TARGET_DELAY + FFT_HOP;
+                        if denoise_delay.len() < want {
+                            let deadline = Instant::now() + DENOISE_UNDERRUN_WAIT;
+                            while Instant::now() < deadline && denoise_delay.len() < want {
+                                drain_denoise_out(dout, &mut denoise_delay, &mut denoise_pop_buf);
+                                if denoise_delay.len() < want {
+                                    std::thread::sleep(Duration::from_micros(200));
+                                }
+                            }
+                        }
+
+                        if denoise_delay.len() < FFT_HOP {
+                            denoise_underruns = denoise_underruns.saturating_add(1);
+                            if denoise_underruns == 1 || denoise_underruns.is_multiple_of(25) {
+                                warn!(
+                                    count = denoise_underruns,
+                                    buffered = denoise_delay.len(),
+                                    "denoise delay underrun; fading shortfall to silence"
+                                );
+                            }
+                        }
+                        // Always advance wall-clock: pop available, fade-pad shortfall.
+                        // Never invent silence while leaving delayed samples behind.
+                        emit_denoise_hop(
+                            &mut denoise_delay,
+                            &mut out_scratch,
+                            &mut denoise_last_sample,
+                        );
+                    }
+
+                    // Soft-cap burst absorb only (not the underrun growth path).
+                    let mut trimmed = 0usize;
+                    while denoise_delay.len() > DENOISE_MAX_DELAY {
                         denoise_delay.pop_front();
+                        trimmed += 1;
+                    }
+                    if trimmed > 0 {
+                        denoise_trims = denoise_trims.saturating_add(1);
+                        if denoise_trims == 1 || denoise_trims.is_multiple_of(25) {
+                            warn!(
+                                count = denoise_trims,
+                                samples = trimmed,
+                                "denoise delay trim; dropped oldest burst samples"
+                            );
+                        }
                     }
                 } else {
                     out_scratch.extend_from_slice(&window[..FFT_HOP]);
@@ -429,6 +498,69 @@ fn push_spectrum_frame(
     let _ = queue.force_push(buf);
 }
 
+fn drain_denoise_out(
+    dout: &mut Consumer<f32>,
+    delay: &mut VecDeque<f32>,
+    pop_buf: &mut [f32; 2048],
+) {
+    loop {
+        let (filled, _) = dout.pop_partial_slice(pop_buf);
+        if filled.is_empty() {
+            break;
+        }
+        delay.extend(filled.iter().copied());
+    }
+}
+
+/// Emit one pipeline hop from the delay line. Pops all available up to FFT_HOP,
+/// then fade-pads any shortfall — never a full-hop DC hold, never silence while
+/// leaving delayed samples unconsumed.
+fn emit_denoise_hop(delay: &mut VecDeque<f32>, out: &mut Vec<f32>, last: &mut f32) {
+    let available = delay.len().min(FFT_HOP);
+    for _ in 0..available {
+        let sample = delay.pop_front().unwrap_or(*last);
+        *last = sample;
+        out.push(sample);
+    }
+    let shortfall = FFT_HOP - available;
+    if shortfall == 0 {
+        return;
+    }
+    pad_fade_to_silence(out, *last, shortfall);
+    *last = 0.0;
+}
+
+fn pad_fade_to_silence(out: &mut Vec<f32>, from: f32, shortfall: usize) {
+    if shortfall == 0 {
+        return;
+    }
+    let fade_n = shortfall.min(UNDERRUN_FADE_SAMPLES).max(1);
+    for i in 0..fade_n {
+        let gain = 1.0 - (i as f32 + 1.0) / fade_n as f32;
+        out.push(from * gain);
+    }
+    for _ in fade_n..shortfall {
+        out.push(0.0);
+    }
+}
+
+/// Push a full denoise hop; returns false if the ring cannot accept it entirely.
+fn flush_denoise_input(pending: &mut Vec<f32>, producer: &mut Producer<f32>) -> bool {
+    if pending.is_empty() {
+        return true;
+    }
+    if producer.slots() < pending.len() {
+        return false;
+    }
+    match producer.push_entire_slice(pending) {
+        Ok(()) => {
+            pending.clear();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn flush_output_samples(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
     while !pending.is_empty() {
         match producer.push_entire_slice(pending) {
@@ -441,7 +573,9 @@ fn flush_output_samples(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
                 pending.drain(..n);
             }
             Err(_) => {
-                pending.clear();
+                // Drop oldest half; keep newest so playback stays closer to realtime.
+                let drop_n = (pending.len() / 2).max(1);
+                pending.drain(..drop_n);
                 break;
             }
         }

@@ -580,17 +580,11 @@ async fn reconcile_voice(
         return;
     }
 
-    // Starting fresh. When routing, drop the raw loopback first so only the
-    // processed feed reaches the virtmic.
+    // Starting fresh. When routing, hard-clear every non-SFX mic→virtmic
+    // loopback so only the processed feed reaches the virtmic.
     if want_routing {
-        if let Err(err) = PipewireManager::set_mic_passthrough(
-            false,
-            &config.audio.mic_source,
-            config.audio.latency_ms,
-        )
-        .await
-        {
-            warn!("failed to remove mic loopback for routing: {err:#}");
+        if let Err(err) = PipewireManager::remove_virtmic_mic_loopbacks().await {
+            warn!("failed to remove mic loopback(s) for routing: {err:#}");
         }
     }
 
@@ -612,6 +606,7 @@ async fn reconcile_voice(
         gate_hangover_ms: config.voice.gate_hangover_ms,
         gate_release_ms: config.voice.gate_release_ms,
         verification_warmup: config.voice.verification_warmup,
+        latency_ms: config.audio.latency_ms,
     };
     match VoiceSession::start(params) {
         Ok(s) => {

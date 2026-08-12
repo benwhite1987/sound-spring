@@ -2,8 +2,8 @@
 //!
 //! DFN inference is too heavy for the hard-real-time pipeline hop loop, so hops
 //! are handed over an SPSC ring (mirroring the ECAPA embed worker pattern). The
-//! pipeline keeps a fixed delay FIFO of enhanced samples and applies the output
-//! gate on that delayed stream — never splicing raw over DFN.
+//! pipeline keeps a watermarked delay FIFO of enhanced samples and applies the
+//! output gate on that delayed stream — never splicing raw over DFN.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,6 +16,13 @@ use rtrb::{Consumer, Producer};
 use tracing::{debug, warn};
 
 use super::denoise::Denoiser;
+
+/// Max DFN frames processed per wake (keeps the pipeline delay cushion fed steadily).
+const MAX_FRAMES_PER_WAKE: usize = 8;
+
+/// When the input scratch backlog is large, catch up harder so the delay refill
+/// does not fall behind wall-clock hops.
+const MAX_FRAMES_CATCH_UP: usize = 12;
 
 pub struct DenoiseWorker {
     stop: Arc<AtomicBool>,
@@ -60,7 +67,6 @@ fn run(
         Ok(d) => d,
         Err(err) => {
             warn!("voice denoise worker disabled: {err:#}");
-            // Drain input so the pipeline does not block forever on a full ring.
             while !stop.load(Ordering::Relaxed) {
                 while input.pop().is_ok() {}
                 std::thread::sleep(Duration::from_millis(5));
@@ -69,8 +75,11 @@ fn run(
         }
     };
 
-    let mut in_scratch = Vec::with_capacity(2048);
-    let mut out_scratch = Vec::with_capacity(2048);
+    let hop = denoiser.hop_size().max(1);
+    let max_batch = hop * MAX_FRAMES_CATCH_UP;
+    let mut in_scratch = Vec::with_capacity(max_batch);
+    let mut out_scratch = Vec::with_capacity(max_batch);
+    let mut output_block_events: u64 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         if reset.swap(false, Ordering::Relaxed) {
@@ -81,31 +90,44 @@ fn run(
             out_scratch.clear();
         }
 
-        let mut got_any = false;
-        while let Ok(sample) = input.pop() {
-            in_scratch.push(sample);
-            got_any = true;
-            if in_scratch.len() >= 4096 {
+        while in_scratch.len() < hop {
+            match input.pop() {
+                Ok(sample) => in_scratch.push(sample),
+                Err(_) => break,
+            }
+            if in_scratch.len() >= max_batch {
                 break;
             }
         }
 
-        if !got_any {
+        if in_scratch.len() < hop {
             std::thread::sleep(Duration::from_millis(1));
             continue;
         }
 
+        // Process whole frames only; leave a remainder < hop for the next wake.
+        let frame_cap = if in_scratch.len() >= hop * MAX_FRAMES_PER_WAKE {
+            MAX_FRAMES_CATCH_UP
+        } else {
+            MAX_FRAMES_PER_WAKE
+        };
+        let take = (in_scratch.len() / hop).min(frame_cap) * hop;
         out_scratch.clear();
-        denoiser.process(&in_scratch, &mut out_scratch);
-        in_scratch.clear();
+        denoiser.process(&in_scratch[..take], &mut out_scratch);
+        in_scratch.drain(..take);
 
-        flush_output(&mut out_scratch, &mut output);
+        flush_output_blocking(&mut out_scratch, &mut output, &stop, &mut output_block_events);
     }
     debug!("voice denoise worker stopped");
 }
 
-fn flush_output(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
-    while !pending.is_empty() {
+fn flush_output_blocking(
+    pending: &mut Vec<f32>,
+    producer: &mut Producer<f32>,
+    stop: &AtomicBool,
+    block_events: &mut u64,
+) {
+    while !pending.is_empty() && !stop.load(Ordering::Relaxed) {
         match producer.push_entire_slice(pending) {
             Ok(()) => {
                 pending.clear();
@@ -116,10 +138,14 @@ fn flush_output(pending: &mut Vec<f32>, producer: &mut Producer<f32>) {
                 pending.drain(..n);
             }
             Err(_) => {
-                // Drop oldest backlog rather than growing without bound.
-                let drop_n = pending.len() / 2;
-                pending.drain(..drop_n);
-                break;
+                *block_events = block_events.saturating_add(1);
+                if *block_events == 1 || (*block_events).is_multiple_of(200) {
+                    debug!(
+                        count = *block_events,
+                        "denoise worker waiting on full output ring"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
     }

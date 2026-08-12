@@ -45,6 +45,11 @@ impl Denoiser {
             .map_err(|err| anyhow::anyhow!("reset DeepFilterNet state: {err}"))
     }
 
+    /// DFN frame size in samples (480 for DeepFilterNet3).
+    pub fn hop_size(&self) -> usize {
+        self.hop
+    }
+
     /// Feed 48 kHz mono `input`; append enhanced samples to `out`.
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.in_buf.extend_from_slice(input);
