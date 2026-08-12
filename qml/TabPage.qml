@@ -85,6 +85,8 @@ Item {
                 return controller.slotEmpty(slotNumber)
             }
             progress: {
+                // progressVersion notify drives the live fill; uiTick covers start/stop edges.
+                uiTick
                 controller.progressVersion
                 return controller.slotProgress(slotNumber)
             }

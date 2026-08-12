@@ -804,11 +804,7 @@ impl SoundboardControllerRust {
     }
 
     fn tick_progress(&mut self) -> bool {
-        if self.active_playbacks.is_empty() {
-            return false;
-        }
-        self.progress_version += 1;
-        true
+        !self.active_playbacks.is_empty()
     }
 
     pub fn mark_playback_ended(&mut self, tab_index: i32, slot: i32) {
@@ -1311,8 +1307,10 @@ impl qobject::SoundboardController {
 
         if events.is_empty() {
             if progress_dirty {
-                let version = self.as_ref().rust().progress_version;
-                self.as_mut().set_progress_version(version);
+                // Increment via the QProperty setter so QML gets a notify.
+                // Pre-bumping rust.progress_version made set_* a no-op and froze the fill.
+                let next = self.as_ref().rust().progress_version.wrapping_add(1);
+                self.as_mut().set_progress_version(next);
             }
             return;
         }
@@ -1429,8 +1427,8 @@ impl qobject::SoundboardController {
             }
             self.as_mut().playing_state_changed();
         } else if progress_dirty {
-            let version = self.as_ref().rust().progress_version;
-            self.as_mut().set_progress_version(version);
+            let next = self.as_ref().rust().progress_version.wrapping_add(1);
+            self.as_mut().set_progress_version(next);
         }
     }
 
